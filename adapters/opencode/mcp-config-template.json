@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "synapse": {
+      "type": "local",
+      "enabled": true,
+      "command": ["synapse", "serve", "--workspace", "/absolute/path/to/workspace"]
+    }
+  }
+}

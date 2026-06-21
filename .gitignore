@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.idea/
+.ai/plans/*
+!.ai/plans/.gitkeep
+*.db
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+
+opencode.json
