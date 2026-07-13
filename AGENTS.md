@@ -6,6 +6,8 @@ This file is the contract for any human or AI agent contributing to THIS reposit
 ## Setup
 - Python >=3.14. Use `uv`: `uv venv && uv pip install -e ".[dev]"`.
 - Run the MCP server (stdio): `python -m synapse` (or the `synapse` script).
+- Remove managed agent setup with `synapse uninstall <agent> --path .`; this does not
+  delete index/cache data.
 
 ## Project structure
 - `src/synapse/core` — core logic: model, parsing, indexing, querying. No MCP imports.
