@@ -1,5 +1,7 @@
 """CLI commands for managing user-level Synapse configuration."""
 
+from __future__ import annotations
+
 import json
 import os
 from argparse import ArgumentParser, Namespace, _SubParsersAction
