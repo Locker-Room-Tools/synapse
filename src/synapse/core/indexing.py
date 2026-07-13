@@ -10,7 +10,7 @@ from synapse.core.index import SymbolIndex
 from synapse.core.languages import detect_language
 from synapse.core.models import SourceFile
 from synapse.core.parser import (
-    _RawReference,
+    RawReference,
     build_reference_relations,
     build_relations,
     extract_references,
@@ -65,7 +65,7 @@ def index_workspace(workspace_path: str | Path = ".", *, force: bool = False) ->
     active_db_path = temporary_db_path or target_db_path
     index = SymbolIndex(active_db_path)
     seen_paths: set[str] = set()
-    raw_references_by_file: dict[str, list[_RawReference]] = {}
+    raw_references_by_file: dict[str, list[RawReference]] = {}
     indexed_files = 0
     skipped_files = 0
 

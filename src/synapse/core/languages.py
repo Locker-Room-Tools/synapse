@@ -426,6 +426,7 @@ LANGUAGES: dict[str, LanguageSpec] = {
     ),
 }
 
+
 # Contested extensions are assigned to exactly one language until content-aware
 # detection exists: .m -> matlab (objc claims only .mm), .h -> c (not cpp),
 # .v -> verilog (not coq). Losing languages must not list the extension.

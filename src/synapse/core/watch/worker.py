@@ -13,7 +13,7 @@ from synapse.core.index import SymbolIndex
 from synapse.core.languages import detect_language
 from synapse.core.models import RelationKind, SourceFile, Symbol
 from synapse.core.parser import (
-    _RawReference,
+    RawReference,
     build_reference_relations,
     build_relations,
     extract_references,
@@ -76,7 +76,7 @@ class WatchWorker:
         indexed_files = 0
         skipped_files = 0
         removed_files = 0
-        raw_references_by_file: dict[str, list[_RawReference]] = {}
+        raw_references_by_file: dict[str, list[RawReference]] = {}
         affected_names: set[str] = set()
 
         with self.index.transaction() as connection:
@@ -215,7 +215,7 @@ class _FileUpdate:
     skipped_files: int
     removed_files: int
     affected_names: list[str]
-    raw_references: list[_RawReference] | None
+    raw_references: list[RawReference] | None
 
 
 def _symbol_names(symbols: Iterable[Symbol]) -> set[str]:

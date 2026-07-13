@@ -29,7 +29,7 @@ class _ExtractedSymbol:
 
 
 @dataclass(frozen=True, slots=True)
-class _RawReference:
+class RawReference:
     name: str
     start_line: int
     start_byte: int
@@ -211,7 +211,7 @@ def parse_file(path: Path, language: str, workspace_root: Path | None = None) ->
     return symbols
 
 
-def extract_references(path: Path, language: str, symbols: Sequence[Symbol]) -> list[_RawReference]:
+def extract_references(path: Path, language: str, symbols: Sequence[Symbol]) -> list[RawReference]:
     """Extract raw symbol references from one source file."""
     try:
         query_text = load_query(language, "references")
@@ -225,7 +225,7 @@ def extract_references(path: Path, language: str, symbols: Sequence[Symbol]) -> 
     query = Query(tree_sitter_language, query_text)
     matches = QueryCursor(query).matches(tree.root_node)
 
-    raw_refs: list[_RawReference] = []
+    raw_refs: list[RawReference] = []
     for _, captures in matches:
         reference_nodes = captures.get("reference", [])
         for node in reference_nodes:
@@ -233,7 +233,7 @@ def extract_references(path: Path, language: str, symbols: Sequence[Symbol]) -> 
             if from_symbol is None:
                 continue
             raw_refs.append(
-                _RawReference(
+                RawReference(
                     name=_decode_node_text(source_bytes, node.start_byte, node.end_byte),
                     start_line=node.start_point[0] + 1,
                     start_byte=node.start_byte,
@@ -253,7 +253,7 @@ def _candidate_symbol_ids(name: str, name_to_symbol_ids: Mapping[str, list[str]]
 
 
 def build_reference_relations(
-    raw_refs: Sequence[_RawReference],
+    raw_refs: Sequence[RawReference],
     name_to_symbol_ids: Mapping[str, list[str]],
 ) -> list[Relation]:
     """Resolve raw references into deterministic reference relations."""
