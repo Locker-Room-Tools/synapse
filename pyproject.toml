@@ -1,8 +1,23 @@
 [project]
 name = "synapse-mcp"
-version = "0.2.4"
+version = "0.3.0"
 description = "Local-first AST-based code context engine exposed over MCP."
-requires-python = ">=3.14"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Skr0ls", email = "lpdimakot11@gmail.com" }]
+keywords = ["mcp", "tree-sitter", "code-index", "ast", "ai-agents", "code-context"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development",
+]
+requires-python = ">=3.12"
 dependencies = [
     "mcp>=1.27,<2",
     "tree-sitter>=0.25",
@@ -15,6 +30,12 @@ dev = [
     "pytest>=8",
     "ruff>=0.6",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Locker-Room-Tools/synapse"
+Repository = "https://github.com/Locker-Room-Tools/synapse"
+Issues = "https://github.com/Locker-Room-Tools/synapse/issues"
+Changelog = "https://github.com/Locker-Room-Tools/synapse/blob/main/CHANGELOG.md"
 
 [project.scripts]
 synapse = "synapse.cli.main:main"
@@ -29,12 +50,12 @@ include = ["src/synapse/core/default_ignored_directories.json"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py314"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.mypy]
-python_version = "3.14"
+python_version = "3.12"
 strict = true
 files = ["src", "tests"]

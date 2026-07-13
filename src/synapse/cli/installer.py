@@ -139,7 +139,7 @@ def config_has_mcp_server(
             parsed = tomllib.loads(text)
             servers = parsed.get("mcp_servers")
             return isinstance(servers, dict) and isinstance(servers.get("synapse"), dict)
-    except OSError, ValueError, tomllib.TOMLDecodeError:
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
         return False
     return False
 

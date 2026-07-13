@@ -1,5 +1,7 @@
 """Watch lifecycle, singleton lock, and polling supervisor."""
 
+from __future__ import annotations
+
 import os
 import signal
 import threading
