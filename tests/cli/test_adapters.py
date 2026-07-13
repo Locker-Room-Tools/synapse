@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from synapse.cli import adapters
 from synapse.cli.adapters import (
     BEGIN_MARKER,
     END_MARKER,
@@ -65,13 +66,13 @@ def test_render_mcp_config_uses_codex_toml_shape(tmp_path: Path) -> None:
 
 
 def test_codex_static_template_uses_toml_shape() -> None:
-    """The checked-in Codex template should match the generated config format."""
-    template_path = Path("adapters/codex/mcp-config-template.toml")
+    """The packaged Codex template should match the generated config format."""
+    template_path = adapters.ADAPTERS_ROOT / "codex" / "mcp-config-template.toml"
 
     config = tomllib.loads(template_path.read_text(encoding="utf-8"))
 
     assert config["mcp_servers"]["synapse"]["command"] == "synapse"
-    assert not Path("adapters/codex/mcp-config-template.json").exists()
+    assert not (adapters.ADAPTERS_ROOT / "codex" / "mcp-config-template.json").is_file()
 
 
 def test_render_mcp_config_uses_opencode_local_shape(tmp_path: Path) -> None:

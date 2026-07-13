@@ -57,7 +57,7 @@ implementation appears — for example, the Phase 2 Go indexer.
   (unresolved import target name), and `REFERENCES` (resolved or confidence-marked usage
   edges from reference queries).
 - **`cli`**: provides `index`, `setup`, `serve`, `mcp install`, and `uninstall` commands.
-- **`adapters`**: provides agent-specific metadata and instruction snippets.
+- **`adapters`** (`src/synapse/adapters/`, packaged data): provides agent-specific metadata and instruction snippets.
 - **`cli.installer`**: owns reversible MCP client config writes. JSON configs are merged
   structurally, and Codex TOML config is managed with a marker block so uninstall removes
   only Synapse-owned content.

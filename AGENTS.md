@@ -13,8 +13,8 @@ This file is the contract for any human or AI agent contributing to THIS reposit
 - `src/synapse/core` — core logic: model, parsing, indexing, querying. No MCP imports.
 - `src/synapse/mcp` — FastMCP presentation layer; thin, delegates to `core`.
 - `src/synapse/cli` — CLI entrypoints for indexing, setup, and MCP install helpers.
-- `adapters/` — agent-specific MCP config templates and instruction snippets.
-- `queries/<lang>/*.scm` — declarative tree-sitter queries (the language-agnostic seam).
+- `src/synapse/adapters/` — agent-specific MCP config templates and instruction snippets (packaged data).
+- `src/synapse/queries/<lang>/*.scm` — declarative tree-sitter queries (the language-agnostic seam, packaged data).
 - `docs/architecture.md` — read this before changing structure.
 
 ## Architecture rules

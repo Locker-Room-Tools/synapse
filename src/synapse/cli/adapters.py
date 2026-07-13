@@ -3,12 +3,13 @@
 import json
 import sys
 from dataclasses import dataclass
+from importlib import resources
+from importlib.resources.abc import Traversable
 from pathlib import Path
 
 from synapse.core.workspace import normalize_workspace_path
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-ADAPTERS_ROOT = REPOSITORY_ROOT / "adapters"
+ADAPTERS_ROOT = resources.files("synapse") / "adapters"
 
 BEGIN_MARKER = "<!-- BEGIN SYNAPSE CONTEXT ENGINE -->"
 END_MARKER = "<!-- END SYNAPSE CONTEXT ENGINE -->"
@@ -30,7 +31,7 @@ class AgentAdapter:
 
     id: str
     display_name: str
-    snippet_path: Path
+    snippet_path: Traversable
     default_instruction_file: str
     config: ConfigTarget
     default_scope: str
