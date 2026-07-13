@@ -4,9 +4,10 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+from synapse.mcp.instructions import SERVER_INSTRUCTIONS
 from synapse.mcp.workspace import configure_workspace
 
-mcp = FastMCP("synapse")
+mcp = FastMCP("synapse", instructions=SERVER_INSTRUCTIONS)
 
 
 def run(workspace_path: str | Path = ".") -> None:

@@ -181,6 +181,8 @@ def test_symbol_lookup_tools_delegate_to_the_index(
         "symbols": [],
     }
     assert tools.synapse_workspace_stats() == {"files": 1, "symbols": 1, "languages": []}
+    monkeypatch.setattr(tools, "watch_status_payload", lambda path: {"running": False})
+    assert tools.synapse_watch_status() == {"running": False}
     assert tools.synapse_project_map() == {"tree": {"sample.py": None}, "top_symbols": []}
     assert tools.synapse_get_file_dependencies("/workspace/sample.py") == {
         "file_path": "sample.py",
@@ -227,6 +229,15 @@ def test_synapse_find_references_requires_symbol_id_or_name() -> None:
     """The references tool rejects empty requests."""
     with pytest.raises(ValueError):
         tools.synapse_find_references()
+
+
+def test_entry_tool_docstrings_nudge_synapse_before_raw_search() -> None:
+    """Agent-facing tool descriptions should steer broad navigation to Synapse."""
+    assert "prefer over grep/ripgrep" in (tools.synapse_search_symbols.__doc__ or "")
+    assert "prefer over opening files" in (tools.synapse_get_definition.__doc__ or "")
+    assert "prefer before reading a whole file" in (tools.synapse_get_file_outline.__doc__ or "")
+    assert "prefer over grep" in (tools.synapse_find_references.__doc__ or "")
+    assert "prefer over reading source" in (tools.synapse_compact_context.__doc__ or "")
 
 
 def test_workspace_root_resolves_relative_paths_from_configured_workspace(

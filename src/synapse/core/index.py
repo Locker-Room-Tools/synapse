@@ -211,6 +211,9 @@ class SymbolIndex:
         connection = sqlite3.connect(self.db_path)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = NORMAL")
         return connection
 
     @contextmanager
@@ -358,6 +361,22 @@ class SymbolIndex:
                 return self.list_indexed_files(connection=scoped_connection)
         rows = connection.execute("SELECT * FROM files ORDER BY path").fetchall()
         return [_map_source_file(row) for row in rows]
+
+    def list_symbols_for_file(
+        self,
+        file_path: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[Symbol]:
+        """Return all symbols currently indexed for one file."""
+        if connection is None:
+            with self._connect() as scoped_connection:
+                return self.list_symbols_for_file(file_path, connection=scoped_connection)
+        rows = connection.execute(
+            "SELECT * FROM symbols WHERE file_path = ? ORDER BY start_byte, end_byte, name",
+            (file_path,),
+        ).fetchall()
+        return [_map_symbol(row) for row in rows]
 
     def upsert_symbols(self, symbols: Iterable[Symbol]) -> None:
         """Insert or update symbols."""

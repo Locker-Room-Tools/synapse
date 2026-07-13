@@ -2,31 +2,35 @@
 
 import hashlib
 import os
+import warnings
 from collections.abc import Iterator
 from pathlib import Path
 
+from synapse.core.config import load_default_ignored_directories, load_user_config
 from synapse.core.languages import detect_language
 
-IGNORED_DIRECTORIES = {
-    ".ai",
-    ".git",
-    ".idea",
-    ".mypy_cache",
-    ".ruff_cache",
-    ".venv",
-    "__pycache__",
-    "build",
-    "dist",
-    "node_modules",
-    "venv",
-}
+_EMERGENCY_FALLBACK = frozenset({".git", "__pycache__"})
+
+
+def _active_ignored_directories() -> frozenset[str]:
+    try:
+        defaults = load_default_ignored_directories()
+    except (OSError, ValueError, RuntimeError) as exc:
+        warnings.warn(f"Failed to load package config; using fallback: {exc}", stacklevel=2)
+        defaults = _EMERGENCY_FALLBACK
+    try:
+        return defaults | load_user_config().ignored_directories
+    except (OSError, ValueError) as exc:
+        warnings.warn(f"Failed to load user config; using defaults: {exc}", stacklevel=2)
+        return defaults
 
 
 def iter_source_files(root: Path) -> Iterator[Path]:
     """Yield source files under a workspace root."""
+    ignored_directories = _active_ignored_directories()
     normalized_root = root.resolve()
     for current_root, dir_names, file_names in os.walk(normalized_root, topdown=True):
-        dir_names[:] = sorted(name for name in dir_names if name not in IGNORED_DIRECTORIES)
+        dir_names[:] = sorted(name for name in dir_names if name not in ignored_directories)
         for file_name in sorted(file_names):
             path = Path(current_root) / file_name
             if detect_language(path) is None:

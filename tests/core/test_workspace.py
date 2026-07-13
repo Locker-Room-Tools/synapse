@@ -9,6 +9,9 @@ from synapse.core.workspace import (
     logs_dir,
     metadata_path,
     read_metadata,
+    watch_journal_path,
+    watch_lock_path,
+    watch_state_path,
     workspace_id,
     write_metadata,
 )
@@ -27,6 +30,9 @@ def test_workspace_paths_live_under_the_configured_data_root(
     assert db_path(workspace_root).parent.parent == data_root / "workspaces"
     assert metadata_path(workspace_root).name == "metadata.json"
     assert logs_dir(workspace_root).name == "logs"
+    assert watch_state_path(workspace_root).name == "watch.json"
+    assert watch_lock_path(workspace_root).name == "watch.lock"
+    assert watch_journal_path(workspace_root).name == "watch.journal"
 
 
 def test_workspace_metadata_round_trips(

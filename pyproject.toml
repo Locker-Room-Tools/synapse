@@ -25,6 +25,7 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/synapse"]
+include = ["src/synapse/core/default_ignored_directories.json"]
 
 [tool.ruff]
 line-length = 100

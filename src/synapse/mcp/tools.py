@@ -5,6 +5,7 @@ from pathlib import Path
 
 from synapse.core.index import SymbolIndex, relation_summary, symbol_summary
 from synapse.core.indexing import index_workspace
+from synapse.core.watch.state import watch_status_payload
 from synapse.core.workspace import db_path, normalize_workspace_path
 from synapse.mcp.server import mcp
 from synapse.mcp.workspace import current_workspace
@@ -42,7 +43,7 @@ def synapse_search_symbols(
     limit: int = 20,
     workspace_path: str = ".",
 ) -> dict[str, object]:
-    """Search indexed symbols by name, qualified name, kind, or language."""
+    """Primary symbol lookup; prefer over grep/ripgrep; returns reusable symbol_id."""
     items = _workspace_index(workspace_path).search_symbols(
         query,
         kind=kind,
@@ -58,18 +59,15 @@ def synapse_get_definition(
     name: str | None = None,
     workspace_path: str = ".",
 ) -> dict[str, object] | None:
-    """Return one definition or an ambiguity-preserving candidate list.
-
-    Each result includes a stable `symbol_id` that can be passed directly to
-    `synapse_find_references` without intermediate searches.
-    """
+    """Return a definition with stable symbol_id; prefer over opening files."""
+    if symbol_id is None and name is None:
+        msg = "Either symbol_id or name must be provided."
+        raise ValueError(msg)
     index = _workspace_index(workspace_path)
     if symbol_id is not None:
         symbol = index.get_symbol(symbol_id)
         return symbol_summary(symbol) if symbol is not None else None
-    if name is None:
-        msg = "Either symbol_id or name must be provided."
-        raise ValueError(msg)
+    assert name is not None
     candidates = index.get_definition(name)
     if not candidates:
         return None
@@ -83,7 +81,7 @@ def synapse_get_file_outline(
     file_path: str,
     workspace_path: str = ".",
 ) -> dict[str, object] | None:
-    """Return the nested structural outline for one indexed file."""
+    """Structural outline; prefer before reading a whole file."""
     workspace_root = _workspace_root(workspace_path)
     normalized_file_path = _normalize_file_path(file_path, workspace_root)
     return _workspace_index(workspace_root).get_file_outline(normalized_file_path)
@@ -93,6 +91,12 @@ def synapse_get_file_outline(
 def synapse_workspace_stats(workspace_path: str = ".") -> dict[str, object]:
     """Return indexed workspace statistics (files, symbols, language mix)."""
     return _workspace_index(workspace_path).workspace_stats()
+
+
+@mcp.tool()
+def synapse_watch_status(workspace_path: str = ".") -> dict[str, object]:
+    """Return read-only watch daemon freshness and health status."""
+    return watch_status_payload(_workspace_root(workspace_path))
 
 
 @mcp.tool()
@@ -141,7 +145,7 @@ def synapse_find_references(
     name: str | None = None,
     workspace_path: str = ".",
 ) -> dict[str, object]:
-    """Locate usages of a symbol across the indexed workspace."""
+    """Find usages; prefer over grep across the workspace."""
     if symbol_id is None and name is None:
         msg = "Either symbol_id or name must be provided."
         raise ValueError(msg)
@@ -163,5 +167,5 @@ def synapse_compact_context(
     symbol_id: str,
     workspace_path: str = ".",
 ) -> dict[str, object] | None:
-    """Return the minimum context needed to understand a symbol."""
+    """Minimum context to understand a symbol; prefer over reading source."""
     return _workspace_index(workspace_path).compact_context(symbol_id)

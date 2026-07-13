@@ -11,18 +11,27 @@ import anyio
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from synapse.cli.adapters import get_adapter
+from synapse.cli.adapters import BEGIN_MARKER, END_MARKER, get_adapter, resolve_instruction_path
+from synapse.cli.installer import config_has_mcp_server, resolve_config_path
 from synapse.core.index import SymbolIndex
 from synapse.core.indexing import index_workspace
+from synapse.core.watch.state import watch_status_payload
 from synapse.core.workspace import db_path, normalize_workspace_path
 
 EXPECTED_TOOLS = {
+    "synapse_compact_context",
+    "synapse_find_references",
     "synapse_get_definition",
     "synapse_get_dependencies",
+    "synapse_get_file_dependencies",
     "synapse_get_file_outline",
     "synapse_get_symbol_context",
     "synapse_index_workspace",
+    "synapse_project_map",
+    "synapse_related_symbols",
     "synapse_search_symbols",
+    "synapse_watch_status",
+    "synapse_workspace_stats",
 }
 
 
@@ -44,7 +53,7 @@ class DoctorReport:
     checks: list[DoctorCheck]
 
 
-async def _probe_mcp(workspace_root: Path) -> tuple[list[str], int]:
+async def _probe_mcp(workspace_root: Path) -> tuple[list[str], int, str | None]:
     params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "synapse", "serve", "--workspace", str(workspace_root)],
@@ -54,7 +63,8 @@ async def _probe_mcp(workspace_root: Path) -> tuple[list[str], int]:
     with anyio.fail_after(20):
         async with stdio_client(params) as (read_stream, write_stream):
             async with ClientSession(read_stream, write_stream) as session:
-                await session.initialize()
+                initialized = await session.initialize()
+                instructions = getattr(initialized, "instructions", None)
                 tools_response = await session.list_tools()
                 tool_names = sorted(tool.name for tool in tools_response.tools)
                 result = await session.call_tool(
@@ -65,17 +75,23 @@ async def _probe_mcp(workspace_root: Path) -> tuple[list[str], int]:
     if isinstance(structured, dict):
         items = structured.get("items", [])
         if isinstance(items, list):
-            return tool_names, len(items)
+            return tool_names, len(items), instructions
     content: Any = getattr(result, "content", [])
     if isinstance(content, list):
-        return tool_names, len(content)
-    return tool_names, 0
+        return tool_names, len(content), instructions
+    return tool_names, 0, instructions
 
 
-def run_doctor(path: str | Path = ".", agent: str | None = None) -> DoctorReport:
+def run_doctor(
+    path: str | Path = ".",
+    agent: str | None = None,
+    *,
+    scope: str | None = None,
+) -> DoctorReport:
     """Run installation checks and return a structured report."""
     checks: list[DoctorCheck] = []
     workspace_root = normalize_workspace_path(path)
+    adapter = None
 
     try:
         import synapse
@@ -97,6 +113,57 @@ def run_doctor(path: str | Path = ".", agent: str | None = None) -> DoctorReport
         checks.append(DoctorCheck("workspace", "fail", f"{workspace_root} is not a directory"))
         return DoctorReport(str(workspace_root), agent, checks)
     checks.append(DoctorCheck("workspace", "ok", str(workspace_root)))
+
+    if agent is not None and adapter is not None:
+        resolved_scope = scope or adapter.default_scope
+        try:
+            config_path = resolve_config_path(adapter, workspace_root, resolved_scope)
+            if config_has_mcp_server(agent, workspace_root, scope=resolved_scope):
+                checks.append(
+                    DoctorCheck(
+                        "mcp_config",
+                        "ok",
+                        f"synapse entry found in {config_path}",
+                    )
+                )
+            else:
+                checks.append(
+                    DoctorCheck(
+                        "mcp_config",
+                        "warn",
+                        f"synapse entry not found in {config_path}",
+                    )
+                )
+        except ValueError as exc:
+            checks.append(DoctorCheck("mcp_config", "warn", str(exc)))
+
+        instruction_path = resolve_instruction_path(agent, workspace_root)
+        if instruction_path.exists():
+            instruction_text = instruction_path.read_text(encoding="utf-8")
+            if BEGIN_MARKER in instruction_text and END_MARKER in instruction_text:
+                checks.append(
+                    DoctorCheck(
+                        "instructions",
+                        "ok",
+                        f"Synapse instruction block found in {instruction_path}",
+                    )
+                )
+            else:
+                checks.append(
+                    DoctorCheck(
+                        "instructions",
+                        "warn",
+                        f"Synapse instruction block not found in {instruction_path}",
+                    )
+                )
+        else:
+            checks.append(
+                DoctorCheck(
+                    "instructions",
+                    "warn",
+                    f"instruction file not found at {instruction_path}",
+                )
+            )
 
     try:
         stats = index_workspace(workspace_root)
@@ -120,8 +187,20 @@ def run_doctor(path: str | Path = ".", agent: str | None = None) -> DoctorReport
     else:
         checks.append(DoctorCheck("indexed_files", "ok", f"{indexed_files} files indexed"))
 
+    watch_status = watch_status_payload(workspace_root)
+    if watch_status["running"]:
+        checks.append(DoctorCheck("watch", "ok", f"daemon running via {watch_status['backend']}"))
+    else:
+        checks.append(
+            DoctorCheck(
+                "watch",
+                "warn",
+                "polling daemon not running; index updates require manual indexing until started",
+            )
+        )
+
     try:
-        tool_names, result_count = anyio.run(_probe_mcp, workspace_root)
+        tool_names, result_count, instructions = anyio.run(_probe_mcp, workspace_root)
         missing_tools = sorted(EXPECTED_TOOLS - set(tool_names))
         if missing_tools:
             checks.append(
@@ -129,6 +208,12 @@ def run_doctor(path: str | Path = ".", agent: str | None = None) -> DoctorReport
             )
         else:
             checks.append(DoctorCheck("mcp_tools", "ok", f"{len(tool_names)} tools advertised"))
+        if instructions:
+            checks.append(
+                DoctorCheck("server_instructions", "ok", "server instructions advertised")
+            )
+        else:
+            checks.append(DoctorCheck("server_instructions", "warn", "server instructions missing"))
         checks.append(DoctorCheck("mcp_call", "ok", f"search call returned {result_count} items"))
     except Exception as exc:
         checks.append(DoctorCheck("mcp", "fail", f"MCP probe failed: {exc}"))

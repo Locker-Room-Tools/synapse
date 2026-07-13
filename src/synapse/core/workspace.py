@@ -69,6 +69,21 @@ def logs_dir(path: Path | str) -> Path:
     return directory
 
 
+def watch_state_path(path: Path | str) -> Path:
+    """Return the persisted watch status path for a workspace."""
+    return data_dir(path) / "watch.json"
+
+
+def watch_lock_path(path: Path | str) -> Path:
+    """Return the singleton watch lock path for a workspace."""
+    return data_dir(path) / "watch.lock"
+
+
+def watch_journal_path(path: Path | str) -> Path:
+    """Return the watch batch journal path for a workspace."""
+    return data_dir(path) / "watch.journal"
+
+
 def _utc_now() -> str:
     return datetime.now(tz=UTC).isoformat()
 
