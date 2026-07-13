@@ -186,8 +186,6 @@ def test_to_treesitter_name_uses_language_specific_mapping() -> None:
 def test_language_registry_has_no_duplicate_extensions() -> None:
     """Each auto-detected extension maps to one language id."""
     counts = Counter(
-        extension
-        for language in LANGUAGES.values()
-        for extension in language.extensions
+        extension for language in LANGUAGES.values() for extension in language.extensions
     )
     assert counts.most_common(1)[0][1] == 1

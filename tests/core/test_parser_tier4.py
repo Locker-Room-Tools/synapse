@@ -10,53 +10,42 @@ TIER4_SAMPLES = (
     (
         "fish",
         "sample.fish",
-        "function main\n"
-        "  set name Ada\n"
-        "  helper $name\n"
-        "end\n",
+        "function main\n  set name Ada\n  helper $name\nend\n",
         ("function", "main"),
         "helper",
     ),
     (
         "zsh",
         "sample.zsh",
-        "helper() { echo \"$1\"; }\n"
-        "main() { helper \"$name\"; }\n",
+        'helper() { echo "$1"; }\nmain() { helper "$name"; }\n',
         ("function", "main"),
         "helper",
     ),
     (
         "nushell",
         "sample.nu",
-        "def helper [] {}\n"
-        "def main [] { helper }\n",
+        "def helper [] {}\ndef main [] { helper }\n",
         ("function", "main"),
         "helper",
     ),
     (
         "awk",
         "sample.awk",
-        "function helper(x) { return x }\n"
-        "function main() { helper(value) }\n",
+        "function helper(x) { return x }\nfunction main() { helper(value) }\n",
         ("function", "main"),
         "helper",
     ),
     (
         "vimscript",
         "sample.vim",
-        "function! Helper()\n"
-        "endfunction\n"
-        "function! Main()\n"
-        "  call Helper()\n"
-        "endfunction\n",
+        "function! Helper()\nendfunction\nfunction! Main()\n  call Helper()\nendfunction\n",
         ("function", "Main"),
         "Helper",
     ),
     (
         "emacs_lisp",
         "sample.el",
-        "(defun helper (x) x)\n"
-        "(defun main () (helper 1))\n",
+        "(defun helper (x) x)\n(defun main () (helper 1))\n",
         ("function", "main"),
         "helper",
     ),

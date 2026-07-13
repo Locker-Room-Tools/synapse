@@ -43,7 +43,6 @@ class WatchBackend(Protocol):
         """Stop capturing filesystem changes."""
 
 
-
 @dataclass(slots=True)
 class PollingWatchBackend:
     """Dependency-free backend descriptor for reconcile-only polling mode."""

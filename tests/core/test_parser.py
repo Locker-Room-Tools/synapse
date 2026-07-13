@@ -51,14 +51,7 @@ def test_parse_file_extracts_bash_symbols(tmp_path: Path) -> None:
     """The parser extracts Bash functions, assignments, and local references."""
     file_path = tmp_path / "sample.sh"
     file_path.write_text(
-        "VALUE=1\n"
-        "name=world\n\n"
-        "helper() {\n"
-        "    echo \"$VALUE\"\n"
-        "}\n\n"
-        "main() {\n"
-        "    helper\n"
-        "}\n",
+        'VALUE=1\nname=world\n\nhelper() {\n    echo "$VALUE"\n}\n\nmain() {\n    helper\n}\n',
         encoding="utf-8",
     )
 
@@ -458,7 +451,7 @@ def test_parse_file_extracts_vue_symbols(tmp_path: Path) -> None:
         "<script>\n"
         "import { helper } from './mod'\n"
         "</script>\n"
-        "<template><Widget :value=\"name\" /></template>\n",
+        '<template><Widget :value="name" /></template>\n',
         encoding="utf-8",
     )
 
@@ -501,8 +494,7 @@ def test_parse_file_extracts_angular_template_symbols(tmp_path: Path) -> None:
     """The parser extracts conservative Angular template symbols and refs."""
     file_path = tmp_path / "sample.html"
     file_path.write_text(
-        "<app-root><button (click)=\"save(name)\">{{title}}</button>"
-        "<div #panel></div></app-root>\n",
+        '<app-root><button (click)="save(name)">{{title}}</button><div #panel></div></app-root>\n',
         encoding="utf-8",
     )
 
@@ -1047,7 +1039,7 @@ def test_parse_file_extracts_scala_symbols(tmp_path: Path) -> None:
         "package sample.app\n\n"
         "import scala.util.Try\n\n"
         "object Main {\n"
-        "  val greeting = \"hi\"\n\n"
+        '  val greeting = "hi"\n\n'
         "  def helper(): String = greeting\n"
         "}\n\n"
         "class Greeter {\n"

@@ -119,9 +119,13 @@ def index_workspace(workspace_path: str | Path = ".", *, force: bool = False) ->
                 indexed_files += 1
 
             removed_paths = sorted(set(existing_files) - seen_paths)
-            removed_files = 0 if force else index.remove_files(
-                removed_paths,
-                connection=connection,
+            removed_files = (
+                0
+                if force
+                else index.remove_files(
+                    removed_paths,
+                    connection=connection,
+                )
             )
             name_index = index.symbol_name_index(connection=connection)
             for file_id, raw_references in raw_references_by_file.items():

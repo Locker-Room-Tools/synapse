@@ -11,12 +11,12 @@ TIER3_SAMPLES = (
         "astro",
         "sample.astro",
         "---\n"
-        "import Header from \"./Header.astro\";\n"
-        "const title = \"Hi\";\n"
+        'import Header from "./Header.astro";\n'
+        'const title = "Hi";\n'
         "function greet(name) { return title; }\n"
         "---\n"
         "<Header title={title} />\n"
-        "<h1>{greet(\"Ada\")}</h1>\n",
+        '<h1>{greet("Ada")}</h1>\n',
         ("module", "Header"),
         "title",
     ),
@@ -30,7 +30,7 @@ TIER3_SAMPLES = (
         "helper name =\n"
         "    text name\n\n"
         "main =\n"
-        "    helper \"Ada\"\n",
+        '    helper "Ada"\n',
         ("function", "main"),
         "helper",
     ),
@@ -44,7 +44,7 @@ TIER3_SAMPLES = (
         "type Model = { name :: String }\n\n"
         "helper :: String -> String\n"
         "helper name = name\n\n"
-        "main = helper \"Ada\"\n",
+        'main = helper "Ada"\n',
         ("function", "main"),
         "helper",
     ),
@@ -55,7 +55,7 @@ TIER3_SAMPLES = (
         "pub type Msg {\n"
         "  NoOp\n"
         "}\n\n"
-        "const title = \"Hi\"\n\n"
+        'const title = "Hi"\n\n'
         "fn helper(name: String) -> String {\n"
         "  name\n"
         "}\n\n"
@@ -74,14 +74,14 @@ TIER3_SAMPLES = (
         "}\n\n"
         "type msg = NoOp\n"
         "let helper = value => value\n"
-        "let main = helper(\"Ada\")\n",
+        'let main = helper("Ada")\n',
         ("function", "main"),
         "helper",
     ),
     (
         "scss",
         "sample.scss",
-        "@use \"sass:color\";\n"
+        '@use "sass:color";\n'
         "$primary: #0366d6;\n"
         "@mixin button($color) { color: $color; }\n"
         "@function double($value) { @return $value * 2; }\n"
@@ -92,7 +92,7 @@ TIER3_SAMPLES = (
     (
         "less",
         "sample.less",
-        "@import \"theme.less\";\n"
+        '@import "theme.less";\n'
         "@primary: #0366d6;\n"
         ".button-mixin(@color) { color: @color; }\n"
         ".card { .button-mixin(@primary); }\n",

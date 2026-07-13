@@ -14,7 +14,7 @@ TIER2_SAMPLES = (
         "procedure Main is\n"
         "   X : Integer := 1;\n"
         "begin\n"
-        "   Put_Line(\"hi\");\n"
+        '   Put_Line("hi");\n'
         "end Main;\n",
         ("function", "Main"),
         "Put_Line",
@@ -56,7 +56,7 @@ TIER2_SAMPLES = (
     (
         "crystal",
         "sample.cr",
-        "require \"json\"\n"
+        'require "json"\n'
         "class Greeter\n"
         "  VALUE = 1\n"
         "  @name : String\n"
