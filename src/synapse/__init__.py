@@ -1,3 +1,8 @@
 """Synapse MCP package."""
 
-__version__ = "0.1.0"
+from importlib import metadata
+
+try:
+    __version__ = metadata.version("synapse-mcp")
+except metadata.PackageNotFoundError:  # running from a source tree without install
+    __version__ = "0.0.0"
