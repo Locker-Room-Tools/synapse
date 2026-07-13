@@ -28,6 +28,7 @@ dependencies = [
 dev = [
     "mypy>=1.11",
     "pytest>=8",
+    "pytest-cov>=7.1.0",
     "ruff>=0.6",
 ]
 
@@ -59,3 +60,13 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 python_version = "3.12"
 strict = true
 files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["synapse"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true

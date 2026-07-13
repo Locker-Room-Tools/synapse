@@ -28,8 +28,8 @@ jobs:
         run: uv run ruff format --check
       - name: Mypy
         run: uv run mypy
-      - name: Pytest
-        run: uv run pytest -q
+      - name: Pytest with coverage floor
+        run: uv run pytest -q --cov=synapse
 
   packaging-smoke:
     name: Packaging smoke (installed wheel)
