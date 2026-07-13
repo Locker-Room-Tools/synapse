@@ -1,5 +1,6 @@
 """Supported language registry and tree-sitter name helpers."""
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -425,13 +426,35 @@ LANGUAGES: dict[str, LanguageSpec] = {
     ),
 }
 
-_EXTENSION_TO_LANGUAGE = {
-    extension: language.id for language in LANGUAGES.values() for extension in language.extensions
+# Contested extensions are assigned to exactly one language until content-aware
+# detection exists: .m -> matlab (objc claims only .mm), .h -> c (not cpp),
+# .v -> verilog (not coq). Losing languages must not list the extension.
+def _build_extension_map(languages: Iterable[LanguageSpec]) -> dict[str, str]:
+    mapping: dict[str, str] = {}
+    for language in languages:
+        for extension in language.extensions:
+            claimed_by = mapping.get(extension)
+            if claimed_by is not None:
+                msg = f"Extension {extension!r} claimed by both {claimed_by!r} and {language.id!r}"
+                raise ValueError(msg)
+            mapping[extension] = language.id
+    return mapping
+
+
+_EXTENSION_TO_LANGUAGE = _build_extension_map(LANGUAGES.values())
+
+# Compound-suffix conventions checked before plain extension lookup.
+_FILENAME_SUFFIX_TO_LANGUAGE = {
+    ".component.html": "angular_template",
 }
 
 
 def detect_language(path: Path) -> str | None:
     """Return the normalized language id for a file path when supported."""
+    name = path.name.lower()
+    for suffix, language_id in _FILENAME_SUFFIX_TO_LANGUAGE.items():
+        if name.endswith(suffix) and len(name) > len(suffix):
+            return language_id
     return _EXTENSION_TO_LANGUAGE.get(path.suffix.lower())
 
 

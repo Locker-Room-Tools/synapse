@@ -3,7 +3,15 @@
 from collections import Counter
 from pathlib import Path
 
-from synapse.core.languages import LANGUAGES, detect_language, to_treesitter_name
+import pytest
+
+from synapse.core.languages import (
+    LANGUAGES,
+    LanguageSpec,
+    _build_extension_map,
+    detect_language,
+    to_treesitter_name,
+)
 
 
 def test_detect_language_by_extension() -> None:
@@ -108,7 +116,26 @@ def test_detect_language_uses_documented_collision_policy() -> None:
     """Extension collisions stay deterministic until content-aware detection exists."""
     assert detect_language(Path("main.m")) == "matlab"
     assert detect_language(Path("main.mm")) == "objc"
-    assert detect_language(Path("app.component.html")) is None
+    assert detect_language(Path("header.h")) == "c"
+    assert detect_language(Path("design.v")) == "verilog"
+
+
+def test_detect_language_matches_angular_component_templates() -> None:
+    """Angular's compound suffix convention routes templates to angular_template."""
+    assert detect_language(Path("app.component.html")) == "angular_template"
+    assert detect_language(Path("APP.COMPONENT.HTML")) == "angular_template"
+    assert detect_language(Path("index.html")) is None
+    assert detect_language(Path(".component.html")) is None
+
+
+def test_extension_map_rejects_duplicate_claims() -> None:
+    """Two languages claiming one extension is a registry bug, not a silent override."""
+    specs = [
+        LanguageSpec(id="a", tree_sitter_name="a", extensions=(".x",), query_dir="a"),
+        LanguageSpec(id="b", tree_sitter_name="b", extensions=(".x",), query_dir="b"),
+    ]
+    with pytest.raises(ValueError, match="claimed by both"):
+        _build_extension_map(specs)
 
 
 def test_to_treesitter_name_uses_language_specific_mapping() -> None:
