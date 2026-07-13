@@ -1,0 +1,2 @@
+(call
+  target: (identifier) @reference)

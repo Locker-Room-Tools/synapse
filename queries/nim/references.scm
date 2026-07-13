@@ -1,0 +1,3 @@
+(primary
+  (symbol) @reference
+  (primarySuffix))

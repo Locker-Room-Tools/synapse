@@ -47,6 +47,540 @@ def test_parse_file_extracts_python_symbols_with_nesting(tmp_path: Path) -> None
     assert by_name["helper"].id == "python:sample.py:function:helper:14"
 
 
+def test_parse_file_extracts_bash_symbols(tmp_path: Path) -> None:
+    """The parser extracts Bash functions, assignments, and local references."""
+    file_path = tmp_path / "sample.sh"
+    file_path.write_text(
+        "VALUE=1\n"
+        "name=world\n\n"
+        "helper() {\n"
+        "    echo \"$VALUE\"\n"
+        "}\n\n"
+        "main() {\n"
+        "    helper\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "bash", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    assert by_kind_name[("function", "helper")].name == "helper"
+    assert by_kind_name[("function", "main")].name == "main"
+    assert by_kind_name[("constant", "VALUE")].name == "VALUE"
+    assert by_kind_name[("variable", "name")].name == "name"
+
+    references = extract_references(file_path, "bash", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "helper" in reference_names
+    assert "VALUE" in reference_names
+
+
+def test_parse_file_extracts_powershell_symbols(tmp_path: Path) -> None:
+    """The parser extracts PowerShell classes, members, functions, and references."""
+    file_path = tmp_path / "sample.ps1"
+    file_path.write_text(
+        "class Greeter {\n"
+        "    [string] $Name\n\n"
+        "    [string] Greet() {\n"
+        "        return $this.Name\n"
+        "    }\n"
+        "}\n\n"
+        "function Invoke-Greeting {\n"
+        "    Get-Item .\n"
+        "    $g = [Greeter]::new()\n"
+        "    $g.Greet()\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "powershell", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    greeter = by_kind_name[("class", "Greeter")]
+    greet = by_kind_name[("method", "Greet")]
+    assert by_kind_name[("function", "Invoke-Greeting")].name == "Invoke-Greeting"
+    assert ("field", "$Name") in by_kind_name or ("field", "Name") in by_kind_name
+    assert greet.container_id == greeter.id
+
+    references = extract_references(file_path, "powershell", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "Get-Item" in reference_names
+    assert "Greet" in reference_names
+
+
+def test_parse_file_extracts_r_symbols(tmp_path: Path) -> None:
+    """The parser extracts R functions, assignments, imports, and references."""
+    file_path = tmp_path / "sample.R"
+    file_path.write_text(
+        "library(stats)\n"
+        "VALUE <- 1\n"
+        "threshold = 0.5\n\n"
+        "fit_model <- function(data) {\n"
+        "    model <- lm(y ~ x, data=data)\n"
+        "    stats::predict(model)\n"
+        "}\n\n"
+        "report = function(data) {\n"
+        "    fit_model(data)\n"
+        "}\n\n"
+        "(function(x) x) -> summarize\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "r", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    fit_model = by_kind_name[("function", "fit_model")]
+    model = by_kind_name[("variable", "model")]
+    assert by_kind_name[("function", "report")].name == "report"
+    assert by_kind_name[("function", "summarize")].name == "summarize"
+    assert by_kind_name[("constant", "VALUE")].name == "VALUE"
+    assert by_kind_name[("variable", "threshold")].name == "threshold"
+    assert by_kind_name[("import", "stats")].name == "stats"
+    assert model.container_id == fit_model.id
+
+    references = extract_references(file_path, "r", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "lm" in reference_names
+    assert "fit_model" in reference_names
+    assert "predict" in reference_names
+
+
+def test_parse_file_extracts_julia_symbols(tmp_path: Path) -> None:
+    """The parser extracts Julia modules, types, functions, imports, and references."""
+    file_path = tmp_path / "sample.jl"
+    file_path.write_text(
+        "module DemoML\n"
+        "using Statistics\n"
+        "const VALUE = 1\n\n"
+        "struct Dataset\n"
+        "    values\n"
+        "end\n\n"
+        "abstract type Model end\n\n"
+        "function train(data)\n"
+        "    return mean(data)\n"
+        "end\n\n"
+        "macro trace(expr)\n"
+        "    return expr\n"
+        "end\n\n"
+        "score = train([1, 2, 3])\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "julia", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    module = by_kind_name[("module", "DemoML")]
+    train = by_kind_name[("function", "train")]
+    assert by_kind_name[("import", "Statistics")].name == "Statistics"
+    assert by_kind_name[("constant", "VALUE")].name == "VALUE"
+    assert by_kind_name[("struct", "Dataset")].name == "Dataset"
+    assert by_kind_name[("type", "Model")].name == "Model"
+    assert by_kind_name[("function", "trace")].name == "trace"
+    assert by_kind_name[("variable", "score")].name == "score"
+    assert train.container_id == module.id
+    assert train.qualified_name is not None
+    assert train.qualified_name.endswith("DemoML.train")
+
+    references = extract_references(file_path, "julia", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "mean" in reference_names
+    assert "train" in reference_names
+
+
+def test_parse_file_extracts_haskell_symbols(tmp_path: Path) -> None:
+    """The parser extracts Haskell modules, imports, types, and functions."""
+    file_path = tmp_path / "sample.hs"
+    file_path.write_text(
+        "module Demo where\n"
+        "import Data.List\n\n"
+        "data Person = Person\n\n"
+        "helper x = x\n"
+        "main = helper 1\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "haskell", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    assert by_kind_name[("module", "Demo")].name == "Demo"
+    assert by_kind_name[("import", "Data.List")].name == "Data.List"
+    assert by_kind_name[("type", "Person")].name == "Person"
+    assert by_kind_name[("function", "helper")].name == "helper"
+
+    references = extract_references(file_path, "haskell", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "helper" in reference_names
+
+
+def test_parse_file_extracts_elixir_symbols(tmp_path: Path) -> None:
+    """The parser extracts Elixir modules, imports, functions, fields, and refs."""
+    file_path = tmp_path / "sample.ex"
+    file_path.write_text(
+        "defmodule Demo do\n"
+        "  import Kernel\n"
+        "  defstruct [:name]\n"
+        "  def greet(name), do: helper(name)\n"
+        "  defp helper(name), do: name\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "elixir", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    assert by_kind_name[("module", "Demo")].name == "Demo"
+    assert by_kind_name[("import", "Kernel")].name == "Kernel"
+    assert by_kind_name[("field", ":name")].name == ":name"
+    assert by_kind_name[("function", "greet")].name == "greet"
+    assert by_kind_name[("function", "helper")].name == "helper"
+
+    references = extract_references(file_path, "elixir", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "helper" in reference_names
+
+
+def test_parse_file_extracts_ocaml_symbols(tmp_path: Path) -> None:
+    """The parser extracts OCaml modules, types, functions, and refs."""
+    file_path = tmp_path / "sample.ml"
+    file_path.write_text(
+        "module Demo = struct\n"
+        "  type person = { name: string }\n"
+        "  let helper x = x\n"
+        "end\n"
+        "let value = Demo.helper 1\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "ocaml", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    assert by_kind_name[("module", "Demo")].name == "Demo"
+    assert by_kind_name[("type", "person")].name == "person"
+    assert by_kind_name[("function", "helper")].name == "helper"
+
+    references = extract_references(file_path, "ocaml", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "helper" in reference_names
+
+
+def test_parse_file_extracts_fsharp_symbols(tmp_path: Path) -> None:
+    """The parser extracts F# modules, imports, records, values, and refs."""
+    file_path = tmp_path / "sample.fs"
+    file_path.write_text(
+        "module Demo\n"
+        "open System\n"
+        "type Person = { Name: string }\n"
+        "let helper x = x\n"
+        "let value = helper 1\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "fsharp", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    assert by_kind_name[("module", "Demo")].name == "Demo"
+    assert by_kind_name[("import", "System")].name == "System"
+    assert by_kind_name[("record", "Person")].name == "Person"
+    assert by_kind_name[("function", "helper")].name == "helper"
+    assert by_kind_name[("variable", "value")].name == "value"
+
+    references = extract_references(file_path, "fsharp", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "helper" in reference_names
+
+
+def test_parse_file_extracts_clojure_symbols(tmp_path: Path) -> None:
+    """The parser extracts Clojure namespaces, vars, records, and refs."""
+    file_path = tmp_path / "sample.clj"
+    file_path.write_text(
+        "(ns demo.core (:require [clojure.string :as str]))\n"
+        "(def VALUE 1)\n"
+        "(defn helper [x] (str/upper-case x))\n"
+        "(defrecord Person [name])\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "clojure", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    assert by_kind_name[("module", "demo.core")].name == "demo.core"
+    assert by_kind_name[("constant", "VALUE")].name == "VALUE"
+    assert by_kind_name[("function", "helper")].name == "helper"
+    assert by_kind_name[("record", "Person")].name == "Person"
+
+    references = extract_references(file_path, "clojure", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "upper-case" in reference_names
+
+
+def test_parse_file_extracts_erlang_symbols(tmp_path: Path) -> None:
+    """The parser extracts Erlang modules, imports, records, functions, and refs."""
+    file_path = tmp_path / "sample.erl"
+    file_path.write_text(
+        "-module(demo).\n"
+        "-import(lists, [map/2]).\n"
+        "-record(person, {name}).\n"
+        "helper(X) -> X.\n"
+        "main() -> helper(1).\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "erlang", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    assert by_kind_name[("module", "demo")].name == "demo"
+    assert by_kind_name[("import", "lists")].name == "lists"
+    assert by_kind_name[("record", "person")].name == "person"
+    assert by_kind_name[("field", "name")].name == "name"
+    assert by_kind_name[("function", "helper")].name == "helper"
+    assert by_kind_name[("function", "main")].name == "main"
+
+    references = extract_references(file_path, "erlang", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "helper" in reference_names
+
+
+def test_parse_file_extracts_sql_symbols(tmp_path: Path) -> None:
+    """The parser extracts SQL tables, views, columns, and references."""
+    file_path = tmp_path / "sample.sql"
+    file_path.write_text(
+        "CREATE TABLE users (id INT, name TEXT);\n"
+        "CREATE VIEW active_users AS SELECT name FROM users;\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "sql", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    users = by_kind_name[("struct", "users")]
+    name = by_kind_name[("field", "name")]
+    assert by_kind_name[("field", "id")].name == "id"
+    assert by_kind_name[("struct", "active_users")].name == "active_users"
+    assert name.container_id == users.id
+
+    references = extract_references(file_path, "sql", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "users" in reference_names
+
+
+def test_parse_file_extracts_objc_symbols(tmp_path: Path) -> None:
+    """The parser extracts Objective-C imports, classes, properties, and refs."""
+    file_path = tmp_path / "sample.mm"
+    file_path.write_text(
+        "#import <Foundation/Foundation.h>\n"
+        "@interface Greeter : NSObject\n"
+        "@property NSString *name;\n"
+        "- (NSString *)greet;\n"
+        "@end\n"
+        "@implementation Greeter\n"
+        "- (NSString *)greet { return helper(_name); }\n"
+        "@end\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "objc", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    assert by_kind_name[("import", "<Foundation/Foundation.h>")].name == "<Foundation/Foundation.h>"
+    assert by_kind_name[("class", "Greeter")].name == "Greeter"
+    assert by_kind_name[("property", "name")].name == "name"
+    assert by_kind_name[("method", "greet")].name == "greet"
+
+    references = extract_references(file_path, "objc", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "helper" in reference_names
+
+
+def test_parse_file_extracts_perl_symbols(tmp_path: Path) -> None:
+    """The parser extracts Perl packages, imports, constants, functions, and refs."""
+    file_path = tmp_path / "sample.pl"
+    file_path.write_text(
+        "package Demo;\n"
+        "use strict;\n"
+        "our $VALUE = 1;\n"
+        "sub helper { return $VALUE; }\n"
+        "sub main { return helper(); }\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "perl", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    assert by_kind_name[("package", "Demo")].name == "Demo"
+    assert by_kind_name[("import", "strict")].name == "strict"
+    assert by_kind_name[("constant", "VALUE")].name == "VALUE"
+    assert by_kind_name[("function", "helper")].name == "helper"
+    assert by_kind_name[("function", "main")].name == "main"
+
+    references = extract_references(file_path, "perl", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "helper" in reference_names
+
+
+def test_parse_file_extracts_zig_symbols(tmp_path: Path) -> None:
+    """The parser extracts Zig imports, structs, methods, functions, and refs."""
+    file_path = tmp_path / "sample.zig"
+    file_path.write_text(
+        'const std = @import("std");\n'
+        "const Person = struct {\n"
+        "    name: []const u8,\n"
+        "    pub fn greet(self: Person) []const u8 {\n"
+        "        return helper(self.name);\n"
+        "    }\n"
+        "};\n\n"
+        "fn helper(name: []const u8) []const u8 {\n"
+        "    return name;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "zig", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    person = by_kind_name[("struct", "Person")]
+    assert by_kind_name[("import", "std")].name == "std"
+    assert by_kind_name[("field", "name")].name == "name"
+    assert by_kind_name[("method", "greet")].name == "greet"
+    assert by_kind_name[("function", "helper")].name == "helper"
+    assert by_kind_name[("method", "greet")].container_id == person.id
+
+    references = extract_references(file_path, "zig", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "helper" in reference_names
+
+
+def test_parse_file_extracts_vue_symbols(tmp_path: Path) -> None:
+    """The parser extracts conservative Vue module symbols and template refs."""
+    file_path = tmp_path / "sample.vue"
+    file_path.write_text(
+        "<script>\n"
+        "import { helper } from './mod'\n"
+        "</script>\n"
+        "<template><Widget :value=\"name\" /></template>\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "vue", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    assert by_kind_name[("module", "script")].name == "script"
+    assert by_kind_name[("module", "template")].name == "template"
+
+    references = extract_references(file_path, "vue", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "Widget" in reference_names
+    assert "name" in reference_names
+
+
+def test_parse_file_extracts_svelte_symbols(tmp_path: Path) -> None:
+    """The parser extracts conservative Svelte module symbols and refs."""
+    file_path = tmp_path / "sample.svelte"
+    file_path.write_text(
+        "<script>\n"
+        '  import Widget from "./Widget.svelte";\n'
+        "</script>\n"
+        "<button on:click={greet}>{name}</button>\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "svelte", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    assert by_kind_name[("module", "script")].name == "script"
+    assert by_kind_name[("module", "button")].name == "button"
+
+    references = extract_references(file_path, "svelte", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "greet" in reference_names
+    assert "name" in reference_names
+
+
+def test_parse_file_extracts_angular_template_symbols(tmp_path: Path) -> None:
+    """The parser extracts conservative Angular template symbols and refs."""
+    file_path = tmp_path / "sample.html"
+    file_path.write_text(
+        "<app-root><button (click)=\"save(name)\">{{title}}</button>"
+        "<div #panel></div></app-root>\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "angular_template", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    assert by_kind_name[("module", "app-root")].name == "app-root"
+    assert by_kind_name[("variable", "#panel")].name == "#panel"
+
+    references = extract_references(file_path, "angular_template", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "button" in reference_names
+    assert "save(name)" in reference_names
+
+
+def test_parse_file_extracts_groovy_symbols(tmp_path: Path) -> None:
+    """The parser extracts Groovy packages, imports, types, members, and refs."""
+    file_path = tmp_path / "sample.groovy"
+    file_path.write_text(
+        "package demo\n"
+        "import helper.Util\n"
+        "class Greeter {\n"
+        "  String name\n"
+        "  String greet() { helper(name) }\n"
+        "}\n"
+        "def helper(value) { value }\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "groovy", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    assert by_kind_name[("package", "demo")].name == "demo"
+    assert by_kind_name[("import", "helper.Util")].name == "helper.Util"
+    assert by_kind_name[("class", "Greeter")].name == "Greeter"
+    assert by_kind_name[("field", "name")].name == "name"
+    assert by_kind_name[("method", "greet")].name == "greet"
+    assert by_kind_name[("function", "helper")].name == "helper"
+
+    references = extract_references(file_path, "groovy", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "helper" in reference_names
+
+
+def test_parse_file_extracts_matlab_symbols(tmp_path: Path) -> None:
+    """The parser extracts MATLAB functions, classes, properties, methods, and refs."""
+    file_path = tmp_path / "sample.m"
+    file_path.write_text(
+        "function out = helper(x)\n"
+        "out = x;\n"
+        "end\n\n"
+        "classdef Greeter\n"
+        "  properties\n"
+        "    Name\n"
+        "  end\n"
+        "  methods\n"
+        "    function out = greet(obj)\n"
+        "      out = helper(obj.Name);\n"
+        "    end\n"
+        "  end\n"
+        "end\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "matlab", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    greeter = by_kind_name[("class", "Greeter")]
+    assert by_kind_name[("function", "helper")].name == "helper"
+    assert by_kind_name[("property", "Name")].name == "Name"
+    assert by_kind_name[("method", "greet")].name == "greet"
+    assert by_kind_name[("method", "greet")].container_id == greeter.id
+
+    references = extract_references(file_path, "matlab", symbols)
+    reference_names = {reference.name for reference in references}
+    assert "helper" in reference_names
+
+
 def test_equal_span_symbols_do_not_become_each_others_containers() -> None:
     """Equal Tree-sitter match spans do not create recursive parent cycles."""
     items = [
