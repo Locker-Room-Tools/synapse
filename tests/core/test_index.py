@@ -1,5 +1,6 @@
 """Tests for the SQLite symbol index."""
 
+import sqlite3
 from pathlib import Path
 from typing import cast
 
@@ -76,6 +77,50 @@ def test_index_supports_search_definition_outline_and_context(tmp_path: Path) ->
     assert symbol_payload["name"] == "method"
     assert parent_payload["name"] == "Example"
     assert "def method" in body
+
+
+def test_search_symbols_matches_prefix_substring_and_filters(tmp_path: Path) -> None:
+    """FTS prefix search, substring fallback, and kind/language filters agree."""
+    index, _ = _build_index(tmp_path)
+
+    assert [item.name for item in index.search_symbols("help")] == ["helper"]
+    assert [item.name for item in index.search_symbols("elpe")] == ["helper"]
+    assert [item.name for item in index.search_symbols("helper", kind="function")] == ["helper"]
+    assert index.search_symbols("helper", kind="class") == []
+    assert index.search_symbols("helper", language="go") == []
+    assert index.search_symbols("no_such_symbol") == []
+    assert index.search_symbols('quote"quote') == []
+
+    exact_first = index.search_symbols("Example")
+    assert exact_first and exact_first[0].name == "Example"
+
+
+def test_search_symbols_stays_in_sync_after_replace_and_remove(tmp_path: Path) -> None:
+    """The FTS table tracks symbol rewrites and cascade deletes."""
+    index, symbols = _build_index(tmp_path)
+
+    index.replace_symbols_for_file("sample.py", [], [])
+    assert index.search_symbols("helper") == []
+
+    index.replace_symbols_for_file("sample.py", symbols, [])
+    assert [item.name for item in index.search_symbols("helper")] == ["helper"]
+
+    assert index.remove_files(["sample.py"]) == 1
+    assert index.search_symbols("helper") == []
+
+
+def test_search_symbols_survives_schema_migration(tmp_path: Path) -> None:
+    """Reopening a database created before the FTS table rebuilds the search index."""
+    index, _ = _build_index(tmp_path)
+    with sqlite3.connect(tmp_path / "index.sqlite") as connection:
+        connection.execute("DROP TRIGGER symbols_fts_after_insert")
+        connection.execute("DROP TRIGGER symbols_fts_after_delete")
+        connection.execute("DROP TRIGGER symbols_fts_after_update")
+        connection.execute("DROP TABLE symbols_fts")
+        connection.execute("PRAGMA user_version = 0")
+
+    reopened = SymbolIndex(tmp_path / "index.sqlite")
+    assert [item.name for item in reopened.search_symbols("helper")] == ["helper"]
 
 
 def test_get_dependencies_returns_outgoing_relations(tmp_path: Path) -> None:

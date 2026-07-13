@@ -9,6 +9,8 @@ from synapse.core.models import Confidence, Relation, RelationKind, SourceFile, 
 
 DEFAULT_DB_NAME = "index.sqlite"
 
+SCHEMA_VERSION = 2
+
 SCHEMA = """
 PRAGMA foreign_keys = ON;
 
@@ -65,6 +67,29 @@ CREATE INDEX IF NOT EXISTS idx_relations_from_symbol_id ON relations(from_symbol
 CREATE INDEX IF NOT EXISTS idx_relations_kind ON relations(kind);
 CREATE INDEX IF NOT EXISTS idx_relations_to_name ON relations(to_name);
 CREATE INDEX IF NOT EXISTS idx_relations_from_file_path ON relations(from_file_path);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
+    name, qualified_name, file_path,
+    content='symbols',
+    content_rowid='rowid'
+);
+
+CREATE TRIGGER IF NOT EXISTS symbols_fts_after_insert AFTER INSERT ON symbols BEGIN
+    INSERT INTO symbols_fts(rowid, name, qualified_name, file_path)
+    VALUES (new.rowid, new.name, new.qualified_name, new.file_path);
+END;
+
+CREATE TRIGGER IF NOT EXISTS symbols_fts_after_delete AFTER DELETE ON symbols BEGIN
+    INSERT INTO symbols_fts(symbols_fts, rowid, name, qualified_name, file_path)
+    VALUES ('delete', old.rowid, old.name, old.qualified_name, old.file_path);
+END;
+
+CREATE TRIGGER IF NOT EXISTS symbols_fts_after_update AFTER UPDATE ON symbols BEGIN
+    INSERT INTO symbols_fts(symbols_fts, rowid, name, qualified_name, file_path)
+    VALUES ('delete', old.rowid, old.name, old.qualified_name, old.file_path);
+    INSERT INTO symbols_fts(rowid, name, qualified_name, file_path)
+    VALUES (new.rowid, new.name, new.qualified_name, new.file_path);
+END;
 """
 
 
@@ -190,6 +215,15 @@ def _insert_relation_rows(
     )
 
 
+def _fts_prefix_query(query: str) -> str:
+    escaped = query.replace('"', '""')
+    return f'"{escaped}"*'
+
+
+def _escape_like(query: str) -> str:
+    return query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _name_stem(name: str) -> str:
     suffixes = ("Handler", "Endpoint", "Service", "Repository", "Command", "Query")
     for suffix in suffixes:
@@ -205,7 +239,11 @@ class SymbolIndex:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             connection.executescript(SCHEMA)
+            if version < SCHEMA_VERSION:
+                connection.execute("INSERT INTO symbols_fts(symbols_fts) VALUES ('rebuild')")
+                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.db_path)
@@ -395,32 +433,77 @@ class SymbolIndex:
         language: str | None = None,
         limit: int = 20,
     ) -> list[Symbol]:
-        """Search symbols by name or qualified name."""
+        """Search symbols by name or qualified name (FTS prefix first, substring fallback)."""
         normalized_limit = max(1, limit)
-        where_clauses = ["(name LIKE ? OR COALESCE(qualified_name, '') LIKE ? OR file_path LIKE ?)"]
-        params: list[object] = [f"%{query}%", f"%{query}%", f"%{query}%"]
+        filter_clauses: list[str] = []
+        filter_params: list[object] = []
         if kind is not None:
-            where_clauses.append("kind = ?")
-            params.append(str(kind))
+            filter_clauses.append("kind = ?")
+            filter_params.append(str(kind))
         if language is not None:
-            where_clauses.append("language = ?")
-            params.append(language)
-        params.extend([query, query, f"{query}%", normalized_limit])
-        sql = f"""
-            SELECT *
-            FROM symbols
-            WHERE {" AND ".join(where_clauses)}
+            filter_clauses.append("language = ?")
+            filter_params.append(language)
+        ranking = """
             ORDER BY
                 CASE WHEN name = ? THEN 0 ELSE 1 END,
                 CASE WHEN qualified_name = ? THEN 0 ELSE 1 END,
                 CASE WHEN name LIKE ? THEN 0 ELSE 1 END,
                 length(name),
                 start_line
-            LIMIT ?
         """
+        ranking_params: list[object] = [query, query, f"{query}%"]
+
         with self._connect() as connection:
-            rows = connection.execute(sql, params).fetchall()
-        return [_map_symbol(row) for row in rows]
+            filters = "".join(f" AND {clause}" for clause in filter_clauses)
+            fts_sql = f"""
+                SELECT symbols.*
+                FROM symbols_fts
+                JOIN symbols ON symbols.rowid = symbols_fts.rowid
+                WHERE symbols_fts MATCH ?{filters}
+                {ranking}
+                LIMIT ?
+            """
+            fts_params = [
+                _fts_prefix_query(query),
+                *filter_params,
+                *ranking_params,
+                normalized_limit,
+            ]
+            try:
+                rows = connection.execute(fts_sql, fts_params).fetchall()
+            except sqlite3.OperationalError:
+                rows = []
+            symbols = [_map_symbol(row) for row in rows]
+
+            if len(symbols) < normalized_limit:
+                seen_ids = {symbol.id for symbol in symbols}
+                like = "%" + _escape_like(query) + "%"
+                like_sql = f"""
+                    SELECT *
+                    FROM symbols
+                    WHERE (
+                        name LIKE ? ESCAPE '\\'
+                        OR COALESCE(qualified_name, '') LIKE ? ESCAPE '\\'
+                        OR file_path LIKE ? ESCAPE '\\'
+                    ){filters}
+                    {ranking}
+                    LIMIT ?
+                """
+                like_params = [
+                    like,
+                    like,
+                    like,
+                    *filter_params,
+                    *ranking_params,
+                    normalized_limit,
+                ]
+                for row in connection.execute(like_sql, like_params).fetchall():
+                    symbol = _map_symbol(row)
+                    if symbol.id not in seen_ids:
+                        symbols.append(symbol)
+                        if len(symbols) >= normalized_limit:
+                            break
+        return symbols
 
     def get_symbol(self, symbol_id: str) -> Symbol | None:
         """Return one symbol by its stable identifier."""
