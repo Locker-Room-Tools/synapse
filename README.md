@@ -5,7 +5,7 @@ compact structural code context without uploading source code to external servic
 
 ## Quickstart
 
-1. Use Python >=3.14.
+1. Use Python >=3.12.
 2. Create a virtual environment and install development dependencies:
    `uv venv && uv pip install -e ".[dev]"`.
 3. Initialize a workspace for your agent:

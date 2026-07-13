@@ -4,7 +4,7 @@ Synapse is a local-first, AST-based code context engine exposed to AI agents ove
 This file is the contract for any human or AI agent contributing to THIS repository.
 
 ## Setup
-- Python >=3.14. Use `uv`: `uv venv && uv pip install -e ".[dev]"`.
+- Python >=3.12. Use `uv`: `uv venv && uv pip install -e ".[dev]"`.
 - Run the MCP server (stdio): `python -m synapse` (or the `synapse` script).
 - Remove managed agent setup with `synapse uninstall <agent> --path .`; this does not
   delete index/cache data.
@@ -40,7 +40,7 @@ This file is the contract for any human or AI agent contributing to THIS reposit
   `synapse_get_definition`, `synapse_get_file_outline`, `synapse_get_symbol_context`,
   `synapse_get_dependencies`, `synapse_workspace_stats`, `synapse_project_map`,
   `synapse_get_file_dependencies`, `synapse_find_references`,
-  `synapse_related_symbols`, `synapse_compact_context`.
+  `synapse_related_symbols`, `synapse_compact_context`, `synapse_watch_status`.
 
 ### Ideal Agent Flow
 

@@ -2,7 +2,7 @@
   "mcpServers": {
     "synapse": {
       "command": "synapse",
-      "args": ["serve"]
+      "args": ["serve", "--workspace", "/absolute/path/to/workspace"]
     }
   }
 }

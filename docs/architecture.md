@@ -52,7 +52,8 @@ implementation appears — for example, the Phase 2 Go indexer.
   (`synapse_index_workspace`, `synapse_search_symbols`, `synapse_get_definition`,
   `synapse_get_file_outline`, `synapse_get_symbol_context`, `synapse_get_dependencies`,
   `synapse_workspace_stats`, `synapse_project_map`, `synapse_get_file_dependencies`,
-  `synapse_find_references`, `synapse_related_symbols`, `synapse_compact_context`).
+  `synapse_find_references`, `synapse_related_symbols`, `synapse_compact_context`,
+  `synapse_watch_status`).
   Relations populated during indexing are `CONTAINS` (resolved member edges), `IMPORTS`
   (unresolved import target name), and `REFERENCES` (resolved or confidence-marked usage
   edges from reference queries).
@@ -99,9 +100,19 @@ mode should follow an approved plan and keep feature logic out of foundation-onl
 - **Phase 1**: Python MVP, tree-sitter parsing, SQLite index, MCP tools, CLI, and adapters.
 - **Phase 2**: Go `synapse-indexer` subprocess for faster parsing and indexing.
 
+Planned but **not yet implemented** layers (design docs only):
+
+- Manifest-aware indexing (`package.json`, `pyproject.toml`, `Cargo.toml`, …):
+  see [manifest-support-plan.md](manifest-support-plan.md).
+- Markup / structured-document indexing (HTML/CSS, XAML, Razor, richer SFC support):
+  see [markup-support-plan.md](markup-support-plan.md).
+- Native OS file-event watching behind the `WatchBackend` protocol
+  (`core/watch/backend.py`); the daemon is polling-only today.
+
 ## Open questions and risks
 
-- Python 3.14 wheels for `tree-sitter` and `tree-sitter-language-pack` may lag.
+- Wheels for `tree-sitter` and `tree-sitter-language-pack` on the newest Python may lag;
+  the supported floor is Python 3.12.
 - MCP v2 migration should wait until v2 is stable; dependencies pin `<2` for now.
 - Grammar/core version coupling is mitigated by `tree-sitter-language-pack`; individual
   grammar packages remain a fallback if the pack lacks a required language.
