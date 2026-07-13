@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.0] - 2026-07-13
 
+### Added
+- FTS5-backed symbol search: prefix matches use a full-text index kept in
+  sync by triggers, with a substring fallback; existing databases migrate
+  automatically via `PRAGMA user_version`.
+- Angular component templates (`*.component.html`) are now detected and
+  indexed via the `angular_template` queries.
+- `failed_files` count in index stats: unreadable files (dangling symlinks,
+  permission errors) are skipped with a warning instead of aborting the run.
+- CI (GitHub Actions): lint/type/test matrix on Python 3.12-3.14 plus a
+  packaging smoke job that installs the built wheel into a clean venv.
+
 ### Fixed
 - Wheel now ships tree-sitter query files and adapter data: `queries/` and
   `adapters/` moved into the `synapse` package and are loaded via
