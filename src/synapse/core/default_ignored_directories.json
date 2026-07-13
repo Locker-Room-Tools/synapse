@@ -1,0 +1,15 @@
+{
+  "ignored_directories": [
+    ".ai",
+    ".git",
+    ".idea",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "node_modules",
+    "venv"
+  ]
+}
