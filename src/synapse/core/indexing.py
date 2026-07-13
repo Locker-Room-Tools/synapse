@@ -1,5 +1,6 @@
 """Workspace indexing orchestration."""
 
+import warnings
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,6 +28,7 @@ class IndexStats:
     indexed_files: int
     skipped_files: int
     removed_files: int
+    failed_files: int
     total_files: int
     total_symbols: int
     languages: list[str]
@@ -68,6 +70,7 @@ def index_workspace(workspace_path: str | Path = ".", *, force: bool = False) ->
     raw_references_by_file: dict[str, list[RawReference]] = {}
     indexed_files = 0
     skipped_files = 0
+    failed_files = 0
 
     try:
         with index.transaction() as connection:
@@ -84,13 +87,24 @@ def index_workspace(workspace_path: str | Path = ".", *, force: bool = False) ->
                 if language is None:
                     continue
                 relative_path = source_path.relative_to(root).as_posix()
-                seen_paths.add(relative_path)
-                content_hash = hash_file(source_path)
-                existing = existing_files.get(relative_path)
-                if not force and existing is not None and existing.content_hash == content_hash:
-                    skipped_files += 1
+                try:
+                    content_hash = hash_file(source_path)
+                    existing = existing_files.get(relative_path)
+                    if not force and existing is not None and existing.content_hash == content_hash:
+                        seen_paths.add(relative_path)
+                        skipped_files += 1
+                        continue
+                    symbols = parse_file(source_path, language, workspace_root=root)
+                    raw_references = extract_references(source_path, language, symbols)
+                except OSError as exc:
+                    warnings.warn(
+                        f"Skipping unreadable file {relative_path}: {exc}",
+                        stacklevel=2,
+                    )
+                    failed_files += 1
                     continue
 
+                seen_paths.add(relative_path)
                 indexed_at = _utc_now()
                 index.upsert_file(
                     SourceFile(
@@ -103,12 +117,7 @@ def index_workspace(workspace_path: str | Path = ".", *, force: bool = False) ->
                     ),
                     connection=connection,
                 )
-                symbols = parse_file(source_path, language, workspace_root=root)
-                raw_references_by_file[relative_path] = extract_references(
-                    source_path,
-                    language,
-                    symbols,
-                )
+                raw_references_by_file[relative_path] = raw_references
                 relations = build_relations(symbols)
                 index.replace_symbols_for_file(
                     relative_path,
@@ -153,6 +162,7 @@ def index_workspace(workspace_path: str | Path = ".", *, force: bool = False) ->
             indexed_files=indexed_files,
             skipped_files=skipped_files,
             removed_files=removed_files,
+            failed_files=failed_files,
             total_files=total_files,
             total_symbols=total_symbols,
             languages=languages,

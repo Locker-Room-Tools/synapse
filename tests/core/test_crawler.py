@@ -125,3 +125,33 @@ def test_iter_source_files_warns_and_uses_fallback_when_package_config_is_missin
         files = list(iter_source_files(tmp_path))
 
     assert files == [keep_file]
+
+
+def test_iter_source_files_does_not_follow_directory_symlinks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Symlinked directories (including cycles) are never traversed."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    package_dir = tmp_path / "pkg"
+    package_dir.mkdir()
+    keep_file = package_dir / "keep.py"
+    keep_file.write_text("print('ok')\n", encoding="utf-8")
+    (package_dir / "loop").symlink_to(tmp_path, target_is_directory=True)
+
+    files = list(iter_source_files(tmp_path))
+
+    assert files == [keep_file]
+
+
+def test_iter_source_files_yields_dangling_file_symlinks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dangling file symlinks are yielded; indexing handles the read failure."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    (tmp_path / "dangling.py").symlink_to(tmp_path / "missing-target.py")
+
+    files = list(iter_source_files(tmp_path))
+
+    assert [path.name for path in files] == ["dangling.py"]

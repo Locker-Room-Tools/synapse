@@ -94,7 +94,7 @@ def test_synapse_index_workspace_returns_serializable_stats(
     monkeypatch.setattr(
         tools,
         "index_workspace",
-        lambda path=".", *, force=False: IndexStats(str(path), 1, 2, 3, 4, 5, ["python"]),
+        lambda path=".", *, force=False: IndexStats(str(path), 1, 2, 3, 0, 4, 5, ["python"]),
     )
 
     result = tools.synapse_index_workspace(".", force=True)

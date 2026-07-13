@@ -18,7 +18,7 @@ def test_index_command_dispatches_and_prints_summary(
     monkeypatch.setattr(
         cli_main,
         "index_workspace",
-        lambda path, *, force=False: IndexStats(str(path), 1, 2, 3, 4, 5, ["python"]),
+        lambda path, *, force=False: IndexStats(str(path), 1, 2, 3, 0, 4, 5, ["python"]),
     )
 
     exit_code = cli_main.main(["index", "."])
@@ -38,7 +38,7 @@ def test_index_command_forwards_force(
     def fake_index_workspace(path: str, *, force: bool = False) -> IndexStats:
         seen["path"] = path
         seen["force"] = force
-        return IndexStats(str(path), 1, 0, 0, 1, 1, ["tsx"])
+        return IndexStats(str(path), 1, 0, 0, 0, 1, 1, ["tsx"])
 
     monkeypatch.setattr(cli_main, "index_workspace", fake_index_workspace)
 
@@ -58,7 +58,7 @@ def test_setup_command_prints_workspace_details(
     monkeypatch.setattr(
         cli_main,
         "index_workspace",
-        lambda path, *, force=False: IndexStats(str(path), 1, 0, 0, 1, 1, ["python"]),
+        lambda path, *, force=False: IndexStats(str(path), 1, 0, 0, 0, 1, 1, ["python"]),
     )
     monkeypatch.setattr(cli_main, "_detect_workspace_root", lambda path: tmp_path)
 
@@ -83,7 +83,7 @@ def test_setup_command_can_write_agent_instructions(
     monkeypatch.setattr(
         cli_main,
         "index_workspace",
-        lambda path, *, force=False: IndexStats(str(path), 1, 0, 0, 1, 1, ["python"]),
+        lambda path, *, force=False: IndexStats(str(path), 1, 0, 0, 0, 1, 1, ["python"]),
     )
     monkeypatch.setattr(cli_main, "_detect_workspace_root", lambda path: tmp_path)
 
@@ -259,7 +259,7 @@ def test_uninstall_removes_managed_config_and_instructions(
     monkeypatch.setattr(
         cli_main,
         "index_workspace",
-        lambda path, *, force=False: IndexStats(str(path), 1, 0, 0, 1, 1, ["python"]),
+        lambda path, *, force=False: IndexStats(str(path), 1, 0, 0, 0, 1, 1, ["python"]),
     )
     monkeypatch.setattr(cli_main, "_detect_workspace_root", lambda path: workspace_root)
     assert (

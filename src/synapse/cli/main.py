@@ -40,6 +40,8 @@ def _print_index_summary(stats: IndexStats) -> None:
     print(f"Indexed files: {stats.indexed_files}")
     print(f"Skipped files: {stats.skipped_files}")
     print(f"Removed files: {stats.removed_files}")
+    if stats.failed_files:
+        print(f"Failed files: {stats.failed_files}")
     print(f"Stored files: {stats.total_files}")
     print(f"Stored symbols: {stats.total_symbols}")
     languages = ", ".join(stats.languages) if stats.languages else "none"

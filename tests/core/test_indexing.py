@@ -39,6 +39,25 @@ def test_index_workspace_tracks_new_unchanged_changed_and_deleted_files(
     assert SymbolIndex(db_path(workspace_root)).search_symbols("alpha") == []
 
 
+def test_index_workspace_skips_unreadable_files_and_continues(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One unreadable file (e.g. a dangling symlink) must not abort the run."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "good.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    (workspace_root / "dangling.py").symlink_to(workspace_root / "missing.py")
+
+    with pytest.warns(UserWarning, match="Skipping unreadable file dangling.py"):
+        stats = index_workspace(workspace_root)
+
+    assert (stats.indexed_files, stats.failed_files) == (1, 1)
+    index = SymbolIndex(db_path(workspace_root))
+    assert [symbol.name for symbol in index.search_symbols("alpha")] == ["alpha"]
+
+
 def test_index_workspace_force_reindexes_unchanged_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
