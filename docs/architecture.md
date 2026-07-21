@@ -45,7 +45,7 @@ implementation appears — for example, the Phase 2 Go indexer.
 - **`core.parser`**: parses files with tree-sitter and maps captures to symbols.
 - **`core.queries`**: resolves `.scm` query files by language and query name.
 - **`core.workspace`**: derives per-workspace storage paths and persists workspace metadata.
-- **`core.index`**: stores and queries symbols and relationships in SQLite.
+- **`core.index`**: stable index facade; schema/lifecycle, writes, and read projections live in focused `core.index_*` modules.
 - **`core.indexing`**: orchestrates crawl → hash → parse → upsert incremental indexing.
 - **`core.crawler`**: discovers indexable files and hashes them for incremental indexing.
 - **`mcp.server` / `mcp.tools`**: expose deterministic, token-frugal tools to agents

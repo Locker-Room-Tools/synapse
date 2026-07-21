@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Windows support for the detached watch daemon: `synapse watch start` uses
+  Windows process-creation flags instead of POSIX sessions on `win32`, and CI
+  now runs the full test suite on Windows (Python 3.12).
+
+### Changed
+- Distribution renamed from `synapse-mcp` to `locker-room-tools-synapse-mcp`;
+  the import package (`synapse`) and the `synapse` CLI entry point are
+  unchanged.
+- `core.index` decomposed into focused modules: `index_schema` (DDL,
+  connection lifecycle, atomic replacement), `index_writes` (connection-explicit
+  writes), `index_queries` (read projections), and `reference_reconciliation`
+  (shared by batch indexing and the watch worker). `SymbolIndex` remains as a
+  stable facade; no public API changes.
+- MCP server startup and watch commands validate the workspace path up front
+  (`require_workspace_path`) instead of creating cache state for nonexistent
+  directories.
+
 ## [0.3.0] - 2026-07-13
 
 ### Added
