@@ -126,14 +126,24 @@ def _start_detached_watch(path: Path, *, poll_interval_s: int | None = None) -> 
         command.extend(["--poll-interval", str(poll_interval_s)])
     log_path = logs_dir(path) / "watch.log"
     with log_path.open("a", encoding="utf-8") as log_handle:
-        process = subprocess.Popen(
-            command,
-            cwd=str(path),
-            stdin=subprocess.DEVNULL,
-            stdout=log_handle,
-            stderr=log_handle,
-            start_new_session=True,
-        )
+        if sys.platform == "win32":
+            process = subprocess.Popen(
+                command,
+                cwd=str(path),
+                stdin=subprocess.DEVNULL,
+                stdout=log_handle,
+                stderr=log_handle,
+                creationflags=0x00000008 | 0x00000200,
+            )
+        else:
+            process = subprocess.Popen(
+                command,
+                cwd=str(path),
+                stdin=subprocess.DEVNULL,
+                stdout=log_handle,
+                stderr=log_handle,
+                start_new_session=True,
+            )
     return int(process.pid)
 
 

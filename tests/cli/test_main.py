@@ -1,6 +1,7 @@
 """Tests for CLI argument parsing and dispatch."""
 
 import json
+import sys
 import tomllib
 from pathlib import Path
 
@@ -402,6 +403,31 @@ def test_start_detached_watch_builds_foreground_child_command(
     assert command[-3:] == ["--foreground", "--poll-interval", "2"]
     assert seen["cwd"] == str(tmp_path)
     assert seen["start_new_session"] is True
+
+
+def test_start_detached_watch_uses_windows_process_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows detachment avoids the POSIX-only start_new_session option."""
+    seen: dict[str, object] = {}
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+
+    class FakeProcess:
+        pid = 4321
+
+    def fake_popen(command: list[str], **kwargs: object) -> FakeProcess:
+        seen.update(kwargs)
+        return FakeProcess()
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(cli_main, "_watch_is_running", lambda path: False)
+    monkeypatch.setattr("synapse.cli.main.subprocess.Popen", fake_popen)
+
+    cli_main._start_detached_watch(tmp_path)
+
+    assert seen["creationflags"] == 0x00000008 | 0x00000200
+    assert "start_new_session" not in seen
 
 
 def test_watch_restart_waits_for_stop_before_starting(
