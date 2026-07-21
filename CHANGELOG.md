@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Windows support for the detached watch daemon: `synapse watch start` uses
   Windows process-creation flags instead of POSIX sessions on `win32`, and CI
   now runs the full test suite on Windows (Python 3.12).
+- Tag-triggered release workflow: pushing a `v*` tag runs the full gate chain,
+  verifies the tag matches the project version, rebuilds and smoke-tests the
+  wheel, and publishes to PyPI via trusted publishing (OIDC).
 
 ### Changed
 - Distribution renamed from `synapse-mcp` to `locker-room-tools-synapse-mcp`;
