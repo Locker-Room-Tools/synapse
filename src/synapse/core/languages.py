@@ -13,6 +13,10 @@ class LanguageSpec:
     tree_sitter_name: str
     extensions: tuple[str, ...]
     query_dir: str
+    # Separator used when joining nested symbol names into qualified names.
+    name_separator: str = "."
+    # Whether ALL-CAPS fields/variables idiomatically denote constants.
+    uppercase_constants: bool = True
 
 
 LANGUAGES: dict[str, LanguageSpec] = {
@@ -21,6 +25,7 @@ LANGUAGES: dict[str, LanguageSpec] = {
         tree_sitter_name="ada",
         extensions=(".adb", ".ads", ".ada"),
         query_dir="ada",
+        uppercase_constants=False,
     ),
     "angular_template": LanguageSpec(
         id="angular_template",
@@ -33,6 +38,7 @@ LANGUAGES: dict[str, LanguageSpec] = {
         tree_sitter_name="asm",
         extensions=(".asm", ".s"),
         query_dir="assembly",
+        uppercase_constants=False,
     ),
     "astro": LanguageSpec(
         id="astro",
@@ -69,6 +75,7 @@ LANGUAGES: dict[str, LanguageSpec] = {
         tree_sitter_name="cobol",
         extensions=(".cob", ".cbl", ".cobol", ".cpy"),
         query_dir="cobol",
+        uppercase_constants=False,
     ),
     "common_lisp": LanguageSpec(
         id="common_lisp",
@@ -81,12 +88,14 @@ LANGUAGES: dict[str, LanguageSpec] = {
         tree_sitter_name="cpp",
         extensions=(".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx"),
         query_dir="cpp",
+        name_separator="::",
     ),
     "crystal": LanguageSpec(
         id="crystal",
         tree_sitter_name="crystal",
         extensions=(".cr",),
         query_dir="crystal",
+        name_separator="::",
     ),
     "csharp": LanguageSpec(
         id="csharp",
@@ -99,6 +108,7 @@ LANGUAGES: dict[str, LanguageSpec] = {
         tree_sitter_name="cuda",
         extensions=(".cu", ".cuh", ".cuda"),
         query_dir="cuda",
+        name_separator="::",
     ),
     "d": LanguageSpec(
         id="d",
@@ -135,6 +145,7 @@ LANGUAGES: dict[str, LanguageSpec] = {
         tree_sitter_name="erlang",
         extensions=(".erl", ".hrl"),
         query_dir="erlang",
+        uppercase_constants=False,
     ),
     "fish": LanguageSpec(
         id="fish",
@@ -159,6 +170,7 @@ LANGUAGES: dict[str, LanguageSpec] = {
         tree_sitter_name="fortran",
         extensions=(".f", ".for", ".f90", ".f95", ".f03", ".f08"),
         query_dir="fortran",
+        uppercase_constants=False,
     ),
     "glsl": LanguageSpec(
         id="glsl",
@@ -279,18 +291,21 @@ LANGUAGES: dict[str, LanguageSpec] = {
         tree_sitter_name="perl",
         extensions=(".pl", ".pm", ".t"),
         query_dir="perl",
+        name_separator="::",
     ),
     "pascal": LanguageSpec(
         id="pascal",
         tree_sitter_name="pascal",
         extensions=(".pas", ".pp"),
         query_dir="pascal",
+        uppercase_constants=False,
     ),
     "php": LanguageSpec(
         id="php",
         tree_sitter_name="php",
         extensions=(".php",),
         query_dir="php",
+        name_separator="\\",
     ),
     "powershell": LanguageSpec(
         id="powershell",
@@ -327,12 +342,14 @@ LANGUAGES: dict[str, LanguageSpec] = {
         tree_sitter_name="ruby",
         extensions=(".rb",),
         query_dir="ruby",
+        name_separator="::",
     ),
     "rust": LanguageSpec(
         id="rust",
         tree_sitter_name="rust",
         extensions=(".rs",),
         query_dir="rust",
+        name_separator="::",
     ),
     "scala": LanguageSpec(
         id="scala",
@@ -357,6 +374,7 @@ LANGUAGES: dict[str, LanguageSpec] = {
         tree_sitter_name="sql",
         extensions=(".sql",),
         query_dir="sql",
+        uppercase_constants=False,
     ),
     "svelte": LanguageSpec(
         id="svelte",
@@ -381,12 +399,14 @@ LANGUAGES: dict[str, LanguageSpec] = {
         tree_sitter_name="verilog",
         extensions=(".v", ".vh", ".verilog"),
         query_dir="verilog",
+        uppercase_constants=False,
     ),
     "vhdl": LanguageSpec(
         id="vhdl",
         tree_sitter_name="vhdl",
         extensions=(".vhd", ".vhdl"),
         query_dir="vhdl",
+        uppercase_constants=False,
     ),
     "vimscript": LanguageSpec(
         id="vimscript",
@@ -463,6 +483,24 @@ def to_treesitter_name(language: str) -> str:
     """Return the tree-sitter language name for a normalized language id."""
     try:
         return LANGUAGES[language].tree_sitter_name
+    except KeyError as exc:
+        msg = f"Unsupported language: {language}"
+        raise ValueError(msg) from exc
+
+
+def name_separator(language: str) -> str:
+    """Return the qualified-name separator for a normalized language id."""
+    try:
+        return LANGUAGES[language].name_separator
+    except KeyError as exc:
+        msg = f"Unsupported language: {language}"
+        raise ValueError(msg) from exc
+
+
+def uses_uppercase_constants(language: str) -> bool:
+    """Return whether ALL-CAPS variables denote constants in this language."""
+    try:
+        return LANGUAGES[language].uppercase_constants
     except KeyError as exc:
         msg = f"Unsupported language: {language}"
         raise ValueError(msg) from exc

@@ -5,6 +5,8 @@ from pathlib import Path
 from synapse.core.models import SymbolKind
 from synapse.core.parser import (
     _assign_containers,
+    _candidate_symbol_ids,
+    _capture_kind_to_symbol_kind,
     _ExtractedSymbol,
     _qualified_name,
     build_reference_relations,
@@ -752,6 +754,8 @@ def test_parse_file_extracts_cpp_symbols(tmp_path: Path) -> None:
     assert by_kind_name[("enum", "Color")].name == "Color"
     assert by_kind_name[("function", "helper")].name == "helper"
     assert greet.container_id == greeter.id
+    assert greeter.qualified_name == "Sample::Greeter"
+    assert greet.qualified_name == "Sample::Greeter::greet"
 
 
 def test_parse_file_extracts_go_symbols(tmp_path: Path) -> None:
@@ -1199,3 +1203,35 @@ def test_extract_references_and_resolve_candidates(tmp_path: Path) -> None:
     medium = build_reference_relations(raw_refs, {"target": ["one", "two"]})
     assert medium[0].to_symbol_id is None
     assert str(medium[0].confidence) == "medium"
+
+
+def test_uppercase_constant_heuristic_is_language_gated() -> None:
+    """ALL-CAPS variables become constants only where the convention applies."""
+    promoted = _capture_kind_to_symbol_kind(
+        "definition.variable", "MAX_SIZE", uppercase_constants=True
+    )
+    kept = _capture_kind_to_symbol_kind(
+        "definition.variable", "MAX_SIZE", uppercase_constants=False
+    )
+    assert promoted is SymbolKind.CONSTANT
+    assert kept is SymbolKind.VARIABLE
+
+
+def test_candidate_symbol_ids_match_language_separator() -> None:
+    """Qualified-name suffix matching honors the language name separator."""
+    name_index = {"Sample::Greeter::greet": ["cpp-id"], "Sample.Greeter.greet": ["dotted-id"]}
+    assert _candidate_symbol_ids("greet", name_index, "::") == ["cpp-id"]
+    assert _candidate_symbol_ids("greet", name_index, ".") == ["dotted-id"]
+
+
+def test_fortran_uppercase_variables_stay_variables(tmp_path: Path) -> None:
+    """Case-insensitive languages do not promote uppercase names to constants."""
+    file_path = tmp_path / "sample.f90"
+    file_path.write_text(
+        "PROGRAM MAIN\n  INTEGER :: LIMIT\n  LIMIT = 3\nEND PROGRAM MAIN\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "fortran", workspace_root=tmp_path)
+
+    assert all(symbol.kind is not SymbolKind.CONSTANT for symbol in symbols)

@@ -26,6 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP server startup and watch commands validate the workspace path up front
   (`require_workspace_path`) instead of creating cache state for nonexistent
   directories.
+- Qualified names now use each language's native scope separator (`::` for
+  C++/CUDA/Crystal/Perl/Ruby/Rust, `\` for PHP) instead of a hardcoded `.`,
+  and reference suffix matching follows the same separator.
+- The ALL-CAPS-means-constant heuristic is disabled for case-insensitive and
+  uppercase-idiomatic languages (Ada, Assembly, COBOL, Erlang, Fortran,
+  Pascal, SQL, Verilog, VHDL), where it misclassified ordinary variables.
 
 ## [0.3.0] - 2026-07-13
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from tree_sitter import Language, Parser, Query, QueryCursor, Tree
 from tree_sitter_language_pack import get_language
 
-from synapse.core.languages import to_treesitter_name
+from synapse.core.languages import name_separator, to_treesitter_name, uses_uppercase_constants
 from synapse.core.models import Confidence, Relation, RelationKind, Symbol, SymbolKind
 from synapse.core.queries import load_query
 
@@ -65,14 +65,23 @@ _CAPTURE_KIND_MAP = {
 }
 
 
-def _capture_kind_to_symbol_kind(capture_name: str, symbol_name: str) -> SymbolKind:
+def _capture_kind_to_symbol_kind(
+    capture_name: str,
+    symbol_name: str,
+    *,
+    uppercase_constants: bool,
+) -> SymbolKind:
     raw_kind = capture_name.removeprefix("definition.")
     try:
         symbol_kind = _CAPTURE_KIND_MAP[raw_kind]
     except KeyError as exc:
         msg = f"Unsupported symbol capture kind: {capture_name}"
         raise ValueError(msg) from exc
-    if symbol_kind in {SymbolKind.FIELD, SymbolKind.VARIABLE} and symbol_name.isupper():
+    if (
+        uppercase_constants
+        and symbol_kind in {SymbolKind.FIELD, SymbolKind.VARIABLE}
+        and symbol_name.isupper()
+    ):
         return SymbolKind.CONSTANT
     return symbol_kind
 
@@ -107,14 +116,15 @@ def _assign_containers(items: list[_ExtractedSymbol]) -> None:
         )
 
 
-def _qualified_name(items: list[_ExtractedSymbol], index: int) -> str:
+def _qualified_name(items: list[_ExtractedSymbol], index: int, separator: str = ".") -> str:
     item = items[index]
     if item.qualified_name is not None:
         return item.qualified_name
     if item.container_index is None:
         item.qualified_name = item.name
         return item.qualified_name
-    item.qualified_name = f"{_qualified_name(items, item.container_index)}.{item.name}"
+    container_name = _qualified_name(items, item.container_index, separator)
+    item.qualified_name = f"{container_name}{separator}{item.name}"
     return item.qualified_name
 
 
@@ -154,6 +164,8 @@ def _extract_symbols_from_tree(
     query = Query(tree_sitter_language, load_query(language, "symbols"))
     matches = QueryCursor(query).matches(tree.root_node)
     stored_file_path = _stored_file_path(path, workspace_root)
+    separator = name_separator(language)
+    uppercase_constants = uses_uppercase_constants(language)
 
     extracted: list[_ExtractedSymbol] = []
     for _, captures in matches:
@@ -167,7 +179,11 @@ def _extract_symbols_from_tree(
         definition_node = captures[definition_capture][0]
         name_node = name_nodes[0]
         symbol_name = _decode_node_text(source_bytes, name_node.start_byte, name_node.end_byte)
-        kind = _capture_kind_to_symbol_kind(definition_capture, symbol_name)
+        kind = _capture_kind_to_symbol_kind(
+            definition_capture,
+            symbol_name,
+            uppercase_constants=uppercase_constants,
+        )
         extracted.append(
             _ExtractedSymbol(
                 language=language,
@@ -192,7 +208,7 @@ def _extract_symbols_from_tree(
     )
     _assign_containers(extracted)
     for index, _ in enumerate(extracted):
-        _qualified_name(extracted, index)
+        _qualified_name(extracted, index, separator)
 
     symbols = [
         Symbol(
@@ -310,9 +326,13 @@ def extract_references(path: Path, language: str, symbols: Sequence[Symbol]) -> 
     )
 
 
-def _candidate_symbol_ids(name: str, name_to_symbol_ids: Mapping[str, list[str]]) -> list[str]:
+def _candidate_symbol_ids(
+    name: str,
+    name_to_symbol_ids: Mapping[str, list[str]],
+    separator: str = ".",
+) -> list[str]:
     candidates: set[str] = set(name_to_symbol_ids.get(name, []))
-    suffix = f".{name}"
+    suffix = f"{separator}{name}"
     for indexed_name, symbol_ids in name_to_symbol_ids.items():
         if indexed_name.endswith(suffix):
             candidates.update(symbol_ids)
@@ -326,7 +346,11 @@ def build_reference_relations(
     """Resolve raw references into deterministic reference relations."""
     relations: list[Relation] = []
     for raw_ref in raw_refs:
-        candidates = _candidate_symbol_ids(raw_ref.name, name_to_symbol_ids)
+        candidates = _candidate_symbol_ids(
+            raw_ref.name,
+            name_to_symbol_ids,
+            name_separator(raw_ref.from_symbol.language),
+        )
         to_symbol_id: str | None = None
         confidence = Confidence.LOW
         if len(candidates) == 1:
