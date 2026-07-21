@@ -127,7 +127,7 @@ def watch_status_payload(path: str | Path) -> dict[str, object]:
     """Return a token-frugal status payload for MCP and CLI JSON output."""
     status = read_watch_status(require_workspace_path(path))
     payload: dict[str, object] = asdict(status)
-    if status.running and not _pid_is_running(status.pid):
+    if status.running and not pid_is_running(status.pid):
         payload["running"] = False
         payload["pending"] = 0
     latest = _parse_timestamp(status.last_full_sweep_ts or status.last_event_ts)
@@ -137,7 +137,8 @@ def watch_status_payload(path: str | Path) -> dict[str, object]:
     return payload
 
 
-def _pid_is_running(pid: int | None) -> bool:
+def pid_is_running(pid: int | None) -> bool:
+    """Return whether a process id appears alive on the local host."""
     if pid is None or pid <= 0:
         return False
     try:

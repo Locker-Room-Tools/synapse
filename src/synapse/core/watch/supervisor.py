@@ -16,6 +16,7 @@ from synapse.core.watch.backend import PollingWatchBackend
 from synapse.core.watch.reconcile import reconcile_workspace
 from synapse.core.watch.state import (
     WatchStatus,
+    pid_is_running,
     read_unfinished_journal,
     read_watch_status,
     truncate_journal,
@@ -29,21 +30,6 @@ type SignalHandler = Callable[[int, FrameType | None], Any] | int | signal.Handl
 
 class WatchAlreadyRunning(RuntimeError):
     """Raised when another daemon owns the workspace watch lock."""
-
-
-def pid_is_running(pid: int | None) -> bool:
-    """Return whether a process id appears alive on the local host."""
-    if pid is None or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
 
 
 class WatchLock:

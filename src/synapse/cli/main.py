@@ -18,8 +18,8 @@ from synapse.cli.config import build_config_parser
 from synapse.cli.doctor import format_report, has_failures, report_to_json, run_doctor
 from synapse.cli.installer import install_mcp_server, standalone_mcp_config, uninstall_mcp_server
 from synapse.core.indexing import IndexStats, index_workspace
-from synapse.core.watch.state import read_watch_status, watch_status_payload
-from synapse.core.watch.supervisor import pid_is_running, request_watch_stop, run_watch_foreground
+from synapse.core.watch.state import pid_is_running, read_watch_status, watch_status_payload
+from synapse.core.watch.supervisor import request_watch_stop, run_watch_foreground
 from synapse.core.workspace import (
     db_path,
     logs_dir,
