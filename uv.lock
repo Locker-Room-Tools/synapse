@@ -435,6 +435,36 @@ wheels = [
 ]
 
 [[package]]
+name = "locker-room-tools-synapse-mcp"
+version = "0.3.0"
+source = { editable = "." }
+dependencies = [
+    { name = "mcp" },
+    { name = "tree-sitter" },
+    { name = "tree-sitter-language-pack" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "mcp", specifier = ">=1.27,<2" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
+    { name = "tree-sitter", specifier = ">=0.25" },
+    { name = "tree-sitter-language-pack", specifier = ">=1.8,<1.9" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "mcp"
 version = "1.27.2"
 source = { registry = "https://pypi.org/simple" }
@@ -916,36 +946,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/eb/e3/7c1dc7381d9f8ab7d
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ec/bb/2799cc2ede3ed41131f8975621e7213dfc7ef4acbbaadfa440f32500c370/starlette-1.3.1-py3-none-any.whl", hash = "sha256:c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6", size = 73632, upload-time = "2026-06-12T09:23:10.017Z" },
 ]
-
-[[package]]
-name = "synapse-mcp"
-version = "0.3.0"
-source = { editable = "." }
-dependencies = [
-    { name = "mcp" },
-    { name = "tree-sitter" },
-    { name = "tree-sitter-language-pack" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "mcp", specifier = ">=1.27,<2" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-    { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
-    { name = "tree-sitter", specifier = ">=0.25" },
-    { name = "tree-sitter-language-pack", specifier = ">=1.8,<1.9" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "tree-sitter"

@@ -9,7 +9,7 @@ import synapse
 
 def test_package_exposes_installed_version() -> None:
     """Package import exposes the installed distribution version."""
-    assert synapse.__version__ == metadata.version("synapse-mcp")
+    assert synapse.__version__ == metadata.version("locker-room-tools-synapse-mcp")
 
 
 def test_version_matches_pyproject() -> None:

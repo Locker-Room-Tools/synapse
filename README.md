@@ -6,8 +6,8 @@ compact structural code context without uploading source code to external servic
 ## Quickstart
 
 1. Use Python >=3.12.
-2. Create a virtual environment and install development dependencies:
-   `uv venv && uv pip install -e ".[dev]"`.
+2. Install Synapse as a managed CLI tool:
+   `uv tool install locker-room-tools-synapse-mcp`.
 3. Initialize a workspace for your agent:
    `synapse setup codex --path .`
 4. Install a workspace-pinned MCP config into the client default path:
@@ -23,6 +23,11 @@ or `--dry-run` to preview the resolved write. Remove managed config and instruct
 
 Run the MCP server over stdio with `synapse serve --workspace .` or
 `python -m synapse serve --workspace .`.
+
+## Development
+
+Create a virtual environment and install the repository with development dependencies:
+`uv venv && uv pip install -e ".[dev]"`.
 
 ## Available MCP tools
 

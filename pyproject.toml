@@ -1,5 +1,5 @@
 [project]
-name = "synapse-mcp"
+name = "locker-room-tools-synapse-mcp"
 version = "0.3.0"
 description = "Local-first AST-based code context engine exposed over MCP."
 readme = "README.md"
