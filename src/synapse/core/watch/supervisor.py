@@ -22,7 +22,7 @@ from synapse.core.watch.state import (
     utc_now,
     write_watch_status,
 )
-from synapse.core.workspace import normalize_workspace_path, watch_lock_path, workspace_id
+from synapse.core.workspace import require_workspace_path, watch_lock_path, workspace_id
 
 type SignalHandler = Callable[[int, FrameType | None], Any] | int | signal.Handlers | None
 
@@ -50,7 +50,7 @@ class WatchLock:
     """Advisory singleton lock backed by an exclusive lock file."""
 
     def __init__(self, workspace_path: str | Path) -> None:
-        self.root = normalize_workspace_path(workspace_path)
+        self.root = require_workspace_path(workspace_path)
         self.path = watch_lock_path(self.root)
         self._fd: int | None = None
 
@@ -103,7 +103,7 @@ def run_watch_foreground(
     stop_event: threading.Event | None = None,
 ) -> WatchStatus:
     """Run the watch supervisor in the current process using polling reconcile mode."""
-    root = normalize_workspace_path(workspace_path)
+    root = require_workspace_path(workspace_path)
     config = load_user_config().watch
     interval = poll_interval_s or config.poll_interval_s
     backend = PollingWatchBackend(root)
@@ -163,7 +163,7 @@ def run_watch_foreground(
 
 def request_watch_stop(workspace_path: str | Path) -> WatchStatus:
     """Ask a foreground/detached watch daemon to stop via SIGTERM when possible."""
-    root = normalize_workspace_path(workspace_path)
+    root = require_workspace_path(workspace_path)
     status = read_watch_status(root)
     if status.running and pid_is_running(status.pid):
         assert status.pid is not None

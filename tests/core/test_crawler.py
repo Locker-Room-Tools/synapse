@@ -137,7 +137,10 @@ def test_iter_source_files_does_not_follow_directory_symlinks(
     package_dir.mkdir()
     keep_file = package_dir / "keep.py"
     keep_file.write_text("print('ok')\n", encoding="utf-8")
-    (package_dir / "loop").symlink_to(tmp_path, target_is_directory=True)
+    try:
+        (package_dir / "loop").symlink_to(tmp_path, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
 
     files = list(iter_source_files(tmp_path))
 
@@ -150,7 +153,10 @@ def test_iter_source_files_yields_dangling_file_symlinks(
 ) -> None:
     """Dangling file symlinks are yielded; indexing handles the read failure."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    (tmp_path / "dangling.py").symlink_to(tmp_path / "missing-target.py")
+    try:
+        (tmp_path / "dangling.py").symlink_to(tmp_path / "missing-target.py")
+    except OSError as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
 
     files = list(iter_source_files(tmp_path))
 

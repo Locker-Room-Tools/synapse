@@ -4,20 +4,22 @@ import warnings
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 
-from synapse.core.crawler import hash_file, iter_source_files
+from synapse.core.crawler import hash_source, iter_source_files
 from synapse.core.index import SymbolIndex
+from synapse.core.index_schema import (
+    atomic_replace_database,
+    cleanup_database_files,
+    temporary_database_path,
+)
 from synapse.core.languages import detect_language
 from synapse.core.models import SourceFile
-from synapse.core.parser import (
-    RawReference,
-    build_reference_relations,
-    build_relations,
-    extract_references,
-    parse_file,
+from synapse.core.parser import RawReference, build_relations, parse_source
+from synapse.core.reference_reconciliation import (
+    reconcile_affected_references,
+    symbol_names,
 )
-from synapse.core.workspace import db_path, normalize_workspace_path, write_metadata
+from synapse.core.workspace import db_path, require_workspace_path, write_metadata
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,41 +40,30 @@ def _utc_now() -> str:
     return datetime.now(tz=UTC).isoformat()
 
 
-def _temporary_db_path(target_db_path: Path) -> Path:
-    target_db_path.parent.mkdir(parents=True, exist_ok=True)
-    with NamedTemporaryFile(
-        prefix=f".{target_db_path.stem}.",
-        suffix=".tmp",
-        dir=target_db_path.parent,
-        delete=False,
-    ) as temporary_file:
-        return Path(temporary_file.name)
-
-
-def _remove_sqlite_sidecars(db_file: Path) -> None:
-    for suffix in ("-journal", "-shm", "-wal"):
-        db_file.with_name(f"{db_file.name}{suffix}").unlink(missing_ok=True)
-
-
-def _remove_sqlite_file_set(db_file: Path) -> None:
-    db_file.unlink(missing_ok=True)
-    _remove_sqlite_sidecars(db_file)
-
-
 def index_workspace(workspace_path: str | Path = ".", *, force: bool = False) -> IndexStats:
     """Index or re-index a workspace into the local SQLite cache."""
-    root = normalize_workspace_path(workspace_path)
+    root = require_workspace_path(workspace_path)
+    if force:
+        from synapse.core.watch.supervisor import WatchLock
+
+        with WatchLock(root):
+            return _index_workspace(root, force=True)
+    return _index_workspace(root, force=False)
+
+
+def _index_workspace(root: Path, *, force: bool) -> IndexStats:
     target_db_path = db_path(root)
-    temporary_db_path = _temporary_db_path(target_db_path) if force else None
+    temporary_db_path = temporary_database_path(target_db_path) if force else None
     active_db_path = temporary_db_path or target_db_path
-    index = SymbolIndex(active_db_path)
     seen_paths: set[str] = set()
     raw_references_by_file: dict[str, list[RawReference]] = {}
+    affected_names: set[str] = set()
     indexed_files = 0
     skipped_files = 0
     failed_files = 0
 
     try:
+        index = SymbolIndex(active_db_path)
         with index.transaction() as connection:
             existing_files = (
                 {}
@@ -88,14 +79,28 @@ def index_workspace(workspace_path: str | Path = ".", *, force: bool = False) ->
                     continue
                 relative_path = source_path.relative_to(root).as_posix()
                 try:
-                    content_hash = hash_file(source_path)
+                    source_bytes = source_path.read_bytes()
+                    content_hash = hash_source(source_bytes)
                     existing = existing_files.get(relative_path)
                     if not force and existing is not None and existing.content_hash == content_hash:
                         seen_paths.add(relative_path)
                         skipped_files += 1
                         continue
-                    symbols = parse_file(source_path, language, workspace_root=root)
-                    raw_references = extract_references(source_path, language, symbols)
+                    if existing is not None:
+                        affected_names.update(
+                            symbol_names(
+                                index.list_symbols_for_file(
+                                    relative_path,
+                                    connection=connection,
+                                )
+                            )
+                        )
+                    parsed_source = parse_source(
+                        source_path,
+                        language,
+                        source_bytes,
+                        workspace_root=root,
+                    )
                 except OSError as exc:
                     warnings.warn(
                         f"Skipping unreadable file {relative_path}: {exc}",
@@ -104,6 +109,7 @@ def index_workspace(workspace_path: str | Path = ".", *, force: bool = False) ->
                     failed_files += 1
                     continue
 
+                symbols = parsed_source.symbols
                 seen_paths.add(relative_path)
                 indexed_at = _utc_now()
                 index.upsert_file(
@@ -117,7 +123,8 @@ def index_workspace(workspace_path: str | Path = ".", *, force: bool = False) ->
                     ),
                     connection=connection,
                 )
-                raw_references_by_file[relative_path] = raw_references
+                raw_references_by_file[relative_path] = parsed_source.references
+                affected_names.update(symbol_names(symbols))
                 relations = build_relations(symbols)
                 index.replace_symbols_for_file(
                     relative_path,
@@ -128,6 +135,15 @@ def index_workspace(workspace_path: str | Path = ".", *, force: bool = False) ->
                 indexed_files += 1
 
             removed_paths = sorted(set(existing_files) - seen_paths)
+            for removed_path in removed_paths:
+                affected_names.update(
+                    symbol_names(
+                        index.list_symbols_for_file(
+                            removed_path,
+                            connection=connection,
+                        )
+                    )
+                )
             removed_files = (
                 0
                 if force
@@ -136,13 +152,13 @@ def index_workspace(workspace_path: str | Path = ".", *, force: bool = False) ->
                     connection=connection,
                 )
             )
-            name_index = index.symbol_name_index(connection=connection)
-            for file_id, raw_references in raw_references_by_file.items():
-                index.add_relations_for_file(
-                    file_id,
-                    build_reference_relations(raw_references, name_index),
-                    connection=connection,
-                )
+            reconcile_affected_references(
+                root,
+                index,
+                connection,
+                affected_names=affected_names,
+                raw_references_by_file=raw_references_by_file,
+            )
             current_files = index.list_indexed_files(connection=connection)
             languages = sorted({source_file.language for source_file in current_files})
             workspace_stats = index.workspace_stats(connection=connection)
@@ -152,9 +168,7 @@ def index_workspace(workspace_path: str | Path = ".", *, force: bool = False) ->
             assert isinstance(total_symbols, int)
 
         if temporary_db_path is not None:
-            _remove_sqlite_sidecars(target_db_path)
-            temporary_db_path.replace(target_db_path)
-            _remove_sqlite_sidecars(target_db_path)
+            atomic_replace_database(temporary_db_path, target_db_path)
 
         write_metadata(root, last_indexed_at=_utc_now(), languages=languages)
         return IndexStats(
@@ -169,7 +183,7 @@ def index_workspace(workspace_path: str | Path = ".", *, force: bool = False) ->
         )
     except Exception:
         if temporary_db_path is not None:
-            _remove_sqlite_file_set(temporary_db_path)
+            cleanup_database_files(temporary_db_path)
         raise
 
 

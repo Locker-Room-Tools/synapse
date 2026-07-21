@@ -3,24 +3,22 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
-from synapse.core.crawler import hash_file
+from synapse.core.crawler import hash_source
 from synapse.core.index import SymbolIndex
 from synapse.core.languages import detect_language
-from synapse.core.models import RelationKind, SourceFile, Symbol
-from synapse.core.parser import (
-    RawReference,
-    build_reference_relations,
-    build_relations,
-    extract_references,
-    parse_file,
+from synapse.core.models import SourceFile
+from synapse.core.parser import RawReference, build_relations, parse_source
+from synapse.core.reference_reconciliation import (
+    reconcile_affected_references,
+    symbol_names,
 )
 from synapse.core.watch.state import append_journal_complete, append_journal_intent, utc_now
-from synapse.core.workspace import db_path, normalize_workspace_path, write_metadata
+from synapse.core.workspace import db_path, require_workspace_path, write_metadata
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,10 +36,9 @@ class WatchBatchResult:
 class WatchWorker:
     """Apply file-grained watch batches through one SQLite writer."""
 
-    def __init__(self, workspace_path: str | Path, *, max_reference_fixups: int = 256) -> None:
-        self.root = normalize_workspace_path(workspace_path)
+    def __init__(self, workspace_path: str | Path) -> None:
+        self.root = require_workspace_path(workspace_path)
         self.index = SymbolIndex(db_path(self.root))
-        self.max_reference_fixups = max(1, max_reference_fixups)
 
     def apply_batch(
         self,
@@ -49,6 +46,7 @@ class WatchWorker:
         reindex_paths: Iterable[str],
         remove_paths: Iterable[str],
         batch_id: str | None = None,
+        prepared_sources: Mapping[str, tuple[bytes, str]] | None = None,
     ) -> WatchBatchResult:
         """Apply reindex/remove work inside one transaction."""
         reindex = sorted(set(reindex_paths))
@@ -63,7 +61,11 @@ class WatchWorker:
             reindex_paths=reindex,
             remove_paths=remove,
         )
-        result = self._apply_transaction(reindex_paths=reindex, remove_paths=remove)
+        result = self._apply_transaction(
+            reindex_paths=reindex,
+            remove_paths=remove,
+            prepared_sources=prepared_sources or {},
+        )
         append_journal_complete(self.root, batch_id=actual_batch_id)
         return result
 
@@ -72,6 +74,7 @@ class WatchWorker:
         *,
         reindex_paths: list[str],
         remove_paths: list[str],
+        prepared_sources: Mapping[str, tuple[bytes, str]],
     ) -> WatchBatchResult:
         indexed_files = 0
         skipped_files = 0
@@ -86,7 +89,7 @@ class WatchWorker:
             }
             for rel_path in sorted(set(remove_paths) | set(reindex_paths)):
                 affected_names.update(
-                    _symbol_names(self.index.list_symbols_for_file(rel_path, connection=connection))
+                    symbol_names(self.index.list_symbols_for_file(rel_path, connection=connection))
                 )
 
             removed_files += self.index.remove_files(remove_paths, connection=connection)
@@ -95,6 +98,7 @@ class WatchWorker:
                     rel_path,
                     existing_files.get(rel_path),
                     connection=connection,
+                    prepared_source=prepared_sources.get(rel_path),
                 )
                 indexed_files += batch_update.indexed_files
                 skipped_files += batch_update.skipped_files
@@ -103,30 +107,13 @@ class WatchWorker:
                 if batch_update.raw_references is not None:
                     raw_references_by_file[rel_path] = batch_update.raw_references
 
-            name_index = self.index.symbol_name_index(connection=connection)
-            dependent_paths = self._dependent_file_paths(affected_names, connection=connection)
-            dependent_paths.update(raw_references_by_file)
-            current_files = {
-                source_file.path: source_file
-                for source_file in self.index.list_indexed_files(connection=connection)
-            }
-            for rel_path in sorted(dependent_paths)[: self.max_reference_fixups]:
-                raw_references = raw_references_by_file.get(rel_path)
-                if raw_references is None:
-                    source_file = current_files.get(rel_path)
-                    if source_file is None:
-                        continue
-                    symbols = self.index.list_symbols_for_file(rel_path, connection=connection)
-                    raw_references = extract_references(
-                        self.root / rel_path,
-                        source_file.language,
-                        symbols,
-                    )
-                self.index.add_relations_for_file(
-                    rel_path,
-                    build_reference_relations(raw_references, name_index),
-                    connection=connection,
-                )
+            reconcile_affected_references(
+                self.root,
+                self.index,
+                connection,
+                affected_names=affected_names,
+                raw_references_by_file=raw_references_by_file,
+            )
 
             current_files_list = self.index.list_indexed_files(connection=connection)
             languages = sorted({source_file.language for source_file in current_files_list})
@@ -145,6 +132,7 @@ class WatchWorker:
         existing_file: SourceFile | None,
         *,
         connection: sqlite3.Connection,
+        prepared_source: tuple[bytes, str] | None,
     ) -> _FileUpdate:
         absolute_path = self.root / rel_path
         if not absolute_path.exists() or not absolute_path.is_file():
@@ -156,11 +144,21 @@ class WatchWorker:
             removed = self.index.remove_files([rel_path], connection=connection)
             return _FileUpdate(0, 0, removed, [], None)
 
-        content_hash = hash_file(absolute_path)
+        if prepared_source is None:
+            source_bytes = absolute_path.read_bytes()
+            content_hash = hash_source(source_bytes)
+        else:
+            source_bytes, content_hash = prepared_source
         if existing_file is not None and existing_file.content_hash == content_hash:
             return _FileUpdate(0, 1, 0, [], None)
 
-        symbols = parse_file(absolute_path, language, workspace_root=self.root)
+        parsed_source = parse_source(
+            absolute_path,
+            language,
+            source_bytes,
+            workspace_root=self.root,
+        )
+        symbols = parsed_source.symbols
         self.index.upsert_file(
             SourceFile(
                 id=rel_path,
@@ -182,31 +180,9 @@ class WatchWorker:
             1,
             0,
             0,
-            sorted(_symbol_names(symbols)),
-            extract_references(absolute_path, language, symbols),
+            sorted(symbol_names(symbols)),
+            parsed_source.references,
         )
-
-    def _dependent_file_paths(
-        self,
-        names: set[str],
-        *,
-        connection: sqlite3.Connection,
-    ) -> set[str]:
-        if not names:
-            return set()
-        ordered_names = sorted(names)
-        placeholders = ", ".join("?" for _ in ordered_names)
-        rows = connection.execute(
-            f"""
-            SELECT DISTINCT file_id
-            FROM relations
-            WHERE kind = ? AND to_name IN ({placeholders})
-            ORDER BY file_id
-            LIMIT ?
-            """,
-            [str(RelationKind.REFERENCES), *ordered_names, self.max_reference_fixups],
-        ).fetchall()
-        return {str(row["file_id"]) for row in rows}
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,12 +192,3 @@ class _FileUpdate:
     removed_files: int
     affected_names: list[str]
     raw_references: list[RawReference] | None
-
-
-def _symbol_names(symbols: Iterable[Symbol]) -> set[str]:
-    names: set[str] = set()
-    for symbol in symbols:
-        names.add(symbol.name)
-        if symbol.qualified_name is not None:
-            names.add(symbol.qualified_name)
-    return names

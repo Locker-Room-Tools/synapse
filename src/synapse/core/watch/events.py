@@ -8,7 +8,7 @@ from time import time
 from synapse.core.config import load_user_config
 from synapse.core.crawler import _active_ignored_directories
 from synapse.core.languages import detect_language
-from synapse.core.workspace import normalize_workspace_path
+from synapse.core.workspace import require_workspace_path
 
 _TEMP_SUFFIXES = (".tmp", ".swp", ".swo", "~")
 _TEMP_NAMES = {"4913"}
@@ -42,7 +42,7 @@ class EventNormalizer:
         workspace_path: str | Path,
         ignored_directories: frozenset[str] | None = None,
     ) -> None:
-        self.root = normalize_workspace_path(workspace_path)
+        self.root = require_workspace_path(workspace_path)
         self.ignored_directories = ignored_directories or _active_ignored_directories()
 
     def normalize_path(self, path: str | Path, *, require_language: bool = True) -> str | None:
@@ -50,12 +50,17 @@ class EventNormalizer:
         candidate = Path(path).expanduser()
         absolute_path = candidate if candidate.is_absolute() else self.root / candidate
         try:
-            relative = absolute_path.resolve(strict=False).relative_to(self.root)
+            relative = absolute_path.absolute().relative_to(self.root)
         except ValueError:
             return None
 
         if any(part in self.ignored_directories for part in relative.parts):
             return None
+        current = self.root
+        for part in relative.parts[:-1]:
+            current /= part
+            if current.is_symlink():
+                return None
         if relative.name in _TEMP_NAMES or relative.name.endswith(_TEMP_SUFFIXES):
             return None
         if require_language and detect_language(self.root / relative) is None:

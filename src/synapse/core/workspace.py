@@ -28,6 +28,15 @@ def normalize_workspace_path(path: Path | str) -> Path:
     return Path(path).expanduser().resolve()
 
 
+def require_workspace_path(path: Path | str) -> Path:
+    """Return a normalized workspace path or reject a missing/non-directory path."""
+    normalized_path = normalize_workspace_path(path)
+    if not normalized_path.is_dir():
+        msg = f"Workspace is not a directory: {normalized_path}"
+        raise NotADirectoryError(msg)
+    return normalized_path
+
+
 def workspace_id(path: Path | str) -> str:
     """Return the deterministic workspace identifier for a path."""
     normalized_path = str(normalize_workspace_path(path))

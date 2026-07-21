@@ -9,6 +9,7 @@ from typing import Any
 
 from synapse.core.workspace import (
     normalize_workspace_path,
+    require_workspace_path,
     watch_journal_path,
     watch_state_path,
     workspace_id,
@@ -124,7 +125,7 @@ def write_watch_status(path: str | Path, status: WatchStatus) -> None:
 
 def watch_status_payload(path: str | Path) -> dict[str, object]:
     """Return a token-frugal status payload for MCP and CLI JSON output."""
-    status = read_watch_status(path)
+    status = read_watch_status(require_workspace_path(path))
     payload: dict[str, object] = asdict(status)
     if status.running and not _pid_is_running(status.pid):
         payload["running"] = False

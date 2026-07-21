@@ -20,7 +20,13 @@ from synapse.cli.installer import install_mcp_server, standalone_mcp_config, uni
 from synapse.core.indexing import IndexStats, index_workspace
 from synapse.core.watch.state import read_watch_status, watch_status_payload
 from synapse.core.watch.supervisor import pid_is_running, request_watch_stop, run_watch_foreground
-from synapse.core.workspace import db_path, logs_dir, metadata_path, normalize_workspace_path
+from synapse.core.workspace import (
+    db_path,
+    logs_dir,
+    metadata_path,
+    normalize_workspace_path,
+    require_workspace_path,
+)
 from synapse.mcp.server import run
 
 
@@ -153,7 +159,7 @@ def _format_watch_status(payload: dict[str, object]) -> str:
 
 
 def _handle_watch_start(args: Namespace) -> int:
-    workspace_root = normalize_workspace_path(args.workspace)
+    workspace_root = require_workspace_path(args.workspace)
     if args.foreground:
         run_watch_foreground(
             workspace_root,
@@ -180,7 +186,7 @@ def _handle_watch_stop(args: Namespace) -> int:
 
 
 def _handle_watch_status(args: Namespace) -> int:
-    workspace_root = normalize_workspace_path(args.workspace)
+    workspace_root = require_workspace_path(args.workspace)
     payload = watch_status_payload(workspace_root)
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -190,7 +196,7 @@ def _handle_watch_status(args: Namespace) -> int:
 
 
 def _handle_watch_restart(args: Namespace) -> int:
-    workspace_root = normalize_workspace_path(args.workspace)
+    workspace_root = require_workspace_path(args.workspace)
     request_watch_stop(workspace_root)
     if not _wait_for_watch_to_stop(workspace_root):
         print(

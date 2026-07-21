@@ -4,7 +4,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from tree_sitter import Parser, Query, QueryCursor
+from tree_sitter import Language, Parser, Query, QueryCursor, Tree
 from tree_sitter_language_pack import get_language
 
 from synapse.core.languages import to_treesitter_name
@@ -34,6 +34,14 @@ class RawReference:
     start_line: int
     start_byte: int
     from_symbol: Symbol
+
+
+@dataclass(frozen=True, slots=True)
+class ParsedSource:
+    """Symbols and raw references extracted from one parsed syntax tree."""
+
+    symbols: list[Symbol]
+    references: list[RawReference]
 
 
 _CAPTURE_KIND_MAP = {
@@ -117,10 +125,10 @@ def _symbol_id(item: _ExtractedSymbol) -> str:
 
 def _stored_file_path(path: Path, workspace_root: Path | None) -> str:
     if workspace_root is not None:
-        resolved_root = workspace_root.resolve()
-        resolved_path = path.resolve()
-        if resolved_path.is_relative_to(resolved_root):
-            return resolved_path.relative_to(resolved_root).as_posix()
+        absolute_root = workspace_root.absolute()
+        absolute_path = path.absolute()
+        if absolute_path.is_relative_to(absolute_root):
+            return absolute_path.relative_to(absolute_root).as_posix()
     return path.as_posix()
 
 
@@ -135,12 +143,14 @@ def _enclosing_symbol(symbols: Sequence[Symbol], start_byte: int) -> Symbol | No
     return min(candidates, key=lambda symbol: symbol.end_byte - symbol.start_byte)
 
 
-def parse_file(path: Path, language: str, workspace_root: Path | None = None) -> list[Symbol]:
-    """Parse a source file into normalized symbols."""
-    tree_sitter_language = get_language(to_treesitter_name(language))
-    parser = Parser(tree_sitter_language)
-    source_bytes = path.read_bytes()
-    tree = parser.parse(source_bytes)
+def _extract_symbols_from_tree(
+    path: Path,
+    language: str,
+    source_bytes: bytes,
+    tree_sitter_language: Language,
+    tree: Tree,
+    workspace_root: Path | None,
+) -> list[Symbol]:
     query = Query(tree_sitter_language, load_query(language, "symbols"))
     matches = QueryCursor(query).matches(tree.root_node)
     stored_file_path = _stored_file_path(path, workspace_root)
@@ -211,17 +221,18 @@ def parse_file(path: Path, language: str, workspace_root: Path | None = None) ->
     return symbols
 
 
-def extract_references(path: Path, language: str, symbols: Sequence[Symbol]) -> list[RawReference]:
-    """Extract raw symbol references from one source file."""
+def _extract_references_from_tree(
+    language: str,
+    source_bytes: bytes,
+    tree_sitter_language: Language,
+    tree: Tree,
+    symbols: Sequence[Symbol],
+) -> list[RawReference]:
     try:
         query_text = load_query(language, "references")
     except FileNotFoundError:
         return []
 
-    tree_sitter_language = get_language(to_treesitter_name(language))
-    parser = Parser(tree_sitter_language)
-    source_bytes = path.read_bytes()
-    tree = parser.parse(source_bytes)
     query = Query(tree_sitter_language, query_text)
     matches = QueryCursor(query).matches(tree.root_node)
 
@@ -241,6 +252,62 @@ def extract_references(path: Path, language: str, symbols: Sequence[Symbol]) -> 
                 )
             )
     return raw_refs
+
+
+def parse_source(
+    path: Path,
+    language: str,
+    source_bytes: bytes,
+    workspace_root: Path | None = None,
+) -> ParsedSource:
+    """Extract symbols and references from one in-memory parse of a source file."""
+    tree_sitter_language = get_language(to_treesitter_name(language))
+    tree = Parser(tree_sitter_language).parse(source_bytes)
+    symbols = _extract_symbols_from_tree(
+        path,
+        language,
+        source_bytes,
+        tree_sitter_language,
+        tree,
+        workspace_root,
+    )
+    references = _extract_references_from_tree(
+        language,
+        source_bytes,
+        tree_sitter_language,
+        tree,
+        symbols,
+    )
+    return ParsedSource(symbols=symbols, references=references)
+
+
+def parse_file(path: Path, language: str, workspace_root: Path | None = None) -> list[Symbol]:
+    """Parse a source file into normalized symbols."""
+    tree_sitter_language = get_language(to_treesitter_name(language))
+    source_bytes = path.read_bytes()
+    tree = Parser(tree_sitter_language).parse(source_bytes)
+    return _extract_symbols_from_tree(
+        path,
+        language,
+        source_bytes,
+        tree_sitter_language,
+        tree,
+        workspace_root,
+    )
+
+
+def extract_references(path: Path, language: str, symbols: Sequence[Symbol]) -> list[RawReference]:
+    """Extract raw symbol references from one source file."""
+    tree_sitter_language = get_language(to_treesitter_name(language))
+    source_bytes = path.read_bytes()
+    tree = Parser(tree_sitter_language).parse(source_bytes)
+    return _extract_references_from_tree(
+        language,
+        source_bytes,
+        tree_sitter_language,
+        tree,
+        symbols,
+    )
 
 
 def _candidate_symbol_ids(name: str, name_to_symbol_ids: Mapping[str, list[str]]) -> list[str]:

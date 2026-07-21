@@ -31,8 +31,12 @@ def _symbol(name: str, symbol_id: str) -> Symbol:
 
 
 class _FakeIndex:
-    def search_symbols(self, query: str, **_: object) -> list[Symbol]:
-        return [_symbol(query, "sym-1")]
+    def search_symbols_page(
+        self,
+        query: str,
+        **_: object,
+    ) -> tuple[list[Symbol], dict[str, object]]:
+        return [_symbol(query, "sym-1")], _page(returned=1, total=1, limit=20)
 
     def get_symbol(self, symbol_id: str) -> Symbol | None:
         return _symbol("helper", symbol_id)
@@ -42,20 +46,54 @@ class _FakeIndex:
             return [_symbol("helper", "sym-1"), _symbol("helper", "sym-2")]
         return [_symbol(name, "sym-1")]
 
-    def get_file_outline(self, file_path: str) -> dict[str, object] | None:
-        return {"file_path": file_path, "language": "python", "symbols": []}
+    def get_definition_page(
+        self,
+        name: str,
+        **_: object,
+    ) -> tuple[list[Symbol], dict[str, object]]:
+        candidates = self.get_definition(name)
+        return candidates, _page(returned=len(candidates), total=len(candidates))
+
+    def get_file_outline(self, file_path: str, **_: object) -> dict[str, object] | None:
+        return {
+            "file_path": file_path,
+            "language": "python",
+            "symbols": [],
+            "returned": 0,
+            "total": 0,
+            "truncated": False,
+        }
 
     def workspace_stats(self) -> dict[str, object]:
         return {"files": 1, "symbols": 1, "languages": []}
 
-    def project_map(self) -> dict[str, object]:
-        return {"tree": {"sample.py": None}, "top_symbols": []}
+    def project_map(self, **_: object) -> dict[str, object]:
+        return {
+            "tree": {"sample.py": None},
+            "top_symbols": [],
+            "page": _page(returned=1, total=1),
+        }
 
-    def get_file_dependencies(self, file_path: str) -> dict[str, object] | None:
-        return {"file_path": file_path, "imports": ["os"]}
+    def get_file_dependencies(self, file_path: str, **_: object) -> dict[str, object] | None:
+        return {
+            "file_path": file_path,
+            "imports": ["os"],
+            "page": _page(returned=1, total=1),
+        }
 
-    def get_symbol_context(self, symbol_id: str, include_body: bool = False) -> dict[str, object]:
-        return {"symbol": {"symbol_id": symbol_id}, "parent": None, "children": [], "body": None}
+    def get_symbol_context(
+        self,
+        symbol_id: str,
+        include_body: bool = False,
+        **_: object,
+    ) -> dict[str, object]:
+        return {
+            "symbol": {"symbol_id": symbol_id},
+            "parent": None,
+            "children": [],
+            "body": None,
+            "page": _page(returned=0, total=0),
+        }
 
     def get_dependencies(self, symbol_id: str) -> list[Relation]:
         return [
@@ -72,19 +110,57 @@ class _FakeIndex:
             )
         ]
 
+    def get_dependencies_page(
+        self,
+        symbol_id: str,
+        **_: object,
+    ) -> tuple[list[Relation], dict[str, object]]:
+        relations = self.get_dependencies(symbol_id)
+        return relations, _page(returned=len(relations), total=len(relations))
+
     def find_references(
         self,
         *,
         symbol_id: str | None = None,
         name: str | None = None,
+        **_: object,
     ) -> dict[str, object]:
-        return {"items": [], "files": [symbol_id or name or ""]}
+        return {
+            "items": [],
+            "files": [symbol_id or name or ""],
+            "page": _page(returned=0, total=0),
+        }
 
-    def related_symbols(self, symbol_id: str, limit: int = 20) -> dict[str, object]:
-        return {"symbol": {"symbol_id": symbol_id}, "related": [{"limit": limit}]}
+    def related_symbols(
+        self,
+        symbol_id: str,
+        limit: int = 20,
+        **_: object,
+    ) -> dict[str, object]:
+        return {
+            "symbol": {"symbol_id": symbol_id},
+            "related": [{"limit": limit}],
+            "page": _page(returned=1, total=1, limit=limit),
+        }
 
     def compact_context(self, symbol_id: str) -> dict[str, object]:
         return {"symbol": {"symbol_id": symbol_id}, "file": "sample.py"}
+
+
+def _page(
+    *,
+    returned: int,
+    total: int,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, object]:
+    return {
+        "limit": limit,
+        "offset": offset,
+        "returned": returned,
+        "total": total,
+        "has_more": offset + returned < total,
+    }
 
 
 def test_synapse_index_workspace_returns_serializable_stats(
@@ -105,11 +181,12 @@ def test_synapse_index_workspace_returns_serializable_stats(
 
 
 def test_symbol_lookup_tools_delegate_to_the_index(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Search, definition, outline, and context tools stay thin."""
     monkeypatch.setattr(tools, "_workspace_index", lambda path=".": _FakeIndex())
-    monkeypatch.setattr(tools, "_workspace_root", lambda path=".": Path("/workspace"))
+    monkeypatch.setattr(tools, "_workspace_root", lambda path=".": tmp_path)
 
     assert tools.synapse_search_symbols("helper") == {
         "items": [
@@ -124,7 +201,8 @@ def test_symbol_lookup_tools_delegate_to_the_index(
                 "signature": "def helper():",
                 "confidence": "high",
             }
-        ]
+        ],
+        "page": _page(returned=1, total=1, limit=20),
     }
     assert tools.synapse_get_definition(symbol_id="sym-1") == {
         "symbol_id": "sym-1",
@@ -173,26 +251,36 @@ def test_symbol_lookup_tools_delegate_to_the_index(
                 "signature": "def helper():",
                 "confidence": "high",
             },
-        ]
+        ],
+        "page": _page(returned=2, total=2),
     }
     assert tools.synapse_get_file_outline("sample.py") == {
         "file_path": "sample.py",
         "language": "python",
         "symbols": [],
+        "returned": 0,
+        "total": 0,
+        "truncated": False,
     }
     assert tools.synapse_workspace_stats() == {"files": 1, "symbols": 1, "languages": []}
     monkeypatch.setattr(tools, "watch_status_payload", lambda path: {"running": False})
     assert tools.synapse_watch_status() == {"running": False}
-    assert tools.synapse_project_map() == {"tree": {"sample.py": None}, "top_symbols": []}
-    assert tools.synapse_get_file_dependencies("/workspace/sample.py") == {
+    assert tools.synapse_project_map() == {
+        "tree": {"sample.py": None},
+        "top_symbols": [],
+        "page": _page(returned=1, total=1),
+    }
+    assert tools.synapse_get_file_dependencies(str(tmp_path / "sample.py")) == {
         "file_path": "sample.py",
         "imports": ["os"],
+        "page": _page(returned=1, total=1),
     }
     assert tools.synapse_get_symbol_context("sym-1") == {
         "symbol": {"symbol_id": "sym-1"},
         "parent": None,
         "children": [],
         "body": None,
+        "page": _page(returned=0, total=0),
     }
     assert tools.synapse_get_dependencies("sym-1") == {
         "items": [
@@ -206,12 +294,18 @@ def test_symbol_lookup_tools_delegate_to_the_index(
                 "source": "tree-sitter",
                 "confidence": "high",
             }
-        ]
+        ],
+        "page": _page(returned=1, total=1),
     }
-    assert tools.synapse_find_references(symbol_id="sym-1") == {"items": [], "files": ["sym-1"]}
+    assert tools.synapse_find_references(symbol_id="sym-1") == {
+        "items": [],
+        "files": ["sym-1"],
+        "page": _page(returned=0, total=0),
+    }
     assert tools.synapse_related_symbols("sym-1", limit=3) == {
         "symbol": {"symbol_id": "sym-1"},
         "related": [{"limit": 3}],
+        "page": _page(returned=1, total=1, limit=3),
     }
     assert tools.synapse_compact_context("sym-1") == {
         "symbol": {"symbol_id": "sym-1"},
@@ -247,6 +341,7 @@ def test_workspace_root_resolves_relative_paths_from_configured_workspace(
     """MCP relative workspace paths are resolved from the configured workspace."""
     monkeypatch.setattr("synapse.mcp.workspace._workspace_root", None)
     configure_workspace(tmp_path)
+    (tmp_path / "nested").mkdir()
 
     assert tools._workspace_root(".") == tmp_path
     assert tools._workspace_root("nested") == tmp_path / "nested"
@@ -284,3 +379,17 @@ def test_two_workspaces_are_indexed_and_queried_independently(
 
     assert missing_a["items"] == []
     assert missing_b["items"] == []
+
+
+def test_querying_a_missing_workspace_does_not_create_cache_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MCP query validation precedes index path allocation."""
+    data_root = tmp_path / "data-root"
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(data_root))
+
+    with pytest.raises(NotADirectoryError, match="Workspace is not a directory"):
+        tools.synapse_search_symbols("helper", workspace_path=str(tmp_path / "missing"))
+
+    assert not data_root.exists()

@@ -5,8 +5,11 @@ from pathlib import Path
 
 import pytest
 
+from synapse.core.crawler import hash_source as calculate_source_hash
 from synapse.core.index import SymbolIndex
 from synapse.core.indexing import index_workspace
+from synapse.core.parser import ParsedSource
+from synapse.core.parser import parse_source as parse_source_bytes
 from synapse.core.workspace import db_path, read_metadata
 
 
@@ -48,7 +51,10 @@ def test_index_workspace_skips_unreadable_files_and_continues(
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     (workspace_root / "good.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
-    (workspace_root / "dangling.py").symlink_to(workspace_root / "missing.py")
+    try:
+        (workspace_root / "dangling.py").symlink_to(workspace_root / "missing.py")
+    except OSError as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
 
     with pytest.warns(UserWarning, match="Skipping unreadable file dangling.py"):
         stats = index_workspace(workspace_root)
@@ -98,7 +104,7 @@ def test_index_workspace_force_rebuild_keeps_existing_index_on_failure(
         msg = "boom"
         raise RuntimeError(msg)
 
-    monkeypatch.setattr("synapse.core.indexing.parse_file", fail_parse)
+    monkeypatch.setattr("synapse.core.indexing.parse_source", fail_parse)
 
     with pytest.raises(RuntimeError, match="boom"):
         index_workspace(workspace_root, force=True)
@@ -187,3 +193,132 @@ def test_index_workspace_resolves_cross_file_references(
     assert len(references) == 1
     assert references[0].from_file_path == "caller.py"
     assert references[0].to_symbol_id == helper.id
+
+
+def test_incremental_reference_reconciliation_handles_add_rename_and_delete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unchanged callers follow target additions, renames, and deletions."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    caller = workspace / "caller.py"
+    target = workspace / "target.py"
+    caller.write_text("def caller():\n    return helper()\n", encoding="utf-8")
+
+    index_workspace(workspace)
+    index = SymbolIndex(db_path(workspace))
+    assert len(index.get_references_by_name("helper")) == 1
+
+    target.write_text("def helper():\n    return 1\n", encoding="utf-8")
+    index_workspace(workspace)
+    index = SymbolIndex(db_path(workspace))
+    helper = index.get_definition("helper")[0]
+    assert len(index.get_references(helper.id)) == 1
+    assert index.get_references_by_name("helper") == []
+
+    target.write_text("def renamed():\n    return 1\n", encoding="utf-8")
+    index_workspace(workspace)
+    index = SymbolIndex(db_path(workspace))
+    assert index.get_definition("helper") == []
+    assert len(index.get_references_by_name("helper")) == 1
+
+    caller.write_text("def caller():\n    return renamed()\n", encoding="utf-8")
+    index_workspace(workspace)
+    index = SymbolIndex(db_path(workspace))
+    renamed = index.get_definition("renamed")[0]
+    assert len(index.get_references(renamed.id)) == 1
+
+    target.unlink()
+    index_workspace(workspace)
+    index = SymbolIndex(db_path(workspace))
+    assert index.get_definition("renamed") == []
+    assert len(index.get_references_by_name("renamed")) == 1
+
+
+def test_changed_file_is_read_hashed_and_parsed_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Incremental indexing reuses one byte buffer and one syntax tree."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = workspace / "sample.py"
+    source.write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    original_read_bytes = Path.read_bytes
+    calls = {"read": 0, "hash": 0, "parse": 0}
+
+    def counting_read_bytes(path: Path) -> bytes:
+        if path == source:
+            calls["read"] += 1
+        return original_read_bytes(path)
+
+    def counting_hash_source(source_bytes: bytes) -> str:
+        calls["hash"] += 1
+        return calculate_source_hash(source_bytes)
+
+    def counting_parse_source(
+        path: Path,
+        language: str,
+        source_bytes: bytes,
+        workspace_root: Path | None = None,
+    ) -> ParsedSource:
+        calls["parse"] += 1
+        return parse_source_bytes(path, language, source_bytes, workspace_root)
+
+    monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
+    monkeypatch.setattr("synapse.core.indexing.hash_source", counting_hash_source)
+    monkeypatch.setattr("synapse.core.indexing.parse_source", counting_parse_source)
+
+    index_workspace(workspace)
+
+    assert calls == {"read": 1, "hash": 1, "parse": 1}
+
+
+def test_file_symlink_uses_its_lexical_workspace_path_everywhere(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Stored files, symbols, IDs, and relations never expose a symlink target path."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    external = tmp_path / "external.py"
+    external.write_text(
+        "def linked():\n    return linked()\n",
+        encoding="utf-8",
+    )
+    link = workspace / "linked.py"
+    try:
+        link.symlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
+
+    index_workspace(workspace)
+
+    index = SymbolIndex(db_path(workspace))
+    indexed_file = index.list_indexed_files()[0]
+    symbol = index.get_definition("linked")[0]
+    relations = index.get_dependencies(symbol.id)
+    assert indexed_file.path == "linked.py"
+    assert symbol.file_path == "linked.py"
+    assert ":linked.py:" in symbol.id
+    assert all(relation.from_file_path == "linked.py" for relation in relations)
+    assert str(external) not in repr((indexed_file, symbol, relations))
+
+
+def test_missing_workspace_fails_before_cache_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Workspace validation runs before database and metadata path allocation."""
+    data_root = tmp_path / "data-root"
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(data_root))
+    missing = tmp_path / "missing"
+
+    with pytest.raises(NotADirectoryError, match="Workspace is not a directory"):
+        index_workspace(missing)
+
+    assert not data_root.exists()

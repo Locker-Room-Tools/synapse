@@ -4,7 +4,10 @@ from pathlib import Path
 
 import pytest
 
+from synapse.core.crawler import hash_source as calculate_source_hash
 from synapse.core.index import SymbolIndex
+from synapse.core.parser import ParsedSource
+from synapse.core.parser import parse_source as parse_source_bytes
 from synapse.core.watch.debounce import CoalescingBuffer
 from synapse.core.watch.events import ChangeEvent, ChangeKind, EventNormalizer
 from synapse.core.watch.reconcile import reconcile_workspace
@@ -79,6 +82,21 @@ def test_event_normalizer_handles_rename_delete_and_outside_paths(tmp_path: Path
     assert normalizer.normalize_path(tmp_path / "outside.py") is None
 
 
+def test_event_normalizer_preserves_a_file_symlink_workspace_path(tmp_path: Path) -> None:
+    """Watch events identify a symlink lexically instead of leaking its target."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = tmp_path / "outside.py"
+    target.write_text("def linked(): pass\n", encoding="utf-8")
+    link = workspace / "linked.py"
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
+
+    assert EventNormalizer(workspace, frozenset()).normalize_path(link) == "linked.py"
+
+
 def test_coalescing_buffer_batches_latest_intent() -> None:
     """Debounce coalescing keeps the last path intent and emits bounded batches."""
     buffer = CoalescingBuffer(debounce_ms=100, max_latency_ms=1_000, batch_size=10)
@@ -136,6 +154,20 @@ def test_watch_worker_indexes_skips_updates_and_removes_files(
     assert index.list_indexed_files() == []
 
 
+def test_watch_worker_rejects_missing_workspace_before_cache_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Watch initialization validates its workspace before allocating state."""
+    data_root = tmp_path / "data-root"
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(data_root))
+
+    with pytest.raises(NotADirectoryError, match="Workspace is not a directory"):
+        WatchWorker(tmp_path / "missing")
+
+    assert not data_root.exists()
+
+
 def test_watch_worker_reindex_of_missing_path_removes_existing_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -156,6 +188,116 @@ def test_watch_worker_reindex_of_missing_path_removes_existing_file(
     assert SymbolIndex(db_path(workspace_root)).list_indexed_files() == []
 
 
+def test_watch_reference_reconciliation_handles_add_rename_and_delete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Watch batches update references in callers omitted from the event batch."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    caller = workspace / "caller.py"
+    target = workspace / "target.py"
+    caller.write_text("def caller():\n    return helper()\n", encoding="utf-8")
+    worker = WatchWorker(workspace)
+
+    worker.apply_batch(reindex_paths=["caller.py"], remove_paths=[])
+    assert len(worker.index.get_references_by_name("helper")) == 1
+
+    target.write_text("def helper():\n    return 1\n", encoding="utf-8")
+    worker.apply_batch(reindex_paths=["target.py"], remove_paths=[])
+    helper = worker.index.get_definition("helper")[0]
+    assert len(worker.index.get_references(helper.id)) == 1
+
+    target.write_text("def renamed():\n    return 1\n", encoding="utf-8")
+    worker.apply_batch(reindex_paths=["target.py"], remove_paths=[])
+    assert len(worker.index.get_references_by_name("helper")) == 1
+
+    caller.write_text("def caller():\n    return renamed()\n", encoding="utf-8")
+    worker.apply_batch(reindex_paths=["caller.py"], remove_paths=[])
+    renamed = worker.index.get_definition("renamed")[0]
+    assert len(worker.index.get_references(renamed.id)) == 1
+
+    target.unlink()
+    worker.apply_batch(reindex_paths=[], remove_paths=["target.py"])
+    assert len(worker.index.get_references_by_name("renamed")) == 1
+
+
+def test_watch_reference_reconciliation_has_no_256_file_cutoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every dependent caller is reconciled when a target name changes."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "target.py"
+    target.write_text("def helper():\n    return 1\n", encoding="utf-8")
+    caller_paths: list[str] = []
+    for index in range(257):
+        relative_path = f"caller_{index:03}.py"
+        caller_paths.append(relative_path)
+        (workspace / relative_path).write_text(
+            f"def caller_{index}():\n    return helper()\n",
+            encoding="utf-8",
+        )
+    worker = WatchWorker(workspace)
+    worker.apply_batch(
+        reindex_paths=[*caller_paths, "target.py"],
+        remove_paths=[],
+    )
+    helper = worker.index.get_definition("helper")[0]
+    assert len(worker.index.get_references(helper.id)) == 257
+
+    target.write_text("def renamed():\n    return 1\n", encoding="utf-8")
+    worker.apply_batch(reindex_paths=["target.py"], remove_paths=[])
+
+    assert len(worker.index.get_references_by_name("helper")) == 257
+    assert worker.index.get_references(helper.id) == []
+
+
+def test_watch_reconcile_reads_hashes_and_parses_changed_file_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Polling reconciliation passes changed files through one worker read and parse."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = workspace / "sample.py"
+    source.write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    reconcile_workspace(workspace)
+    source.write_text("def beta():\n    return 2\n", encoding="utf-8")
+    original_read_bytes = Path.read_bytes
+    calls = {"read": 0, "hash": 0, "parse": 0}
+
+    def counting_read_bytes(path: Path) -> bytes:
+        if path == source:
+            calls["read"] += 1
+        return original_read_bytes(path)
+
+    def counting_hash_source(source_bytes: bytes) -> str:
+        calls["hash"] += 1
+        return calculate_source_hash(source_bytes)
+
+    def counting_parse_source(
+        path: Path,
+        language: str,
+        source_bytes: bytes,
+        workspace_root: Path | None = None,
+    ) -> ParsedSource:
+        calls["parse"] += 1
+        return parse_source_bytes(path, language, source_bytes, workspace_root)
+
+    monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
+    monkeypatch.setattr("synapse.core.watch.reconcile.hash_source", counting_hash_source)
+    monkeypatch.setattr("synapse.core.watch.worker.parse_source", counting_parse_source)
+
+    reconcile_workspace(workspace)
+
+    assert calls == {"read": 1, "hash": 1, "parse": 1}
+
+
 def test_watch_worker_parse_failure_leaves_unfinished_journal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -169,7 +311,7 @@ def test_watch_worker_parse_failure_leaves_unfinished_journal(
     def fail_parse(*_args: object, **_kwargs: object) -> list[object]:
         raise RuntimeError("parse boom")
 
-    monkeypatch.setattr("synapse.core.watch.worker.parse_file", fail_parse)
+    monkeypatch.setattr("synapse.core.watch.worker.parse_source", fail_parse)
 
     with pytest.raises(RuntimeError, match="parse boom"):
         WatchWorker(workspace_root).apply_batch(reindex_paths=["sample.py"], remove_paths=[])
