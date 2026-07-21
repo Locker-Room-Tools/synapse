@@ -1,5 +1,6 @@
 """Workspace indexing orchestration."""
 
+import sqlite3
 import warnings
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -14,7 +15,7 @@ from synapse.core.index_schema import (
 )
 from synapse.core.languages import detect_language
 from synapse.core.models import SourceFile
-from synapse.core.parser import RawReference, build_relations, parse_source
+from synapse.core.parser import ParsedSource, RawReference, build_relations, parse_source
 from synapse.core.reference_reconciliation import (
     reconcile_affected_references,
     symbol_names,
@@ -38,6 +39,45 @@ class IndexStats:
 
 def _utc_now() -> str:
     return datetime.now(tz=UTC).isoformat()
+
+
+def index_source_file(
+    index: SymbolIndex,
+    connection: sqlite3.Connection,
+    *,
+    workspace_root: Path,
+    relative_path: str,
+    absolute_path: Path,
+    language: str,
+    source_bytes: bytes,
+    content_hash: str,
+    indexed_at: str,
+) -> ParsedSource:
+    """Parse one source file and upsert its file row, symbols, and relations."""
+    parsed_source = parse_source(
+        absolute_path,
+        language,
+        source_bytes,
+        workspace_root=workspace_root,
+    )
+    index.upsert_file(
+        SourceFile(
+            id=relative_path,
+            path=relative_path,
+            language=language,
+            project_root=str(workspace_root),
+            content_hash=content_hash,
+            indexed_at=indexed_at,
+        ),
+        connection=connection,
+    )
+    index.replace_symbols_for_file(
+        relative_path,
+        parsed_source.symbols,
+        build_relations(parsed_source.symbols),
+        connection=connection,
+    )
+    return parsed_source
 
 
 def index_workspace(workspace_path: str | Path = ".", *, force: bool = False) -> IndexStats:
@@ -95,11 +135,16 @@ def _index_workspace(root: Path, *, force: bool) -> IndexStats:
                                 )
                             )
                         )
-                    parsed_source = parse_source(
-                        source_path,
-                        language,
-                        source_bytes,
+                    parsed_source = index_source_file(
+                        index,
+                        connection,
                         workspace_root=root,
+                        relative_path=relative_path,
+                        absolute_path=source_path,
+                        language=language,
+                        source_bytes=source_bytes,
+                        content_hash=content_hash,
+                        indexed_at=_utc_now(),
                     )
                 except OSError as exc:
                     warnings.warn(
@@ -109,29 +154,9 @@ def _index_workspace(root: Path, *, force: bool) -> IndexStats:
                     failed_files += 1
                     continue
 
-                symbols = parsed_source.symbols
                 seen_paths.add(relative_path)
-                indexed_at = _utc_now()
-                index.upsert_file(
-                    SourceFile(
-                        id=relative_path,
-                        path=relative_path,
-                        language=language,
-                        project_root=str(root),
-                        content_hash=content_hash,
-                        indexed_at=indexed_at,
-                    ),
-                    connection=connection,
-                )
                 raw_references_by_file[relative_path] = parsed_source.references
-                affected_names.update(symbol_names(symbols))
-                relations = build_relations(symbols)
-                index.replace_symbols_for_file(
-                    relative_path,
-                    symbols,
-                    relations,
-                    connection=connection,
-                )
+                affected_names.update(symbol_names(parsed_source.symbols))
                 indexed_files += 1
 
             removed_paths = sorted(set(existing_files) - seen_paths)

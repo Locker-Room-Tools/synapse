@@ -10,9 +10,10 @@ from uuid import uuid4
 
 from synapse.core.crawler import hash_source
 from synapse.core.index import SymbolIndex
+from synapse.core.indexing import index_source_file
 from synapse.core.languages import detect_language
 from synapse.core.models import SourceFile
-from synapse.core.parser import RawReference, build_relations, parse_source
+from synapse.core.parser import RawReference
 from synapse.core.reference_reconciliation import (
     reconcile_affected_references,
     symbol_names,
@@ -152,35 +153,22 @@ class WatchWorker:
         if existing_file is not None and existing_file.content_hash == content_hash:
             return _FileUpdate(0, 1, 0, [], None)
 
-        parsed_source = parse_source(
-            absolute_path,
-            language,
-            source_bytes,
+        parsed_source = index_source_file(
+            self.index,
+            connection,
             workspace_root=self.root,
-        )
-        symbols = parsed_source.symbols
-        self.index.upsert_file(
-            SourceFile(
-                id=rel_path,
-                path=rel_path,
-                language=language,
-                project_root=str(self.root),
-                content_hash=content_hash,
-                indexed_at=utc_now(),
-            ),
-            connection=connection,
-        )
-        self.index.replace_symbols_for_file(
-            rel_path,
-            symbols,
-            build_relations(symbols),
-            connection=connection,
+            relative_path=rel_path,
+            absolute_path=absolute_path,
+            language=language,
+            source_bytes=source_bytes,
+            content_hash=content_hash,
+            indexed_at=utc_now(),
         )
         return _FileUpdate(
             1,
             0,
             0,
-            sorted(symbol_names(symbols)),
+            sorted(symbol_names(parsed_source.symbols)),
             parsed_source.references,
         )
 

@@ -291,7 +291,7 @@ def test_watch_reconcile_reads_hashes_and_parses_changed_file_once(
 
     monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
     monkeypatch.setattr("synapse.core.watch.reconcile.hash_source", counting_hash_source)
-    monkeypatch.setattr("synapse.core.watch.worker.parse_source", counting_parse_source)
+    monkeypatch.setattr("synapse.core.indexing.parse_source", counting_parse_source)
 
     reconcile_workspace(workspace)
 
@@ -311,7 +311,7 @@ def test_watch_worker_parse_failure_leaves_unfinished_journal(
     def fail_parse(*_args: object, **_kwargs: object) -> list[object]:
         raise RuntimeError("parse boom")
 
-    monkeypatch.setattr("synapse.core.watch.worker.parse_source", fail_parse)
+    monkeypatch.setattr("synapse.core.indexing.parse_source", fail_parse)
 
     with pytest.raises(RuntimeError, match="parse boom"):
         WatchWorker(workspace_root).apply_batch(reindex_paths=["sample.py"], remove_paths=[])
