@@ -11,7 +11,13 @@ import anyio
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from synapse.cli.adapters import BEGIN_MARKER, END_MARKER, get_adapter, resolve_instruction_path
+from synapse.cli.adapters import (
+    BEGIN_MARKER,
+    END_MARKER,
+    AgentAdapter,
+    get_adapter,
+    resolve_instruction_path,
+)
 from synapse.cli.installer import config_has_mcp_server, resolve_config_path
 from synapse.core.index import SymbolIndex
 from synapse.core.indexing import index_workspace
@@ -82,6 +88,116 @@ async def _probe_mcp(workspace_root: Path) -> tuple[list[str], int, str | None]:
     return tool_names, 0, instructions
 
 
+def _check_package() -> DoctorCheck:
+    try:
+        import synapse
+
+        version = getattr(synapse, "__version__", "unknown")
+        return DoctorCheck("package", "ok", f"synapse {version} importable")
+    except Exception as exc:  # pragma: no cover - defensive startup check
+        return DoctorCheck("package", "fail", f"package import failed: {exc}")
+
+
+def _check_agent(agent: str) -> tuple[AgentAdapter | None, DoctorCheck]:
+    try:
+        adapter = get_adapter(agent)
+    except ValueError as exc:
+        return None, DoctorCheck("agent", "fail", str(exc))
+    return adapter, DoctorCheck("agent", "ok", f"{adapter.display_name} adapter found")
+
+
+def _check_workspace(workspace_root: Path) -> DoctorCheck:
+    if not workspace_root.exists() or not workspace_root.is_dir():
+        return DoctorCheck("workspace", "fail", f"{workspace_root} is not a directory")
+    return DoctorCheck("workspace", "ok", str(workspace_root))
+
+
+def _check_mcp_config(
+    agent: str,
+    adapter: AgentAdapter,
+    workspace_root: Path,
+    scope: str | None,
+) -> DoctorCheck:
+    resolved_scope = scope or adapter.default_scope
+    try:
+        config_path = resolve_config_path(adapter, workspace_root, resolved_scope)
+        if config_has_mcp_server(agent, workspace_root, scope=resolved_scope):
+            return DoctorCheck("mcp_config", "ok", f"synapse entry found in {config_path}")
+        return DoctorCheck("mcp_config", "warn", f"synapse entry not found in {config_path}")
+    except ValueError as exc:
+        return DoctorCheck("mcp_config", "warn", str(exc))
+
+
+def _check_instructions(agent: str, workspace_root: Path) -> DoctorCheck:
+    instruction_path = resolve_instruction_path(agent, workspace_root)
+    if not instruction_path.exists():
+        return DoctorCheck(
+            "instructions", "warn", f"instruction file not found at {instruction_path}"
+        )
+    instruction_text = instruction_path.read_text(encoding="utf-8")
+    if BEGIN_MARKER in instruction_text and END_MARKER in instruction_text:
+        return DoctorCheck(
+            "instructions", "ok", f"Synapse instruction block found in {instruction_path}"
+        )
+    return DoctorCheck(
+        "instructions", "warn", f"Synapse instruction block not found in {instruction_path}"
+    )
+
+
+def _check_index(workspace_root: Path) -> DoctorCheck:
+    try:
+        stats = index_workspace(workspace_root)
+    except Exception as exc:
+        return DoctorCheck("index", "fail", f"indexing failed: {exc}")
+    return DoctorCheck(
+        "index",
+        "ok",
+        (
+            f"indexed={stats.indexed_files}, skipped={stats.skipped_files}, "
+            f"removed={stats.removed_files}"
+        ),
+    )
+
+
+def _check_indexed_files(workspace_root: Path) -> DoctorCheck:
+    indexed_files = len(SymbolIndex(db_path(workspace_root)).list_indexed_files())
+    if indexed_files == 0:
+        return DoctorCheck("indexed_files", "warn", "no supported source files indexed")
+    return DoctorCheck("indexed_files", "ok", f"{indexed_files} files indexed")
+
+
+def _check_watch(workspace_root: Path) -> DoctorCheck:
+    watch_status = watch_status_payload(workspace_root)
+    if watch_status["running"]:
+        return DoctorCheck("watch", "ok", f"daemon running via {watch_status['backend']}")
+    return DoctorCheck(
+        "watch",
+        "warn",
+        "polling daemon not running; index updates require manual indexing until started",
+    )
+
+
+def _check_mcp_probe(workspace_root: Path) -> list[DoctorCheck]:
+    try:
+        tool_names, result_count, instructions = anyio.run(_probe_mcp, workspace_root)
+    except Exception as exc:
+        return [DoctorCheck("mcp", "fail", f"MCP probe failed: {exc}")]
+    checks: list[DoctorCheck] = []
+    missing_tools = sorted(EXPECTED_TOOLS - set(tool_names))
+    if missing_tools:
+        checks.append(
+            DoctorCheck("mcp_tools", "fail", f"missing tools: {', '.join(missing_tools)}")
+        )
+    else:
+        checks.append(DoctorCheck("mcp_tools", "ok", f"{len(tool_names)} tools advertised"))
+    if instructions:
+        checks.append(DoctorCheck("server_instructions", "ok", "server instructions advertised"))
+    else:
+        checks.append(DoctorCheck("server_instructions", "warn", "server instructions missing"))
+    checks.append(DoctorCheck("mcp_call", "ok", f"search call returned {result_count} items"))
+    return checks
+
+
 def run_doctor(
     path: str | Path = ".",
     agent: str | None = None,
@@ -91,133 +207,34 @@ def run_doctor(
     """Run installation checks and return a structured report."""
     checks: list[DoctorCheck] = []
     workspace_root = normalize_workspace_path(path)
+
+    package_check = _check_package()
+    checks.append(package_check)
+    if package_check.status == "fail":
+        return DoctorReport(str(workspace_root), agent, checks)
+
     adapter = None
-
-    try:
-        import synapse
-
-        version = getattr(synapse, "__version__", "unknown")
-        checks.append(DoctorCheck("package", "ok", f"synapse {version} importable"))
-    except Exception as exc:  # pragma: no cover - defensive startup check
-        checks.append(DoctorCheck("package", "fail", f"package import failed: {exc}"))
-        return DoctorReport(str(workspace_root), agent, checks)
-
     if agent is not None:
-        try:
-            adapter = get_adapter(agent)
-            checks.append(DoctorCheck("agent", "ok", f"{adapter.display_name} adapter found"))
-        except ValueError as exc:
-            checks.append(DoctorCheck("agent", "fail", str(exc)))
+        adapter, agent_check = _check_agent(agent)
+        checks.append(agent_check)
 
-    if not workspace_root.exists() or not workspace_root.is_dir():
-        checks.append(DoctorCheck("workspace", "fail", f"{workspace_root} is not a directory"))
+    workspace_check = _check_workspace(workspace_root)
+    checks.append(workspace_check)
+    if workspace_check.status == "fail":
         return DoctorReport(str(workspace_root), agent, checks)
-    checks.append(DoctorCheck("workspace", "ok", str(workspace_root)))
 
     if agent is not None and adapter is not None:
-        resolved_scope = scope or adapter.default_scope
-        try:
-            config_path = resolve_config_path(adapter, workspace_root, resolved_scope)
-            if config_has_mcp_server(agent, workspace_root, scope=resolved_scope):
-                checks.append(
-                    DoctorCheck(
-                        "mcp_config",
-                        "ok",
-                        f"synapse entry found in {config_path}",
-                    )
-                )
-            else:
-                checks.append(
-                    DoctorCheck(
-                        "mcp_config",
-                        "warn",
-                        f"synapse entry not found in {config_path}",
-                    )
-                )
-        except ValueError as exc:
-            checks.append(DoctorCheck("mcp_config", "warn", str(exc)))
+        checks.append(_check_mcp_config(agent, adapter, workspace_root, scope))
+        checks.append(_check_instructions(agent, workspace_root))
 
-        instruction_path = resolve_instruction_path(agent, workspace_root)
-        if instruction_path.exists():
-            instruction_text = instruction_path.read_text(encoding="utf-8")
-            if BEGIN_MARKER in instruction_text and END_MARKER in instruction_text:
-                checks.append(
-                    DoctorCheck(
-                        "instructions",
-                        "ok",
-                        f"Synapse instruction block found in {instruction_path}",
-                    )
-                )
-            else:
-                checks.append(
-                    DoctorCheck(
-                        "instructions",
-                        "warn",
-                        f"Synapse instruction block not found in {instruction_path}",
-                    )
-                )
-        else:
-            checks.append(
-                DoctorCheck(
-                    "instructions",
-                    "warn",
-                    f"instruction file not found at {instruction_path}",
-                )
-            )
-
-    try:
-        stats = index_workspace(workspace_root)
-        checks.append(
-            DoctorCheck(
-                "index",
-                "ok",
-                (
-                    f"indexed={stats.indexed_files}, skipped={stats.skipped_files}, "
-                    f"removed={stats.removed_files}"
-                ),
-            )
-        )
-    except Exception as exc:
-        checks.append(DoctorCheck("index", "fail", f"indexing failed: {exc}"))
+    index_check = _check_index(workspace_root)
+    checks.append(index_check)
+    if index_check.status == "fail":
         return DoctorReport(str(workspace_root), agent, checks)
 
-    indexed_files = len(SymbolIndex(db_path(workspace_root)).list_indexed_files())
-    if indexed_files == 0:
-        checks.append(DoctorCheck("indexed_files", "warn", "no supported source files indexed"))
-    else:
-        checks.append(DoctorCheck("indexed_files", "ok", f"{indexed_files} files indexed"))
-
-    watch_status = watch_status_payload(workspace_root)
-    if watch_status["running"]:
-        checks.append(DoctorCheck("watch", "ok", f"daemon running via {watch_status['backend']}"))
-    else:
-        checks.append(
-            DoctorCheck(
-                "watch",
-                "warn",
-                "polling daemon not running; index updates require manual indexing until started",
-            )
-        )
-
-    try:
-        tool_names, result_count, instructions = anyio.run(_probe_mcp, workspace_root)
-        missing_tools = sorted(EXPECTED_TOOLS - set(tool_names))
-        if missing_tools:
-            checks.append(
-                DoctorCheck("mcp_tools", "fail", f"missing tools: {', '.join(missing_tools)}")
-            )
-        else:
-            checks.append(DoctorCheck("mcp_tools", "ok", f"{len(tool_names)} tools advertised"))
-        if instructions:
-            checks.append(
-                DoctorCheck("server_instructions", "ok", "server instructions advertised")
-            )
-        else:
-            checks.append(DoctorCheck("server_instructions", "warn", "server instructions missing"))
-        checks.append(DoctorCheck("mcp_call", "ok", f"search call returned {result_count} items"))
-    except Exception as exc:
-        checks.append(DoctorCheck("mcp", "fail", f"MCP probe failed: {exc}"))
-
+    checks.append(_check_indexed_files(workspace_root))
+    checks.append(_check_watch(workspace_root))
+    checks.extend(_check_mcp_probe(workspace_root))
     return DoctorReport(str(workspace_root), agent, checks)
 
 
