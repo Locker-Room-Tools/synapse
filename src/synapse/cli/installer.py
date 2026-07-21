@@ -9,10 +9,14 @@ from pathlib import Path
 from typing import Any, cast
 
 from synapse.cli.adapters import AgentAdapter, get_adapter, render_mcp_config
+from synapse.cli.marker_blocks import append_marker_block, find_marker_block, splice_marker_block
 from synapse.core.workspace import normalize_workspace_path
 
 MANAGED_TOML_BEGIN = "# >>> SYNAPSE MCP (managed) >>>"
 MANAGED_TOML_END = "# <<< SYNAPSE MCP (managed) <<<"
+_PARTIAL_MARKERS_MESSAGE = (
+    "MCP config contains partial Synapse managed markers; fix the file manually."
+)
 _CODEX_SYNAPSE_TABLE = re.compile(
     r"(?ms)^\[mcp_servers\.synapse\]\n.*?(?=^\[|\Z)",
 )
@@ -257,25 +261,17 @@ def _upsert_managed_toml_block(
     *,
     force: bool,
 ) -> tuple[str, bool]:
-    start = existing.find(MANAGED_TOML_BEGIN)
-    end = existing.find(MANAGED_TOML_END)
-    has_start = start != -1
-    has_end = end != -1
-    if has_start != has_end:
-        msg = "MCP config contains partial Synapse managed markers; fix the file manually."
-        raise ValueError(msg)
-    if has_start:
-        block_end = end + len(MANAGED_TOML_END)
-        current_block = existing[start:block_end].strip()
-        if current_block == block:
+    span = find_marker_block(
+        existing, MANAGED_TOML_BEGIN, MANAGED_TOML_END, partial_message=_PARTIAL_MARKERS_MESSAGE
+    )
+    if span is not None:
+        start, block_end = span
+        if existing[start:block_end].strip() == block:
             return existing, False
         if not force:
             msg = "Synapse MCP block already exists; use --force to replace it."
             raise FileExistsError(msg)
-        prefix = existing[:start].rstrip()
-        suffix = existing[block_end:].lstrip("\n").rstrip()
-        parts = [part for part in (prefix, block, suffix) if part]
-        return "\n\n".join(parts) + "\n", True
+        return splice_marker_block(existing, span, block), True
 
     if _has_codex_synapse_table(existing):
         if not force:
@@ -283,26 +279,16 @@ def _upsert_managed_toml_block(
             raise FileExistsError(msg)
         existing = _strip_codex_synapse_table(existing)
 
-    text = existing.rstrip()
-    return (f"{text}\n\n{block}\n" if text else f"{block}\n"), True
+    return append_marker_block(existing, block), True
 
 
 def _remove_managed_toml_block(existing: str) -> tuple[str, bool]:
-    start = existing.find(MANAGED_TOML_BEGIN)
-    end = existing.find(MANAGED_TOML_END)
-    has_start = start != -1
-    has_end = end != -1
-    if has_start != has_end:
-        msg = "MCP config contains partial Synapse managed markers; fix the file manually."
-        raise ValueError(msg)
-    if not has_start:
+    span = find_marker_block(
+        existing, MANAGED_TOML_BEGIN, MANAGED_TOML_END, partial_message=_PARTIAL_MARKERS_MESSAGE
+    )
+    if span is None:
         return existing, False
-    block_end = end + len(MANAGED_TOML_END)
-    prefix = existing[:start].rstrip()
-    suffix = existing[block_end:].lstrip("\n").rstrip()
-    parts = [part for part in (prefix, suffix) if part]
-    next_text = "\n\n".join(parts)
-    return (f"{next_text}\n" if next_text else ""), True
+    return splice_marker_block(existing, span), True
 
 
 def _has_codex_synapse_table(text: str) -> bool:

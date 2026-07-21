@@ -7,12 +7,16 @@ from importlib import resources
 from importlib.resources.abc import Traversable
 from pathlib import Path
 
+from synapse.cli.marker_blocks import append_marker_block, find_marker_block, splice_marker_block
 from synapse.core.workspace import normalize_workspace_path
 
 ADAPTERS_ROOT = resources.files("synapse") / "adapters"
 
 BEGIN_MARKER = "<!-- BEGIN SYNAPSE CONTEXT ENGINE -->"
 END_MARKER = "<!-- END SYNAPSE CONTEXT ENGINE -->"
+_PARTIAL_MARKERS_MESSAGE = (
+    "Instruction file contains partial Synapse markers; fix the file manually."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,30 +197,19 @@ def _marked_block(snippet: str) -> str:
 
 
 def _replace_marked_block(existing: str, block: str, *, force: bool) -> tuple[str, str]:
-    start = existing.find(BEGIN_MARKER)
-    end = existing.find(END_MARKER)
-    has_start = start != -1
-    has_end = end != -1
-    if has_start != has_end:
-        msg = "Instruction file contains partial Synapse markers; fix the file manually."
-        raise ValueError(msg)
-    if not has_start:
-        text = existing.rstrip()
-        next_text = f"{text}\n\n{block}\n" if text else f"{block}\n"
-        return next_text, "updated"
+    span = find_marker_block(
+        existing, BEGIN_MARKER, END_MARKER, partial_message=_PARTIAL_MARKERS_MESSAGE
+    )
+    if span is None:
+        return append_marker_block(existing, block), "updated"
 
-    block_end = end + len(END_MARKER)
-    current_block = existing[start:block_end].strip()
-    if current_block == block:
+    start, block_end = span
+    if existing[start:block_end].strip() == block:
         return existing, "unchanged"
     if not force:
         msg = "Synapse instruction block already exists; use --force to replace it."
         raise FileExistsError(msg)
-
-    prefix = existing[:start].rstrip()
-    suffix = existing[block_end:].lstrip("\n").rstrip()
-    parts = [part for part in (prefix, block, suffix) if part]
-    return "\n\n".join(parts) + "\n", "updated"
+    return splice_marker_block(existing, span, block), "updated"
 
 
 def install_instruction_snippet(
@@ -245,22 +238,12 @@ def install_instruction_snippet(
 
 
 def _remove_marked_block(existing: str) -> tuple[str, bool]:
-    start = existing.find(BEGIN_MARKER)
-    end = existing.find(END_MARKER)
-    has_start = start != -1
-    has_end = end != -1
-    if has_start != has_end:
-        msg = "Instruction file contains partial Synapse markers; fix the file manually."
-        raise ValueError(msg)
-    if not has_start:
+    span = find_marker_block(
+        existing, BEGIN_MARKER, END_MARKER, partial_message=_PARTIAL_MARKERS_MESSAGE
+    )
+    if span is None:
         return existing, False
-
-    block_end = end + len(END_MARKER)
-    prefix = existing[:start].rstrip()
-    suffix = existing[block_end:].lstrip("\n").rstrip()
-    parts = [part for part in (prefix, suffix) if part]
-    next_text = "\n\n".join(parts)
-    return (f"{next_text}\n" if next_text else ""), True
+    return splice_marker_block(existing, span), True
 
 
 def remove_instruction_snippet(
