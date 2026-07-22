@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-23
+
 ### Added
 - Windows support for the detached watch daemon: `synapse watch start` uses
   Windows process-creation flags instead of POSIX sessions on `win32`, and CI
@@ -32,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The ALL-CAPS-means-constant heuristic is disabled for case-insensitive and
   uppercase-idiomatic languages (Ada, Assembly, COBOL, Erlang, Fortran,
   Pascal, SQL, Verilog, VHDL), where it misclassified ordinary variables.
+
+### Fixed
+- Windows CI runs pytest through the synchronized virtual environment directly,
+  with fault handling and full interrupt traces enabled.
 
 ## [0.3.0] - 2026-07-13
 
