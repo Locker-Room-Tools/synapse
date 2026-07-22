@@ -30,7 +30,9 @@ def test_config_file_path_defaults_to_home_config_directory(
     home_dir = tmp_path / "home"
     home_dir.mkdir()
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
     monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setenv("USERPROFILE", str(home_dir))
 
     assert config_file_path() == home_dir / ".config" / "synapse" / "config.json"
 

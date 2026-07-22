@@ -153,6 +153,7 @@ def test_mcp_install_auto_writes_default_user_config(
     workspace_root.mkdir()
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
 
     exit_code = cli_main.main(["mcp", "install", "codex", "--workspace", str(workspace_root)])
 
@@ -393,6 +394,7 @@ def test_start_detached_watch_builds_foreground_child_command(
         return FakeProcess()
 
     monkeypatch.setattr(cli_main, "_watch_is_running", lambda path: False)
+    monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setattr("synapse.cli.main.subprocess.Popen", fake_popen)
 
     pid = cli_main._start_detached_watch(tmp_path, poll_interval_s=2)
