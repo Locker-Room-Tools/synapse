@@ -1,7 +1,9 @@
 """Tests for doctor checks (fast paths; the MCP probe is stubbed)."""
 
+import sys
 from pathlib import Path
 
+import anyio
 import pytest
 
 from synapse.cli import doctor
@@ -13,6 +15,7 @@ from synapse.cli.doctor import (
     report_to_json,
     run_doctor,
 )
+from synapse.core.indexing import index_workspace
 
 
 def _check_status(report: DoctorReport, name: str) -> str:
@@ -105,6 +108,38 @@ def test_doctor_reports_probe_crash_as_mcp_failure(
 
     assert _check_status(report, "mcp") == "fail"
     assert "server exploded" in next(c.message for c in report.checks if c.name == "mcp")
+
+
+def test_in_process_probe_exercises_the_mcp_protocol(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Windows-safe probe performs a real handshake, tool listing, and call."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    (tmp_path / "app.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    index_workspace(tmp_path)
+
+    tools, result_count, instructions = anyio.run(doctor._probe_mcp_in_process, tmp_path)
+
+    assert set(tools) == EXPECTED_TOOLS
+    assert result_count == 1
+    assert instructions
+
+
+def test_windows_probe_uses_the_in_process_transport(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Windows avoids the SDK subprocess cleanup path that can signal the parent."""
+    expected = (["tool"], 1, "instructions")
+
+    async def fake_probe(_workspace_root: Path) -> tuple[list[str], int, str | None]:
+        return expected
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(doctor, "_probe_mcp_in_process", fake_probe)
+
+    assert anyio.run(doctor._probe_mcp, tmp_path) == expected
 
 
 def test_doctor_report_serialization_round_trip(
