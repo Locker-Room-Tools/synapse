@@ -67,14 +67,14 @@ jobs:
       - name: Install
         run: uv sync --locked --extra dev
       - name: Install tree-sitter grammars
-        shell: pwsh
-        run: .venv\Scripts\python.exe -m synapse grammars install
+        shell: cmd
+        run: start "" /wait /b .venv\Scripts\python.exe -m synapse grammars install
       - name: Pytest with coverage
         env:
           PYTHONFAULTHANDLER: "1"
-        shell: pwsh
+        shell: cmd
         run: >-
-          & .venv\Scripts\python.exe -X faulthandler -m pytest
+          start "" /wait /b .venv\Scripts\python.exe -X faulthandler -m pytest
           -vv --full-trace --cov=synapse --cov-report= --cov-fail-under=0
           ${{ matrix.tests }}
 
