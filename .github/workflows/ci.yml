@@ -44,14 +44,23 @@ jobs:
       - name: Pytest with coverage floor
         if: runner.os != 'Windows'
         run: uv run pytest -q --cov=synapse
-      - name: Pytest with coverage floor (Windows)
+      - name: Pytest with coverage (Windows, main suite)
         if: runner.os == 'Windows'
         env:
           PYTHONFAULTHANDLER: "1"
         shell: pwsh
         run: >-
           & .venv\Scripts\python.exe -X faulthandler -m pytest
-          -vv --full-trace --cov=synapse
+          -vv --full-trace --cov=synapse --cov-report= --cov-fail-under=0
+          --ignore=tests/core/watch
+      - name: Pytest with coverage floor (Windows, watch suite)
+        if: runner.os == 'Windows'
+        env:
+          PYTHONFAULTHANDLER: "1"
+        shell: pwsh
+        run: >-
+          & .venv\Scripts\python.exe -X faulthandler -m pytest
+          -vv --full-trace --cov=synapse --cov-append tests/core/watch
 
   packaging-smoke:
     name: Packaging smoke (installed wheel)

@@ -3,17 +3,13 @@
 import json
 import os
 import sys
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 import anyio
-from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
-from mcp.shared.message import SessionMessage
 
 from synapse.cli.adapters import (
     BEGIN_MARKER,
@@ -63,49 +59,7 @@ class DoctorReport:
     checks: list[DoctorCheck]
 
 
-@asynccontextmanager
-async def _in_process_client() -> AsyncIterator[
-    tuple[
-        MemoryObjectReceiveStream[SessionMessage | Exception],
-        MemoryObjectSendStream[SessionMessage | Exception],
-    ]
-]:
-    from synapse.mcp import tools
-    from synapse.mcp.server import mcp
-
-    _ = tools
-    client_send, server_receive = anyio.create_memory_object_stream[SessionMessage | Exception](1)
-    server_send, client_receive = anyio.create_memory_object_stream[SessionMessage | Exception](1)
-
-    async def serve() -> None:
-        await mcp._mcp_server.run(
-            server_receive,
-            server_send,
-            mcp._mcp_server.create_initialization_options(),
-            raise_exceptions=True,
-        )
-
-    async with (
-        client_send,
-        server_receive,
-        server_send,
-        client_receive,
-        anyio.create_task_group() as task_group,
-    ):
-        task_group.start_soon(serve)
-        try:
-            yield client_receive, client_send
-        finally:
-            task_group.cancel_scope.cancel()
-
-
-async def _probe_mcp_in_process(workspace_root: Path) -> tuple[list[str], int, str | None]:
-    with anyio.fail_after(20):
-        async with _in_process_client() as (read_stream, write_stream):
-            return await _exercise_mcp_session(read_stream, write_stream, workspace_root)
-
-
-async def _probe_mcp_stdio(workspace_root: Path) -> tuple[list[str], int, str | None]:
+async def _probe_mcp(workspace_root: Path) -> tuple[list[str], int, str | None]:
     params = StdioServerParameters(
         command=sys.executable,
         args=["-m", "synapse", "serve", "--workspace", str(workspace_root)],
@@ -114,23 +68,15 @@ async def _probe_mcp_stdio(workspace_root: Path) -> tuple[list[str], int, str | 
     )
     with anyio.fail_after(20):
         async with stdio_client(params) as (read_stream, write_stream):
-            return await _exercise_mcp_session(read_stream, write_stream, workspace_root)
-
-
-async def _exercise_mcp_session(
-    read_stream: MemoryObjectReceiveStream[SessionMessage | Exception],
-    write_stream: MemoryObjectSendStream[SessionMessage | Exception],
-    workspace_root: Path,
-) -> tuple[list[str], int, str | None]:
-    async with ClientSession(read_stream, write_stream) as session:
-        initialized = await session.initialize()
-        instructions = getattr(initialized, "instructions", None)
-        tools_response = await session.list_tools()
-        tool_names = sorted(tool.name for tool in tools_response.tools)
-        result = await session.call_tool(
-            "synapse_search_symbols",
-            {"query": "", "limit": 1, "workspace_path": str(workspace_root)},
-        )
+            async with ClientSession(read_stream, write_stream) as session:
+                initialized = await session.initialize()
+                instructions = getattr(initialized, "instructions", None)
+                tools_response = await session.list_tools()
+                tool_names = sorted(tool.name for tool in tools_response.tools)
+                result = await session.call_tool(
+                    "synapse_search_symbols",
+                    {"query": "", "limit": 1},
+                )
     structured = getattr(result, "structuredContent", None)
     if isinstance(structured, dict):
         items = structured.get("items", [])
@@ -140,12 +86,6 @@ async def _exercise_mcp_session(
     if isinstance(content, list):
         return tool_names, len(content), instructions
     return tool_names, 0, instructions
-
-
-async def _probe_mcp(workspace_root: Path) -> tuple[list[str], int, str | None]:
-    if sys.platform == "win32":
-        return await _probe_mcp_in_process(workspace_root)
-    return await _probe_mcp_stdio(workspace_root)
 
 
 def _check_package() -> DoctorCheck:
