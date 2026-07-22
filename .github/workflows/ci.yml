@@ -37,13 +37,19 @@ jobs:
       - name: Pytest with coverage floor
         if: runner.os != 'Windows'
         run: uv run pytest -q --cov=synapse
+      - name: Preload tree-sitter grammars (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: >-
+          & .venv\Scripts\python.exe -X faulthandler
+          .github\scripts\preload_grammars.py
       - name: Pytest with coverage floor (Windows)
         if: runner.os == 'Windows'
         env:
           PYTHONFAULTHANDLER: "1"
         shell: pwsh
         run: >-
-          & .venv\Scripts\python.exe -X faulthandler -m pytest -n 8 --dist load
+          & .venv\Scripts\python.exe -X faulthandler -m pytest
           -vv --full-trace --cov=synapse
 
   packaging-smoke:

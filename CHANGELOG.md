@@ -39,8 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Windows CI runs pytest through the synchronized virtual environment directly,
   with fault handling and full interrupt traces enabled.
-- Windows CI distributes tests across isolated pytest workers, avoiding native
-  loader interrupts after many distinct grammars initialize in one process.
+- Windows CI preloads all native tree-sitter parsers sequentially before pytest,
+  avoiding first-use extraction races and native loader interrupts during tests.
 
 ## [0.3.0] - 2026-07-13
 
