@@ -39,8 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Windows CI runs pytest through the synchronized virtual environment directly,
   with fault handling and full interrupt traces enabled.
-- Vue files use the bundled HTML grammar with Vue-specific queries, avoiding a
-  `KeyboardInterrupt` in the `tree-sitter-language-pack` 1.8.1 Windows Vue loader.
+- Windows CI distributes tests across isolated pytest workers, avoiding native
+  loader interrupts after many distinct grammars initialize in one process.
 
 ## [0.3.0] - 2026-07-13
 

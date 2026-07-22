@@ -422,7 +422,7 @@ LANGUAGES: dict[str, LanguageSpec] = {
     ),
     "vue": LanguageSpec(
         id="vue",
-        tree_sitter_name="html",
+        tree_sitter_name="vue",
         extensions=(".vue",),
         query_dir="vue",
     ),

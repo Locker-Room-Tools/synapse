@@ -2,7 +2,6 @@
   (start_tag
     (tag_name) @name)) @definition.module
 
-(element
+(template_element
   (start_tag
-    (tag_name) @name)
-  (#eq? @name "template")) @definition.module
+    (tag_name) @name)) @definition.module

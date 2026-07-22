@@ -43,7 +43,8 @@ jobs:
           PYTHONFAULTHANDLER: "1"
         shell: pwsh
         run: >-
-          & .venv\Scripts\python.exe -X faulthandler -m pytest -vv --full-trace --cov=synapse
+          & .venv\Scripts\python.exe -X faulthandler -m pytest -n 8 --dist load
+          -vv --full-trace --cov=synapse
 
   packaging-smoke:
     name: Packaging smoke (installed wheel)
