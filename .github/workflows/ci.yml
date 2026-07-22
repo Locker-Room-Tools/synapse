@@ -7,20 +7,12 @@ on:
 
 jobs:
   test:
-    name: Test (${{ matrix.os }}, Python ${{ matrix.python-version }})
-    runs-on: ${{ matrix.os }}
+    name: Test (Ubuntu, Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            python-version: "3.12"
-          - os: ubuntu-latest
-            python-version: "3.13"
-          - os: ubuntu-latest
-            python-version: "3.14"
-          - os: windows-2022
-            python-version: "3.12"
+        python-version: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -29,12 +21,7 @@ jobs:
       - name: Install
         run: uv sync --locked --extra dev
       - name: Install tree-sitter grammars
-        if: runner.os != 'Windows'
         run: .venv/bin/python -m synapse grammars install
-      - name: Install tree-sitter grammars (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: .venv\Scripts\python.exe -m synapse grammars install
       - name: Ruff lint
         run: uv run ruff check
       - name: Ruff format check
@@ -42,70 +29,52 @@ jobs:
       - name: Mypy
         run: uv run mypy
       - name: Pytest with coverage floor
-        if: runner.os != 'Windows'
         run: uv run pytest -q --cov=synapse
-      - name: Pytest with coverage (Windows, CLI and MCP)
-        if: runner.os == 'Windows'
+
+  windows-test:
+    name: Test (Windows, ${{ matrix.shard }})
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: CLI and MCP
+            tests: tests/cli tests/mcp tests/test_smoke.py
+          - shard: core index
+            tests: >-
+              tests/core/test_config.py tests/core/test_crawler.py
+              tests/core/test_grammars.py tests/core/test_index.py
+              tests/core/test_index_lifecycle.py tests/core/test_indexing.py
+              tests/core/test_models.py tests/core/test_workspace.py
+          - shard: base parsers
+            tests: >-
+              tests/core/test_languages.py tests/core/test_parser.py
+              tests/core/test_parser_edge_cases.py
+          - shard: parser tiers
+            tests: >-
+              tests/core/test_parser_tier2.py tests/core/test_parser_tier3.py
+              tests/core/test_parser_tier4.py tests/core/test_parser_tier5.py
+              tests/core/test_queries.py
+          - shard: watch
+            tests: tests/core/watch
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: uv sync --locked --extra dev
+      - name: Install tree-sitter grammars
+        shell: pwsh
+        run: .venv\Scripts\python.exe -m synapse grammars install
+      - name: Pytest with coverage
         env:
-          COVERAGE_FILE: .coverage.cli-mcp
           PYTHONFAULTHANDLER: "1"
         shell: pwsh
         run: >-
           & .venv\Scripts\python.exe -X faulthandler -m pytest
           -vv --full-trace --cov=synapse --cov-report= --cov-fail-under=0
-          tests/cli tests/mcp tests/test_smoke.py
-      - name: Pytest with coverage (Windows, core index)
-        if: runner.os == 'Windows'
-        env:
-          COVERAGE_FILE: .coverage.core-index
-          PYTHONFAULTHANDLER: "1"
-        shell: pwsh
-        run: >-
-          & .venv\Scripts\python.exe -X faulthandler -m pytest
-          -vv --full-trace --cov=synapse --cov-report= --cov-fail-under=0
-          tests/core/test_config.py tests/core/test_crawler.py tests/core/test_grammars.py
-          tests/core/test_index.py tests/core/test_index_lifecycle.py
-          tests/core/test_indexing.py tests/core/test_models.py tests/core/test_workspace.py
-      - name: Pytest with coverage (Windows, base parsers)
-        if: runner.os == 'Windows'
-        env:
-          COVERAGE_FILE: .coverage.base-parsers
-          PYTHONFAULTHANDLER: "1"
-        shell: pwsh
-        run: >-
-          & .venv\Scripts\python.exe -X faulthandler -m pytest
-          -vv --full-trace --cov=synapse --cov-report= --cov-fail-under=0
-          tests/core/test_languages.py tests/core/test_parser.py
-          tests/core/test_parser_edge_cases.py
-      - name: Pytest with coverage (Windows, parser tiers)
-        if: runner.os == 'Windows'
-        env:
-          COVERAGE_FILE: .coverage.parser-tiers
-          PYTHONFAULTHANDLER: "1"
-        shell: pwsh
-        run: >-
-          & .venv\Scripts\python.exe -X faulthandler -m pytest
-          -vv --full-trace --cov=synapse --cov-report= --cov-fail-under=0
-          tests/core/test_parser_tier2.py tests/core/test_parser_tier3.py
-          tests/core/test_parser_tier4.py tests/core/test_parser_tier5.py
-          tests/core/test_queries.py
-      - name: Pytest with coverage (Windows, watch)
-        if: runner.os == 'Windows'
-        env:
-          COVERAGE_FILE: .coverage.watch
-          PYTHONFAULTHANDLER: "1"
-        shell: pwsh
-        run: >-
-          & .venv\Scripts\python.exe -X faulthandler -m pytest
-          -vv --full-trace --cov=synapse --cov-report= --cov-fail-under=0
-          tests/core/watch
-      - name: Combine Windows coverage and enforce floor
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          & .venv\Scripts\python.exe -m coverage combine
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & .venv\Scripts\python.exe -m coverage report --fail-under=85
+          ${{ matrix.tests }}
 
   packaging-smoke:
     name: Packaging smoke (installed wheel)
