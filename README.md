@@ -8,11 +8,13 @@ compact structural code context without uploading source code to external servic
 1. Use Python >=3.12.
 2. Install Synapse as a managed CLI tool:
    `uv tool install locker-room-tools-synapse-mcp`.
-3. Initialize a workspace for your agent:
+3. Download the supported tree-sitter grammars once:
+   `synapse grammars install`.
+4. Initialize a workspace for your agent:
    `synapse setup codex --path .`
-4. Install a workspace-pinned MCP config into the client default path:
+5. Install a workspace-pinned MCP config into the client default path:
    `synapse mcp install codex --workspace .`
-5. Verify the full MCP path:
+6. Verify the full MCP path:
    `synapse doctor --path . --agent codex`
 
 The installer is guided by default. It indexes the workspace and prints next steps, but it
@@ -27,7 +29,10 @@ Run the MCP server over stdio with `synapse serve --workspace .` or
 ## Development
 
 Create a virtual environment and install the repository with development dependencies:
-`uv venv && uv pip install -e ".[dev]"`.
+`uv venv && uv pip install -e ".[dev]"`. Then run `synapse grammars install` once.
+
+Grammar installation is an explicit network operation. Indexing, watching, querying, and MCP
+serving only use the local grammar cache and never download parsers implicitly.
 
 ## Available MCP tools
 

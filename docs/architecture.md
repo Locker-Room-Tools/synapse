@@ -42,6 +42,8 @@ implementation appears — for example, the Phase 2 Go indexer.
 
 - **`core.models`**: the normalized idiomatic symbol model, provenance metadata, and relation types.
 - **`core.languages`**: supported language registry, extension detection, and tree-sitter naming.
+- **`core.grammars`**: loads only parser binaries already present in the local cache;
+  implicit downloads are rejected at the core boundary.
 - **`core.parser`**: parses files with tree-sitter and maps captures to symbols.
 - **`core.queries`**: resolves `.scm` query files by language and query name.
 - **`core.workspace`**: derives per-workspace storage paths and persists workspace metadata.
@@ -57,7 +59,8 @@ implementation appears — for example, the Phase 2 Go indexer.
   Relations populated during indexing are `CONTAINS` (resolved member edges), `IMPORTS`
   (unresolved import target name), and `REFERENCES` (resolved or confidence-marked usage
   edges from reference queries).
-- **`cli`**: provides `index`, `setup`, `serve`, `mcp install`, and `uninstall` commands.
+- **`cli`**: provides `index`, `setup`, `serve`, `grammars install`, `mcp install`, and
+  `uninstall` commands. Grammar installation is the explicit network-enabled setup step.
 - **`adapters`** (`src/synapse/adapters/`, packaged data): provides agent-specific metadata and instruction snippets.
 - **`cli.installer`**: owns reversible MCP client config writes. JSON configs are merged
   structurally, and Codex TOML config is managed with a marker block so uninstall removes

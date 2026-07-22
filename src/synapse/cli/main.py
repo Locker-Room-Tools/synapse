@@ -17,7 +17,9 @@ from synapse.cli.adapters import (
 )
 from synapse.cli.config import build_config_parser
 from synapse.cli.doctor import format_report, has_failures, report_to_json, run_doctor
+from synapse.cli.grammars import LanguagePackError, install_grammars
 from synapse.cli.installer import install_mcp_server, standalone_mcp_config, uninstall_mcp_server
+from synapse.core.grammars import GrammarNotInstalledError
 from synapse.core.indexing import IndexStats, index_workspace
 from synapse.core.watch.state import pid_is_running, read_watch_status, watch_status_payload
 from synapse.core.watch.supervisor import request_watch_stop, run_watch_foreground
@@ -61,6 +63,13 @@ def _print_index_summary(stats: IndexStats) -> None:
 def _handle_index(args: Namespace) -> int:
     stats = index_workspace(args.path, force=args.force)
     _print_index_summary(stats)
+    return 0
+
+
+def _handle_grammars_install(_args: Namespace) -> int:
+    print("Preparing tree-sitter grammars...")
+    grammar_names = install_grammars()
+    print(f"Installed and verified {len(grammar_names)} grammars.")
     return 0
 
 
@@ -317,6 +326,13 @@ def build_parser() -> ArgumentParser:
     setup_parser.add_argument("--force", action="store_true")
     setup_parser.set_defaults(func=_handle_setup)
 
+    grammars_parser = subparsers.add_parser("grammars", help="Manage tree-sitter grammars")
+    grammars_subparsers = grammars_parser.add_subparsers(dest="grammars_command", required=True)
+    grammars_install = grammars_subparsers.add_parser(
+        "install", help="Download all supported grammars"
+    )
+    grammars_install.set_defaults(func=_handle_grammars_install)
+
     uninstall_parser = subparsers.add_parser("uninstall", help="Remove Synapse agent setup")
     uninstall_parser.add_argument("agent", choices=adapter_choices())
     uninstall_parser.add_argument("--path", default=".")
@@ -394,6 +410,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     try:
         return int(func(namespace))
-    except (FileExistsError, ValueError) as exc:
+    except (FileExistsError, GrammarNotInstalledError, LanguagePackError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

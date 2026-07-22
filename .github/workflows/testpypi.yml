@@ -14,6 +14,8 @@ jobs:
           python-version: "3.12"
       - name: Install
         run: uv sync --locked --extra dev
+      - name: Install tree-sitter grammars
+        run: .venv/bin/python -m synapse grammars install
       - name: Quality gate
         run: |
           uv run ruff check
@@ -63,6 +65,7 @@ jobs:
             --index-url https://test.pypi.org/simple/ \
             --extra-index-url https://pypi.org/simple/ \
             "locker-room-tools-synapse-mcp==${version}"
+          /tmp/testpypi-smoke/bin/synapse grammars install
           /tmp/testpypi-smoke/bin/synapse --version
           /tmp/testpypi-smoke/bin/synapse index .
           /tmp/testpypi-smoke/bin/synapse doctor --path . --json

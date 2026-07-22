@@ -15,6 +15,8 @@ jobs:
           python-version: "3.12"
       - name: Install
         run: uv sync --locked --extra dev
+      - name: Install tree-sitter grammars
+        run: .venv/bin/python -m synapse grammars install
       - name: Ruff lint
         run: uv run ruff check
       - name: Ruff format check
@@ -57,6 +59,7 @@ jobs:
         run: |
           uv venv /tmp/smoke-venv
           uv pip install --python /tmp/smoke-venv/bin/python dist/*.whl
+          /tmp/smoke-venv/bin/synapse grammars install
           /tmp/smoke-venv/bin/synapse index .
           /tmp/smoke-venv/bin/synapse --version
       - uses: actions/upload-artifact@v4

@@ -61,6 +61,20 @@ def test_index_command_forwards_force(
     assert seen == {"path": ".", "force": True}
 
 
+def test_grammars_install_is_explicit(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The grammar installer runs only through its dedicated CLI command."""
+    monkeypatch.setattr(cli_main, "install_grammars", lambda: ("python", "rust"))
+
+    exit_code = cli_main.main(["grammars", "install"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "Installed and verified 2 grammars." in captured.out
+
+
 def test_setup_command_prints_workspace_details(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

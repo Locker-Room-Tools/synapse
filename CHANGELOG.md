@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   wheel, and publishes to PyPI via trusted publishing (OIDC).
 
 ### Changed
+- Grammar downloads are now explicit through `synapse grammars install`. Indexing
+  only loads parsers already present in the local cache and reports a concise setup
+  error instead of performing a hidden network request.
 - Distribution renamed from `synapse-mcp` to `locker-room-tools-synapse-mcp`;
   the import package (`synapse`) and the `synapse` CLI entry point are
   unchanged.
@@ -39,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Windows CI runs pytest through the synchronized virtual environment directly,
   with fault handling and full interrupt traces enabled.
-- Windows CI preloads all native tree-sitter parsers sequentially before pytest,
+- Windows CI installs and validates all native tree-sitter parsers before pytest,
   avoiding first-use extraction races and native loader interrupts during tests.
 
 ## [0.3.0] - 2026-07-13

@@ -11,6 +11,7 @@ from synapse.core.languages import (
     _build_extension_map,
     detect_language,
     to_treesitter_name,
+    tree_sitter_language_names,
 )
 
 
@@ -208,6 +209,14 @@ def test_to_treesitter_name_uses_language_specific_mapping() -> None:
     assert to_treesitter_name("gdscript") == "gdscript"
     assert to_treesitter_name("luau") == "luau"
     assert to_treesitter_name("haxe") == "haxe"
+
+
+def test_tree_sitter_language_names_are_sorted_and_deduplicated() -> None:
+    """Grammar installation receives each configured parser name once."""
+    names = tree_sitter_language_names()
+
+    assert names == tuple(sorted(set(names)))
+    assert set(names) == {spec.tree_sitter_name for spec in LANGUAGES.values()}
 
 
 def test_language_registry_has_no_duplicate_extensions() -> None:

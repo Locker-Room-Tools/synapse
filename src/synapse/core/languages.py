@@ -488,6 +488,11 @@ def to_treesitter_name(language: str) -> str:
         raise ValueError(msg) from exc
 
 
+def tree_sitter_language_names() -> tuple[str, ...]:
+    """Return the deduplicated parser names required by the language registry."""
+    return tuple(sorted({spec.tree_sitter_name for spec in LANGUAGES.values()}))
+
+
 def name_separator(language: str) -> str:
     """Return the qualified-name separator for a normalized language id."""
     try:

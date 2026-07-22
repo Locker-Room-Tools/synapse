@@ -5,6 +5,8 @@ This file is the contract for any human or AI agent contributing to THIS reposit
 
 ## Setup
 - Python >=3.12. Use `uv`: `uv venv && uv pip install -e ".[dev]"`.
+- Install parser binaries explicitly with `synapse grammars install`; indexing never
+  downloads grammars implicitly.
 - Run the MCP server (stdio): `python -m synapse` (or the `synapse` script).
 - Remove managed agent setup with `synapse uninstall <agent> --path .`; this does not
   delete index/cache data.

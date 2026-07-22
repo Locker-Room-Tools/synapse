@@ -5,8 +5,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tree_sitter import Language, Parser, Query, QueryCursor, Tree
-from tree_sitter_language_pack import get_language
 
+from synapse.core.grammars import get_installed_language
 from synapse.core.languages import name_separator, to_treesitter_name, uses_uppercase_constants
 from synapse.core.models import Confidence, Relation, RelationKind, Symbol, SymbolKind
 from synapse.core.queries import load_query
@@ -277,7 +277,7 @@ def parse_source(
     workspace_root: Path | None = None,
 ) -> ParsedSource:
     """Extract symbols and references from one in-memory parse of a source file."""
-    tree_sitter_language = get_language(to_treesitter_name(language))
+    tree_sitter_language = get_installed_language(to_treesitter_name(language))
     tree = Parser(tree_sitter_language).parse(source_bytes)
     symbols = _extract_symbols_from_tree(
         path,
@@ -299,7 +299,7 @@ def parse_source(
 
 def parse_file(path: Path, language: str, workspace_root: Path | None = None) -> list[Symbol]:
     """Parse a source file into normalized symbols."""
-    tree_sitter_language = get_language(to_treesitter_name(language))
+    tree_sitter_language = get_installed_language(to_treesitter_name(language))
     source_bytes = path.read_bytes()
     tree = Parser(tree_sitter_language).parse(source_bytes)
     return _extract_symbols_from_tree(
@@ -314,7 +314,7 @@ def parse_file(path: Path, language: str, workspace_root: Path | None = None) ->
 
 def extract_references(path: Path, language: str, symbols: Sequence[Symbol]) -> list[RawReference]:
     """Extract raw symbol references from one source file."""
-    tree_sitter_language = get_language(to_treesitter_name(language))
+    tree_sitter_language = get_installed_language(to_treesitter_name(language))
     source_bytes = path.read_bytes()
     tree = Parser(tree_sitter_language).parse(source_bytes)
     return _extract_references_from_tree(
