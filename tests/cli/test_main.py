@@ -7,8 +7,20 @@ from pathlib import Path
 
 import pytest
 
+from synapse import __version__
 from synapse.cli import main as cli_main
 from synapse.core.indexing import IndexStats
+
+
+def test_version_flag_reports_installed_package_version(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The top-level version flag reports package metadata and exits successfully."""
+    with pytest.raises(SystemExit) as exc_info:
+        cli_main.main(["--version"])
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out == f"synapse {__version__}\n"
 
 
 def test_index_command_dispatches_and_prints_summary(

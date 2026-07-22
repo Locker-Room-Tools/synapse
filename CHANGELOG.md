@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.3.1] - 2026-07-23
 
 ### Added
+- `synapse --version` reports the installed distribution version.
 - Windows support for the detached watch daemon: `synapse watch start` uses
   Windows process-creation flags instead of POSIX sessions on `win32`, and CI
   now runs the full test suite on Windows (Python 3.12).
@@ -38,6 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Windows CI runs pytest through the synchronized virtual environment directly,
   with fault handling and full interrupt traces enabled.
+- Vue files use the bundled HTML grammar with Vue-specific queries, avoiding a
+  `KeyboardInterrupt` in the `tree-sitter-language-pack` 1.8.1 Windows Vue loader.
 
 ## [0.3.0] - 2026-07-13
 

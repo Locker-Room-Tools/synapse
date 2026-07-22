@@ -8,6 +8,7 @@ from argparse import ArgumentParser, Namespace
 from collections.abc import Sequence
 from pathlib import Path
 
+from synapse import __version__
 from synapse.cli.adapters import (
     adapter_choices,
     get_adapter,
@@ -296,6 +297,7 @@ def _handle_doctor(args: Namespace) -> int:
 def build_parser() -> ArgumentParser:
     """Build the Synapse CLI parser."""
     parser = ArgumentParser(prog="synapse")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
     index_parser = subparsers.add_parser("index", help="Index a workspace")

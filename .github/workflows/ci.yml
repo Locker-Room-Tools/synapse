@@ -71,4 +71,4 @@ jobs:
           uv venv /tmp/smoke-venv
           uv pip install --python /tmp/smoke-venv/bin/python dist/*.whl
           /tmp/smoke-venv/bin/synapse index .
-          /tmp/smoke-venv/bin/python -c "import synapse; print('synapse', synapse.__version__)"
+          /tmp/smoke-venv/bin/synapse --version

@@ -174,7 +174,7 @@ def test_to_treesitter_name_uses_language_specific_mapping() -> None:
     assert to_treesitter_name("swift") == "swift"
     assert to_treesitter_name("typescript") == "typescript"
     assert to_treesitter_name("tsx") == "tsx"
-    assert to_treesitter_name("vue") == "vue"
+    assert to_treesitter_name("vue") == "html"
     assert to_treesitter_name("zig") == "zig"
     assert to_treesitter_name("ada") == "ada"
     assert to_treesitter_name("assembly") == "asm"
