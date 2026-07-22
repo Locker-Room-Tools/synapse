@@ -90,22 +90,13 @@ structural data. Tools return data structures instead of prose.
 Phase 1 stores file-level hashes in SQLite and reparses changed files. Later work can add
 Merkle tree summaries for directories and richer dependency invalidation.
 
-## Plan/Implement phase separation
-
-Design plans live under `.ai/plans/` and are gitignored except for `.gitkeep`. Implement
-mode should follow an approved plan and keep feature logic out of foundation-only changes.
-
 ## Roadmap
 
 - **Phase 1**: Python MVP, tree-sitter parsing, SQLite index, MCP tools, CLI, and adapters.
 - **Phase 2**: Go `synapse-indexer` subprocess for faster parsing and indexing.
 
-Planned but **not yet implemented** layers (design docs only):
+Planned but **not yet implemented** layers:
 
-- Manifest-aware indexing (`package.json`, `pyproject.toml`, `Cargo.toml`, …):
-  see [manifest-support-plan.md](manifest-support-plan.md).
-- Markup / structured-document indexing (HTML/CSS, XAML, Razor, richer SFC support):
-  see [markup-support-plan.md](markup-support-plan.md).
 - Native OS file-event watching behind the `WatchBackend` protocol
   (`core/watch/backend.py`); the daemon is polling-only today.
 
