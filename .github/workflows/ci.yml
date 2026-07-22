@@ -44,7 +44,7 @@ jobs:
       - name: Pytest with coverage floor
         if: runner.os != 'Windows'
         run: uv run pytest -q --cov=synapse
-      - name: Pytest with coverage (Windows, main suite)
+      - name: Pytest with coverage (Windows, CLI and MCP)
         if: runner.os == 'Windows'
         env:
           PYTHONFAULTHANDLER: "1"
@@ -52,8 +52,40 @@ jobs:
         run: >-
           & .venv\Scripts\python.exe -X faulthandler -m pytest
           -vv --full-trace --cov=synapse --cov-report= --cov-fail-under=0
-          --ignore=tests/core/watch
-      - name: Pytest with coverage floor (Windows, watch suite)
+          tests/cli tests/mcp tests/test_smoke.py
+      - name: Pytest with coverage (Windows, core index)
+        if: runner.os == 'Windows'
+        env:
+          PYTHONFAULTHANDLER: "1"
+        shell: pwsh
+        run: >-
+          & .venv\Scripts\python.exe -X faulthandler -m pytest
+          -vv --full-trace --cov=synapse --cov-append --cov-report= --cov-fail-under=0
+          tests/core/test_config.py tests/core/test_crawler.py tests/core/test_grammars.py
+          tests/core/test_index.py tests/core/test_index_lifecycle.py
+          tests/core/test_indexing.py tests/core/test_models.py tests/core/test_workspace.py
+      - name: Pytest with coverage (Windows, base parsers)
+        if: runner.os == 'Windows'
+        env:
+          PYTHONFAULTHANDLER: "1"
+        shell: pwsh
+        run: >-
+          & .venv\Scripts\python.exe -X faulthandler -m pytest
+          -vv --full-trace --cov=synapse --cov-append --cov-report= --cov-fail-under=0
+          tests/core/test_languages.py tests/core/test_parser.py
+          tests/core/test_parser_edge_cases.py
+      - name: Pytest with coverage (Windows, parser tiers)
+        if: runner.os == 'Windows'
+        env:
+          PYTHONFAULTHANDLER: "1"
+        shell: pwsh
+        run: >-
+          & .venv\Scripts\python.exe -X faulthandler -m pytest
+          -vv --full-trace --cov=synapse --cov-append --cov-report= --cov-fail-under=0
+          tests/core/test_parser_tier2.py tests/core/test_parser_tier3.py
+          tests/core/test_parser_tier4.py tests/core/test_parser_tier5.py
+          tests/core/test_queries.py
+      - name: Pytest with coverage floor (Windows, watch)
         if: runner.os == 'Windows'
         env:
           PYTHONFAULTHANDLER: "1"
