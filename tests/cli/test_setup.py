@@ -214,9 +214,7 @@ def test_setup_no_instructions_keeps_mcp_installation(
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     _stub_successful_runtime(monkeypatch, workspace)
 
-    exit_code = cli_main.main(
-        ["setup", "codex", "--path", str(workspace), "--no-instructions"]
-    )
+    exit_code = cli_main.main(["setup", "codex", "--path", str(workspace), "--no-instructions"])
 
     captured = capsys.readouterr()
     assert exit_code == 0
@@ -265,11 +263,11 @@ def test_setup_explicit_user_scope_is_respected(
     home = tmp_path / "home"
     monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
     _stub_successful_runtime(monkeypatch, workspace)
 
-    exit_code = cli_main.main(
-        ["setup", "codex", "--path", str(workspace), "--scope", "user"]
-    )
+    exit_code = cli_main.main(["setup", "codex", "--path", str(workspace), "--scope", "user"])
 
     assert exit_code == 0
     assert (home / ".codex" / "config.toml").exists()
@@ -286,6 +284,8 @@ def test_setup_reports_legacy_user_codex_config_without_removing_it(
     workspace.mkdir()
     home = tmp_path / "home"
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
     install_mcp_server(
         "codex",
         workspace,

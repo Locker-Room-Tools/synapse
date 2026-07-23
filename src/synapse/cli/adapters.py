@@ -102,7 +102,7 @@ ADAPTERS: dict[str, AgentAdapter] = {
     "opencode": AgentAdapter(
         id="opencode",
         display_name="OpenCode",
-        snippet_path=ADAPTERS_ROOT / "opencode" / "instructions-snippet.md",
+        snippet_path=ADAPTERS_ROOT / "opencode" / "AGENTS.md-snippet.md",
         default_instruction_file="AGENTS.md",
         config=ConfigTarget(
             relative_path="opencode.json",
