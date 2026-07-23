@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/brand/synapse-icon.svg" width="104" alt="Synapse logo">
+  <img src="assets/brand/synapse-mark.svg" width="116" alt="Synapse logo">
 </p>
 
 # Synapse MCP

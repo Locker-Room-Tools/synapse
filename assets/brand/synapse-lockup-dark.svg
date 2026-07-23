@@ -1,6 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Synapse">
-  <rect width="128" height="128" rx="28" fill="#17171A"/>
-  <g transform="translate(12 17) scale(0.93)">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 100" width="420" height="100" role="img" aria-label="Synapse">
+  <g transform="translate(0 14) scale(0.72)">
     <g fill="none" stroke="#FAFAF7" stroke-width="11" stroke-linecap="round" stroke-linejoin="round">
       <path d="M46 22 L14 50 L46 78"/>
       <path d="M70 22 L102 50 L70 78"/>
@@ -9,4 +8,5 @@
     <circle cx="70" cy="78" r="10" fill="#FAFAF7"/>
     <circle cx="14" cy="50" r="10" fill="#5B8CFF"/>
   </g>
+  <text x="104" y="64" fill="#FAFAF7" font-family="Arial, Helvetica, sans-serif" font-size="42" font-weight="700" letter-spacing="1.5">SYNAPSE</text>
 </svg>

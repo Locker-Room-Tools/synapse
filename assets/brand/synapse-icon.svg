@@ -1,7 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100" role="img" aria-label="Synapse">
-  <path d="M24 50 L80 50" fill="none" stroke="#2563EB" stroke-width="13" stroke-linecap="round"/>
-  <path d="M36 22 L80 50 L36 78" fill="none" stroke="#17171A" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="36" cy="22" r="11" fill="#17171A"/>
-  <circle cx="36" cy="78" r="11" fill="#17171A"/>
-  <circle cx="24" cy="50" r="11" fill="#2563EB"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 112 100" width="112" height="100" role="img" aria-label="Synapse">
+  <g fill="none" stroke="#17171A" stroke-width="11" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M46 22 L14 50 L46 78"/>
+    <path d="M70 22 L102 50 L70 78"/>
+  </g>
+  <circle cx="70" cy="22" r="10" fill="#17171A"/>
+  <circle cx="70" cy="78" r="10" fill="#17171A"/>
+  <circle cx="14" cy="50" r="10" fill="#2563EB"/>
 </svg>
