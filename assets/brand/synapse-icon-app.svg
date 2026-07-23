@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Synapse">
+  <rect width="128" height="128" rx="28" fill="#17171A"/>
+  <g transform="translate(28 28) scale(0.72)">
+    <path d="M24 50 L80 50" fill="none" stroke="#5B8CFF" stroke-width="13" stroke-linecap="round"/>
+    <path d="M36 22 L80 50 L36 78" fill="none" stroke="#FAFAF7" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="36" cy="22" r="11" fill="#FAFAF7"/>
+    <circle cx="36" cy="78" r="11" fill="#FAFAF7"/>
+    <circle cx="24" cy="50" r="11" fill="#5B8CFF"/>
+  </g>
+</svg>

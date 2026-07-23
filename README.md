@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/brand/synapse-icon.svg" width="104" alt="Synapse logo">
+</p>
+
 # Synapse MCP
 
 Synapse is a local-first, AST-based code context engine exposed over MCP. It gives AI agents
