@@ -1,13 +1,13 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 100" width="420" height="100" role="img" aria-label="Synapse">
-  <rect width="420" height="100" rx="18" fill="#FAFAF7"/>
+  <rect width="420" height="100" rx="18" fill="#0B2D55"/>
   <g transform="translate(0 14) scale(0.72)">
-    <g fill="none" stroke="#17171A" stroke-width="11" stroke-linecap="round" stroke-linejoin="round">
+    <g fill="none" stroke="#FAFAF7" stroke-width="11" stroke-linecap="round" stroke-linejoin="round">
       <path d="M46 22 L14 50 L46 78"/>
       <path d="M70 22 L102 50 L70 78"/>
     </g>
-    <circle cx="70" cy="22" r="10" fill="#17171A"/>
-    <circle cx="70" cy="78" r="10" fill="#17171A"/>
+    <circle cx="70" cy="22" r="10" fill="#FAFAF7"/>
+    <circle cx="70" cy="78" r="10" fill="#FAFAF7"/>
     <circle cx="14" cy="50" r="10" fill="#2563EB"/>
   </g>
-  <text x="104" y="64" fill="#17171A" font-family="Arial, Helvetica, sans-serif" font-size="42" font-weight="700" letter-spacing="1.5">SYNAPSE</text>
+  <text x="104" y="64" fill="#FAFAF7" font-family="Arial, Helvetica, sans-serif" font-size="42" font-weight="700" letter-spacing="1.5">SYNAPSE</text>
 </svg>
