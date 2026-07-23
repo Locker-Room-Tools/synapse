@@ -1,1 +1,0 @@
-Placeholder directory for optional Claude Code Synapse hooks.

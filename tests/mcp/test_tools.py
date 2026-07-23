@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from synapse.core.indexing import IndexStats
+from synapse.core.lifecycle import EnsureWorkspaceResult, WorkspaceNotReadyError
 from synapse.core.models import Confidence, Relation, RelationKind, Symbol, SymbolKind
 from synapse.mcp import tools
 from synapse.mcp.workspace import configure_workspace
@@ -167,6 +168,7 @@ def test_synapse_index_workspace_returns_serializable_stats(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The indexing tool returns the dataclass payload shape."""
+    monkeypatch.setattr(tools, "require_workspace_ready", lambda path: path)
     monkeypatch.setattr(
         tools,
         "index_workspace",
@@ -334,6 +336,19 @@ def test_entry_tool_docstrings_nudge_synapse_before_raw_search() -> None:
     assert "prefer over reading source" in (tools.synapse_compact_context.__doc__ or "")
 
 
+def test_tool_docstrings_document_contracts() -> None:
+    """Docstrings carry the parameter rules and disambiguations agents rely on."""
+    assert "symbol_id OR exact name" in (tools.synapse_get_definition.__doc__ or "")
+    assert "OR name" in (tools.synapse_find_references.__doc__ or "")
+    assert "incoming" in (tools.synapse_find_references.__doc__ or "")
+    assert "outgoing" in (tools.synapse_get_dependencies.__doc__ or "")
+    assert "recovery" in (tools.synapse_index_workspace.__doc__ or "")
+    assert "workspace-relative" in (tools.synapse_get_file_outline.__doc__ or "")
+    assert "workspace-relative" in (tools.synapse_get_file_dependencies.__doc__ or "")
+    assert "diagnosis only" in (tools.synapse_watch_status.__doc__ or "")
+    assert "synapse_compact_context" in (tools.synapse_get_symbol_context.__doc__ or "")
+
+
 def test_workspace_root_resolves_relative_paths_from_configured_workspace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -361,6 +376,7 @@ def test_two_workspaces_are_indexed_and_queried_independently(
     workspace_b.mkdir()
     (workspace_a / "a.py").write_text("def func_a(): pass\n", encoding="utf-8")
     (workspace_b / "b.py").write_text("def func_b(): pass\n", encoding="utf-8")
+    monkeypatch.setattr(tools, "require_workspace_ready", lambda path: path)
 
     stats_a = tools.synapse_index_workspace(str(workspace_a))
     stats_b = tools.synapse_index_workspace(str(workspace_b))
@@ -392,4 +408,101 @@ def test_querying_a_missing_workspace_does_not_create_cache_paths(
     with pytest.raises(NotADirectoryError, match="Workspace is not a directory"):
         tools.synapse_search_symbols("helper", workspace_path=str(tmp_path / "missing"))
 
+    assert not data_root.exists()
+
+
+def test_synapse_ensure_workspace_returns_lifecycle_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The MCP bootstrap tool exposes the shared initialized/reused/repaired contract."""
+    expected = EnsureWorkspaceResult(
+        workspace_path=str(tmp_path),
+        action="repaired",
+        initialized=True,
+        daemon={"running": True, "degraded": False, "backend": "polling", "pid": 123},
+        index={"files": 3, "symbols": 7, "languages": ["python"]},
+    )
+    monkeypatch.setattr(tools, "ensure_workspace", lambda path: expected)
+
+    result = tools.synapse_ensure_workspace(str(tmp_path))
+
+    assert result == {
+        "workspace_path": str(tmp_path),
+        "action": "repaired",
+        "initialized": True,
+        "daemon": {
+            "running": True,
+            "degraded": False,
+            "backend": "polling",
+            "pid": 123,
+        },
+        "index": {"files": 3, "symbols": 7, "languages": ["python"]},
+    }
+
+
+@pytest.mark.parametrize(
+    ("call", "args"),
+    [
+        ("synapse_search_symbols", ("helper",)),
+        ("synapse_get_definition", (None, "helper")),
+        ("synapse_project_map", ()),
+    ],
+)
+def test_query_tools_require_lazy_workspace_initialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    call: str,
+    args: tuple[object, ...],
+) -> None:
+    """Code queries direct the agent to ensure instead of creating an empty index."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    data_root = tmp_path / "data-root"
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(data_root))
+    tool = getattr(tools, call)
+
+    with pytest.raises(
+        WorkspaceNotReadyError,
+        match=r"uninitialized.*synapse_ensure_workspace",
+    ):
+        tool(*args, workspace_path=str(workspace))
+
+    assert not data_root.exists()
+
+
+def test_manual_index_tool_is_blocked_before_workspace_initialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ensure and status are the only MCP operations allowed before readiness."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    data_root = tmp_path / "data-root"
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(data_root))
+
+    with pytest.raises(
+        WorkspaceNotReadyError,
+        match="synapse_ensure_workspace",
+    ):
+        tools.synapse_index_workspace(str(workspace))
+
+    assert not data_root.exists()
+
+
+def test_watch_status_is_available_before_initialization_and_read_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bootstrap diagnostics report identity without allocating cache state."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    data_root = tmp_path / "data-root"
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(data_root))
+
+    result = tools.synapse_watch_status(str(workspace))
+
+    assert result["workspace_path"] == str(workspace)
+    assert result["initialized"] is False
+    assert result["running"] is False
     assert not data_root.exists()

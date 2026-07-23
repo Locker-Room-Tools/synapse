@@ -8,7 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from synapse.cli.adapters import AgentAdapter, get_adapter, render_mcp_config
+from synapse.cli.adapters import (
+    AgentAdapter,
+    get_adapter,
+    render_mcp_config,
+    resolve_agent_user_path,
+)
 from synapse.cli.marker_blocks import append_marker_block, find_marker_block, splice_marker_block
 from synapse.core.workspace import normalize_workspace_path
 
@@ -50,17 +55,17 @@ def resolve_config_path(
         if adapter.config.user_path is None:
             msg = f"{adapter.display_name} does not support user-scope MCP config."
             raise ValueError(msg)
-        return Path(adapter.config.user_path).expanduser()
+        return resolve_agent_user_path(adapter.id, adapter.config.user_path)
     msg = f"Unsupported MCP config scope: {resolved_scope}"
     raise ValueError(msg)
 
 
 def render_codex_toml_block(
-    workspace_root: str | Path,
+    workspace_root: str | Path | None,
     python_executable: str | None = None,
 ) -> str:
     """Render the marker-managed Codex TOML server block."""
-    workspace = normalize_workspace_path(workspace_root)
+    workspace = None if workspace_root is None else normalize_workspace_path(workspace_root)
     content = render_mcp_config(
         workspace,
         agent_id="codex",
@@ -77,8 +82,9 @@ def install_mcp_server(
     force: bool = False,
     dry_run: bool = False,
     python_executable: str | None = None,
+    portable: bool = False,
 ) -> InstallResult:
-    """Install a workspace-pinned Synapse MCP server entry into a client config."""
+    """Install a workspace-pinned or portable Synapse MCP server entry."""
     adapter = get_adapter(agent_id)
     workspace = normalize_workspace_path(workspace_root)
     target = resolve_config_path(adapter, workspace, scope)
@@ -90,6 +96,7 @@ def install_mcp_server(
             force=force,
             dry_run=dry_run,
             python_executable=python_executable,
+            portable=portable,
         )
     if adapter.config.fmt == "toml":
         return _install_toml_config(
@@ -98,6 +105,7 @@ def install_mcp_server(
             force=force,
             dry_run=dry_run,
             python_executable=python_executable,
+            portable=portable,
         )
     msg = f"Unsupported MCP config format: {adapter.config.fmt}"
     raise ValueError(msg)
@@ -118,6 +126,32 @@ def uninstall_mcp_server(
         return _uninstall_json_config(adapter, target, dry_run=dry_run)
     if adapter.config.fmt == "toml":
         return _uninstall_toml_config(target, dry_run=dry_run)
+    msg = f"Unsupported MCP config format: {adapter.config.fmt}"
+    raise ValueError(msg)
+
+
+def uninstall_global_mcp_server(
+    agent_id: str,
+    workspace_root: str | Path,
+    *,
+    dry_run: bool = False,
+) -> InstallResult:
+    """Remove the portable global MCP entry without touching pinned entries."""
+    adapter = get_adapter(agent_id)
+    target = resolve_config_path(adapter, workspace_root, "user")
+    if adapter.config.fmt == "json":
+        return _uninstall_json_config(
+            adapter,
+            target,
+            dry_run=dry_run,
+            expected_workspace=None,
+        )
+    if adapter.config.fmt == "toml":
+        return _uninstall_toml_config(
+            target,
+            dry_run=dry_run,
+            expected_block=render_codex_toml_block(None),
+        )
     msg = f"Unsupported MCP config format: {adapter.config.fmt}"
     raise ValueError(msg)
 
@@ -156,6 +190,7 @@ def _install_json_config(
     force: bool,
     dry_run: bool,
     python_executable: str | None,
+    portable: bool,
 ) -> InstallResult:
     created = not target.exists()
     data = _read_json_file(target) if target.exists() else {}
@@ -163,7 +198,7 @@ def _install_json_config(
         JsonObject,
         json.loads(
             render_mcp_config(
-                workspace_root,
+                None if portable else workspace_root,
                 agent_id=adapter.id,
                 python_executable=python_executable,
             )
@@ -196,6 +231,7 @@ def _uninstall_json_config(
     target: Path,
     *,
     dry_run: bool,
+    expected_workspace: Path | None | object = ...,
 ) -> InstallResult:
     if not target.exists():
         return InstallResult(target, "absent", "")
@@ -203,6 +239,15 @@ def _uninstall_json_config(
     parent = _lookup_mapping(data, adapter.config.json_key_path)
     if "synapse" not in parent:
         return InstallResult(target, "absent", _json_text(data))
+    if expected_workspace is not ...:
+        expected = cast(Path | None, expected_workspace)
+        expected_payload = cast(
+            JsonObject,
+            json.loads(render_mcp_config(expected, agent_id=adapter.id)),
+        )
+        expected_parent = _lookup_mapping(expected_payload, adapter.config.json_key_path)
+        if parent["synapse"] != expected_parent["synapse"]:
+            return InstallResult(target, "unmanaged", _json_text(data))
     del parent["synapse"]
     _drop_empty_path(data, adapter.config.json_key_path)
     if _json_effectively_empty(data, adapter):
@@ -224,9 +269,13 @@ def _install_toml_config(
     force: bool,
     dry_run: bool,
     python_executable: str | None,
+    portable: bool,
 ) -> InstallResult:
     created = not target.exists()
-    block = render_codex_toml_block(workspace_root, python_executable)
+    block = render_codex_toml_block(
+        None if portable else workspace_root,
+        python_executable,
+    )
     existing = target.read_text(encoding="utf-8") if target.exists() else ""
     next_text, changed = _upsert_managed_toml_block(existing, block, force=force)
     if not changed:
@@ -239,10 +288,27 @@ def _install_toml_config(
     return InstallResult(target, action, next_text)
 
 
-def _uninstall_toml_config(target: Path, *, dry_run: bool) -> InstallResult:
+def _uninstall_toml_config(
+    target: Path,
+    *,
+    dry_run: bool,
+    expected_block: str | None = None,
+) -> InstallResult:
     if not target.exists():
         return InstallResult(target, "absent", "")
     existing = target.read_text(encoding="utf-8")
+    if expected_block is not None:
+        span = find_marker_block(
+            existing,
+            MANAGED_TOML_BEGIN,
+            MANAGED_TOML_END,
+            partial_message=_PARTIAL_MARKERS_MESSAGE,
+        )
+        if span is None:
+            return InstallResult(target, "absent", existing)
+        start, block_end = span
+        if existing[start:block_end].strip() != expected_block:
+            return InstallResult(target, "unmanaged", existing)
     next_text, removed = _remove_managed_toml_block(existing)
     if not removed:
         return InstallResult(target, "absent", existing)

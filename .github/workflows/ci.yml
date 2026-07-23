@@ -14,7 +14,7 @@ jobs:
       matrix:
         python-version: ["3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: ${{ matrix.python-version }}
@@ -60,7 +60,7 @@ jobs:
           - shard: watch
             tests: tests/core/watch
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.12"
@@ -82,7 +82,7 @@ jobs:
     name: Packaging smoke (installed wheel)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.12"
@@ -96,13 +96,20 @@ jobs:
           names = zipfile.ZipFile(wheel).namelist()
           scm = [n for n in names if n.endswith(".scm")]
           adapters = [n for n in names if "/adapters/" in n]
-          print(f"{len(scm)} .scm files, {len(adapters)} adapter files in {wheel}")
-          sys.exit(0 if len(scm) >= 100 and adapters else 1)
+          skills = [n for n in names if n.endswith("/skills/synapse-code-context/SKILL.md")]
+          print(
+              f"{len(scm)} .scm files, {len(adapters)} adapter files, "
+              f"{len(skills)} managed skills in {wheel}"
+          )
+          sys.exit(0 if len(scm) >= 100 and adapters and skills else 1)
           EOF
       - name: Install wheel into a fresh venv and index a real project
         run: |
           uv venv /tmp/smoke-venv
           uv pip install --python /tmp/smoke-venv/bin/python dist/*.whl
+          /tmp/smoke-venv/bin/synapse --help
+          CODEX_HOME=/tmp/smoke-codex /tmp/smoke-venv/bin/synapse install codex --dry-run
+          /tmp/smoke-venv/bin/synapse init --path . --dry-run
           /tmp/smoke-venv/bin/synapse grammars install
           /tmp/smoke-venv/bin/synapse index .
           /tmp/smoke-venv/bin/synapse --version

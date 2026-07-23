@@ -1,3 +1,0 @@
-[mcp_servers.synapse]
-command = "synapse"
-args = ["serve", "--workspace", "/absolute/path/to/workspace"]

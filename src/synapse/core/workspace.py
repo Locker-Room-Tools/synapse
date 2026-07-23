@@ -37,6 +37,15 @@ def require_workspace_path(path: Path | str) -> Path:
     return normalized_path
 
 
+def detect_workspace_root(path: Path | str = ".") -> Path:
+    """Return the nearest Git root, falling back to the given directory."""
+    candidate = require_workspace_path(path)
+    for parent in (candidate, *candidate.parents):
+        if (parent / ".git").exists():
+            return parent
+    return candidate
+
+
 def workspace_id(path: Path | str) -> str:
     """Return the deterministic workspace identifier for a path."""
     normalized_path = str(normalize_workspace_path(path))
@@ -54,9 +63,14 @@ def _data_root() -> Path:
     return Path.home() / ".local" / "share" / "synapse"
 
 
+def data_dir_path(path: Path | str) -> Path:
+    """Return the per-workspace data directory path without creating it."""
+    return _data_root() / "workspaces" / workspace_id(path)
+
+
 def data_dir(path: Path | str) -> Path:
     """Return the per-workspace data directory, creating it when needed."""
-    directory = _data_root() / "workspaces" / workspace_id(path)
+    directory = data_dir_path(path)
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 
@@ -71,6 +85,11 @@ def metadata_path(path: Path | str) -> Path:
     return data_dir(path) / "metadata.json"
 
 
+def metadata_file_path(path: Path | str) -> Path:
+    """Return the metadata JSON path without creating its parent directory."""
+    return data_dir_path(path) / "metadata.json"
+
+
 def logs_dir(path: Path | str) -> Path:
     """Return the logs directory for a workspace, creating it when needed."""
     directory = data_dir(path) / "logs"
@@ -81,6 +100,11 @@ def logs_dir(path: Path | str) -> Path:
 def watch_state_path(path: Path | str) -> Path:
     """Return the persisted watch status path for a workspace."""
     return data_dir(path) / "watch.json"
+
+
+def watch_state_file_path(path: Path | str) -> Path:
+    """Return the watch status path without creating its parent directory."""
+    return data_dir_path(path) / "watch.json"
 
 
 def watch_lock_path(path: Path | str) -> Path:
@@ -99,7 +123,7 @@ def _utc_now() -> str:
 
 def read_metadata(path: Path | str) -> WorkspaceMetadata | None:
     """Load workspace metadata if it exists."""
-    file_path = metadata_path(path)
+    file_path = metadata_file_path(path)
     if not file_path.exists():
         return None
     payload = json.loads(file_path.read_text(encoding="utf-8"))

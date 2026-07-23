@@ -5,6 +5,7 @@ from pathlib import Path
 
 from synapse.core.index import SymbolIndex, relation_summary, symbol_summary
 from synapse.core.indexing import index_workspace
+from synapse.core.lifecycle import ensure_workspace, require_workspace_ready
 from synapse.core.watch.state import watch_status_payload
 from synapse.core.workspace import db_path, require_workspace_path
 from synapse.mcp.server import mcp
@@ -19,7 +20,8 @@ def _workspace_root(path: str | Path = ".") -> Path:
 
 
 def _workspace_index(path: str | Path = ".") -> SymbolIndex:
-    return SymbolIndex(db_path(_workspace_root(path)))
+    root = require_workspace_ready(_workspace_root(path))
+    return SymbolIndex(db_path(root))
 
 
 def _normalize_file_path(file_path: str, workspace_root: Path) -> str:
@@ -30,9 +32,25 @@ def _normalize_file_path(file_path: str, workspace_root: Path) -> str:
 
 
 @mcp.tool()
+def synapse_ensure_workspace(workspace_path: str = ".") -> dict[str, object]:
+    """Initialize or repair Synapse before any code navigation or query.
+
+    Idempotent: returns action (initialized/reused/repaired), daemon health, and index
+    counts. Query tools reject uninitialized or degraded workspaces; re-call this when
+    they do.
+    """
+    return ensure_workspace(_workspace_root(workspace_path)).to_payload()
+
+
+@mcp.tool()
 def synapse_index_workspace(workspace_path: str = ".", force: bool = False) -> dict[str, object]:
-    """Index or re-index a workspace and return compact indexing stats."""
-    return asdict(index_workspace(_workspace_root(workspace_path), force=force))
+    """Explicitly re-index a workspace; recovery and administration only.
+
+    Not a navigation step: use synapse_ensure_workspace first. force=True rebuilds the
+    index from scratch under the watch lock. Returns compact indexing stats.
+    """
+    workspace_root = require_workspace_ready(_workspace_root(workspace_path))
+    return asdict(index_workspace(workspace_root, force=force))
 
 
 @mcp.tool()
@@ -44,7 +62,13 @@ def synapse_search_symbols(
     workspace_path: str = ".",
     offset: int = 0,
 ) -> dict[str, object]:
-    """Primary symbol lookup; prefer over grep/ripgrep; returns reusable symbol_id."""
+    """Primary symbol lookup; prefer over grep/ripgrep; returns reusable symbol_id.
+
+    Matches by name (prefix first, substring fallback; exact names rank highest).
+    Optional kind filter: namespace, package, module, class, interface, struct, record,
+    enum, type, function, method, constructor, property, field, variable, constant,
+    import. Returns {items, page}.
+    """
     items, page = _workspace_index(workspace_path).search_symbols_page(
         query,
         kind=kind,
@@ -63,7 +87,11 @@ def synapse_get_definition(
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, object] | None:
-    """Return a definition with stable symbol_id; prefer over opening files."""
+    """Resolve a declaration to a stable symbol_id; prefer over opening files.
+
+    Provide symbol_id OR exact name. Returns one symbol, {candidates, page} when the
+    name is ambiguous, or None when not found.
+    """
     if symbol_id is None and name is None:
         msg = "Either symbol_id or name must be provided."
         raise ValueError(msg)
@@ -91,7 +119,11 @@ def synapse_get_file_outline(
     workspace_path: str = ".",
     max_symbols: int = 200,
 ) -> dict[str, object] | None:
-    """Structural outline; prefer before reading a whole file."""
+    """Structural outline of one file; prefer before reading a whole file.
+
+    file_path is workspace-relative (absolute paths inside the workspace are accepted).
+    Returns None when the file is not indexed.
+    """
     workspace_root = _workspace_root(workspace_path)
     normalized_file_path = _normalize_file_path(file_path, workspace_root)
     return _workspace_index(workspace_root).get_file_outline(
@@ -108,7 +140,10 @@ def synapse_workspace_stats(workspace_path: str = ".") -> dict[str, object]:
 
 @mcp.tool()
 def synapse_watch_status(workspace_path: str = ".") -> dict[str, object]:
-    """Return read-only watch daemon freshness and health status."""
+    """Read-only watch daemon freshness and health; diagnosis only, never repairs.
+
+    Safe before initialization. Use synapse_ensure_workspace to repair.
+    """
     return watch_status_payload(_workspace_root(workspace_path))
 
 
@@ -119,7 +154,10 @@ def synapse_project_map(
     offset: int = 0,
     top_symbols_limit: int = 20,
 ) -> dict[str, object]:
-    """Return a compact map of the workspace structure and key symbols."""
+    """Return a compact paged map of the workspace structure and key symbols.
+
+    Best first call for broad architecture questions.
+    """
     return _workspace_index(workspace_path).project_map(
         limit=limit,
         offset=offset,
@@ -134,7 +172,11 @@ def synapse_get_file_dependencies(
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, object] | None:
-    """Return file-level import dependencies for one indexed file."""
+    """Return file-level import dependencies for one indexed file (what it imports).
+
+    file_path is workspace-relative (absolute paths inside the workspace are accepted).
+    Returns None when the file is not indexed.
+    """
     workspace_root = _workspace_root(workspace_path)
     normalized_file_path = _normalize_file_path(file_path, workspace_root)
     return _workspace_index(workspace_root).get_file_dependencies(
@@ -152,7 +194,12 @@ def synapse_get_symbol_context(
     children_limit: int = 50,
     children_offset: int = 0,
 ) -> dict[str, object] | None:
-    """Return compact structural context around one symbol."""
+    """Structural context around one symbol: parent, paged children, optional body.
+
+    symbol_id comes from synapse_search_symbols or synapse_get_definition. Set
+    include_body=True only when implementation text is needed; for the smallest view
+    use synapse_compact_context. Returns None for an unknown symbol_id.
+    """
     return _workspace_index(workspace_path).get_symbol_context(
         symbol_id,
         include_body=include_body,
@@ -168,7 +215,11 @@ def synapse_get_dependencies(
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, object]:
-    """Return outgoing relations (dependencies) for one indexed symbol."""
+    """Return outgoing relations from one symbol (what it references or contains).
+
+    For incoming usages use synapse_find_references. symbol_id comes from
+    synapse_search_symbols or synapse_get_definition. Returns {items, page}.
+    """
     relations, page = _workspace_index(workspace_path).get_dependencies_page(
         symbol_id,
         limit=limit,
@@ -188,7 +239,12 @@ def synapse_find_references(
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, object]:
-    """Find usages; prefer over grep across the workspace."""
+    """Find usages (incoming references); prefer over grep across the workspace.
+
+    Provide symbol_id (preferred; from synapse_get_definition or
+    synapse_search_symbols) OR name. Returns reference items, affected files, and page
+    metadata.
+    """
     if symbol_id is None and name is None:
         msg = "Either symbol_id or name must be provided."
         raise ValueError(msg)
@@ -207,7 +263,11 @@ def synapse_related_symbols(
     workspace_path: str = ".",
     offset: int = 0,
 ) -> dict[str, object] | None:
-    """Return symbols related to a given symbol (graph-like neighbors)."""
+    """Return graph neighbors of one symbol.
+
+    Includes referenced symbols, referencing symbols, container or file siblings, and
+    name-stem matches. Returns None for an unknown symbol_id.
+    """
     return _workspace_index(workspace_path).related_symbols(
         symbol_id,
         limit=limit,
@@ -220,5 +280,9 @@ def synapse_compact_context(
     symbol_id: str,
     workspace_path: str = ".",
 ) -> dict[str, object] | None:
-    """Minimum context to understand a symbol; prefer over reading source."""
+    """Minimum context to understand a symbol; prefer over reading source.
+
+    Returns a compact definition with capped dependency and related-name lists.
+    Returns None for an unknown symbol_id.
+    """
     return _workspace_index(workspace_path).compact_context(symbol_id)

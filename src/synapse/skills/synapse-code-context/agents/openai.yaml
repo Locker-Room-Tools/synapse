@@ -1,0 +1,4 @@
+interface:
+  display_name: "Synapse Code Context"
+  short_description: "Navigate code with fresh structural context"
+  default_prompt: "Use $synapse-code-context to explore this codebase with Synapse first."

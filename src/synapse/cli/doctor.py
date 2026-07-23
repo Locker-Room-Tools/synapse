@@ -168,12 +168,12 @@ def _check_indexed_files(workspace_root: Path) -> DoctorCheck:
 
 def _check_watch(workspace_root: Path) -> DoctorCheck:
     watch_status = watch_status_payload(workspace_root)
-    if watch_status["running"]:
+    if watch_status["running"] and not watch_status["degraded"]:
         return DoctorCheck("watch", "ok", f"daemon running via {watch_status['backend']}")
     return DoctorCheck(
         "watch",
-        "warn",
-        "polling daemon not running; index updates require manual indexing until started",
+        "fail",
+        "watch daemon is not healthy; Synapse cannot guarantee a fresh index",
     )
 
 
@@ -233,8 +233,8 @@ def run_doctor(
         return DoctorReport(str(workspace_root), agent, checks)
 
     checks.append(_check_indexed_files(workspace_root))
-    checks.append(_check_watch(workspace_root))
     checks.extend(_check_mcp_probe(workspace_root))
+    checks.append(_check_watch(workspace_root))
     return DoctorReport(str(workspace_root), agent, checks)
 
 

@@ -7,15 +7,17 @@ This file is the contract for any human or AI agent contributing to THIS reposit
 - Python >=3.12. Use `uv`: `uv venv && uv pip install -e ".[dev]"`.
 - Install parser binaries explicitly with `synapse grammars install`; indexing never
   downloads grammars implicitly.
-- Run the MCP server (stdio): `python -m synapse` (or the `synapse` script).
-- Remove managed agent setup with `synapse uninstall <agent> --path .`; this does not
+- Configure an agent once with `synapse install <agent>`; initialize a workspace manually
+  with `synapse init --path .` only for diagnostics.
+- Run the MCP server directly for diagnostics: `python -m synapse serve --workspace .`.
+- Remove global managed integration with `synapse uninstall <agent> --global`; this does not
   delete index/cache data.
 
 ## Project structure
 - `src/synapse/core` — core logic: model, parsing, indexing, querying. No MCP imports.
 - `src/synapse/mcp` — FastMCP presentation layer; thin, delegates to `core`.
 - `src/synapse/cli` — CLI entrypoints for indexing, setup, and MCP install helpers.
-- `src/synapse/adapters/` — agent-specific MCP config templates and instruction snippets (packaged data).
+- `src/synapse/adapters/` — agent-specific metadata and instruction snippets (packaged data).
 - `src/synapse/queries/<lang>/*.scm` — declarative tree-sitter queries (the language-agnostic seam, packaged data).
 - `docs/architecture.md` — read this before changing structure.
 
@@ -38,7 +40,7 @@ This file is the contract for any human or AI agent contributing to THIS reposit
 ## MCP tool conventions
 - Tools are deterministic and token-frugal. Typed params/returns; concise docstrings
   (the docstring is the agent-facing contract). Return structural data, not prose.
-- Current tools: `synapse_index_workspace`, `synapse_search_symbols`,
+- Current tools: `synapse_ensure_workspace`, `synapse_index_workspace`, `synapse_search_symbols`,
   `synapse_get_definition`, `synapse_get_file_outline`, `synapse_get_symbol_context`,
   `synapse_get_dependencies`, `synapse_workspace_stats`, `synapse_project_map`,
   `synapse_get_file_dependencies`, `synapse_find_references`,
@@ -47,6 +49,7 @@ This file is the contract for any human or AI agent contributing to THIS reposit
 ### Ideal Agent Flow
 
 ```
+synapse_ensure_workspace()
 synapse_get_definition(name="synapse_find_references")
 → { symbol_id: "...", file_path: "...", line_range: [...] }
 

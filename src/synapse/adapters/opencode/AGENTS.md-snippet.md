@@ -24,4 +24,4 @@ Tool guide:
 If a query reports an uninitialized or degraded workspace, call `synapse_ensure_workspace`
 again. Fall back to grep or file reads only for exact text or content Synapse does not index.
 
-Validate the setup with `synapse doctor --path . --agent codex`.
+Validate the setup with `synapse doctor --path . --agent opencode`.

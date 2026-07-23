@@ -9,7 +9,7 @@ jobs:
     name: Test (Python 3.12)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.12"
@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
         with:
           python-version: "3.12"
@@ -42,6 +42,17 @@ jobs:
             echo "Tag ${GITHUB_REF_NAME} does not match project version ${version}" >&2
             exit 1
           }
+      - name: Prepare release notes from changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v version="$version" '
+            BEGIN { prefix = "## [" version "]" }
+            index($0, prefix) == 1 && (length($0) == length(prefix) || substr($0, length(prefix) + 1, 3) == " - ") { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+            END { if (!found) exit 1 }
+          ' CHANGELOG.md > release-notes.md
+          grep -q '[^[:space:]]' release-notes.md
       - name: Build sdist and wheel
         run: uv build
       - name: Wheel must contain query and adapter data
@@ -52,13 +63,20 @@ jobs:
           names = zipfile.ZipFile(wheel).namelist()
           scm = [n for n in names if n.endswith(".scm")]
           adapters = [n for n in names if "/adapters/" in n]
-          print(f"{len(scm)} .scm files, {len(adapters)} adapter files in {wheel}")
-          sys.exit(0 if len(scm) >= 100 and adapters else 1)
+          skills = [n for n in names if n.endswith("/skills/synapse-code-context/SKILL.md")]
+          print(
+              f"{len(scm)} .scm files, {len(adapters)} adapter files, "
+              f"{len(skills)} managed skills in {wheel}"
+          )
+          sys.exit(0 if len(scm) >= 100 and adapters and skills else 1)
           EOF
       - name: Install wheel into a fresh venv and index a real project
         run: |
           uv venv /tmp/smoke-venv
           uv pip install --python /tmp/smoke-venv/bin/python dist/*.whl
+          /tmp/smoke-venv/bin/synapse --help
+          CODEX_HOME=/tmp/smoke-codex /tmp/smoke-venv/bin/synapse install codex --dry-run
+          /tmp/smoke-venv/bin/synapse init --path . --dry-run
           /tmp/smoke-venv/bin/synapse grammars install
           /tmp/smoke-venv/bin/synapse index .
           /tmp/smoke-venv/bin/synapse --version
@@ -66,6 +84,11 @@ jobs:
         with:
           name: dist
           path: dist/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
           if-no-files-found: error
 
   publish:
@@ -82,3 +105,26 @@ jobs:
           path: dist/
       - name: Publish via trusted publishing
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: publish
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: .
+      - name: Create release and upload source distribution
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.tar.gz \
+            --title "Synapse $GITHUB_REF_NAME" \
+            --notes-file release-notes.md

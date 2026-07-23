@@ -158,3 +158,29 @@ def test_toml_uninstall_deletes_emptied_file(tmp_path: Path) -> None:
 
     assert result.action == "removed"
     assert not (workspace / ".codex" / "config.toml").exists()
+
+
+def test_codex_default_scope_isolated_across_multiple_workspaces(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default Codex installs pin each project without overwriting a shared user config."""
+    home = tmp_path / "home"
+    user_config = home / ".codex" / "config.toml"
+    user_config.parent.mkdir(parents=True)
+    user_config.write_text('[model]\nname = "shared"\n', encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    workspaces = [tmp_path / "first", tmp_path / "second"]
+    for workspace in workspaces:
+        workspace.mkdir()
+        install_mcp_server("codex", workspace, python_executable="/python-for-test")
+
+    first_config = tomllib.loads(
+        (workspaces[0] / ".codex" / "config.toml").read_text(encoding="utf-8")
+    )
+    second_config = tomllib.loads(
+        (workspaces[1] / ".codex" / "config.toml").read_text(encoding="utf-8")
+    )
+    assert first_config["mcp_servers"]["synapse"]["args"][-1] == str(workspaces[0])
+    assert second_config["mcp_servers"]["synapse"]["args"][-1] == str(workspaces[1])
+    assert user_config.read_text(encoding="utf-8") == '[model]\nname = "shared"\n'

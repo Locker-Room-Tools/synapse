@@ -6,6 +6,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Global `synapse install <agent>` onboarding with portable user-scoped MCP configuration,
+  managed global instructions, and the `synapse-code-context` skill.
+- Lazy `synapse_ensure_workspace` initialization plus CLI `init` and read-only `status`
+  commands.
+- Unified `synapse setup <agent>` onboarding now installs missing grammars, builds the
+  workspace index, writes project-scoped MCP configuration and managed instructions, starts
+  the watch daemon, and validates the completed integration.
+- Installation and MCP tool references under `docs/`.
+
+### Changed
+- Global install is now the canonical user flow; project-scoped setup remains available for
+  compatibility and shared repository configuration.
+- MCP can expose bootstrap tools for a new workspace, while all query tools require an
+  initialized index and healthy daemon.
+- MCP startup now restores and verifies the workspace watch daemon before exposing tools;
+  daemon health is a hard doctor requirement.
+- Codex MCP configuration defaults to project scope, and bare `synapse` displays install help
+  instead of starting an unconfigured stdio server.
+- Agent instruction snippets now lead with `synapse_ensure_workspace`, cover the full
+  navigation tool set, and demote `synapse_index_workspace` to recovery-only, matching the
+  skill, server instructions, and tool reference.
+- Managed skill files are installed per agent: only Codex receives `agents/openai.yaml`;
+  reinstall and removal clean up the legacy copy for other agents.
+- MCP tool docstrings document parameter rules (`symbol_id` OR `name`), return shapes,
+  valid `kind` values, and cross-tool disambiguation; server instructions now advertise the
+  architecture and relation tools.
+
+### Removed
+- Unused packaged data: static `mcp-config-template.*` files (configuration is rendered
+  programmatically) and the empty Claude Code hooks placeholder.
+
 ## [0.3.1] - 2026-07-23
 
 ### Added
@@ -15,7 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now runs the full test suite on Windows (Python 3.12).
 - Tag-triggered release workflow: pushing a `v*` tag runs the full gate chain,
   verifies the tag matches the project version, rebuilds and smoke-tests the
-  wheel, and publishes to PyPI via trusted publishing (OIDC).
+  wheel, publishes to PyPI via trusted publishing (OIDC), then creates a GitHub
+  Release from the matching changelog section and attaches the verified sdist.
 
 ### Changed
 - Grammar downloads are now explicit through `synapse grammars install`. Indexing

@@ -13,8 +13,11 @@ def test_server_instructions_advertise_synapse_first_flow() -> None:
     instructions = mcp.instructions
 
     assert instructions is not None
+    assert "synapse_ensure_workspace" in instructions
     assert "synapse_get_definition" in instructions
     assert "synapse_find_references" in instructions
+    assert "synapse_project_map" in instructions
+    assert "synapse_get_dependencies" in instructions
     assert "BEFORE grep" in instructions
 
 
@@ -31,3 +34,78 @@ def test_server_rejects_a_missing_workspace_before_starting(
         server.run(tmp_path / "missing")
 
     assert not data_root.exists()
+
+
+def test_server_starts_stdio_without_initializing_new_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new workspace exposes ensure/status tools without eager initialization."""
+    calls: list[object] = []
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    def fake_configure(path: Path) -> Path:
+        calls.append(("configure", path))
+        return workspace
+
+    def fake_run(*, transport: str) -> None:
+        calls.append(("stdio", transport))
+
+    monkeypatch.setattr(server, "configure_workspace", fake_configure)
+    monkeypatch.setattr(server, "read_metadata", lambda path: None)
+    monkeypatch.setattr(
+        server,
+        "ensure_watch_daemon",
+        lambda path: pytest.fail("started daemon for new workspace"),
+    )
+    monkeypatch.setattr(server.mcp, "run", fake_run)
+
+    server.run(workspace)
+
+    assert calls == [
+        ("configure", workspace),
+        ("stdio", "stdio"),
+    ]
+
+
+def test_server_daemon_failure_prevents_stdio_for_initialized_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An initialized workspace retains the strict daemon freshness invariant."""
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(server, "configure_workspace", lambda path: workspace)
+    monkeypatch.setattr(server, "read_metadata", lambda path: object())
+
+    def fail_ensure(path: Path) -> None:
+        raise RuntimeError("daemon unavailable")
+
+    monkeypatch.setattr(server, "ensure_watch_daemon", fail_ensure)
+    monkeypatch.setattr(server.mcp, "run", lambda **_: pytest.fail("server started"))
+
+    with pytest.raises(RuntimeError, match="daemon unavailable"):
+        server.run(workspace)
+
+
+def test_server_auto_detects_workspace_when_global_config_has_no_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Portable global config delegates cwd repository discovery to workspace context."""
+    calls: list[object] = []
+    workspace = tmp_path / "repository"
+    workspace.mkdir()
+
+    def fake_configure(path: Path | None) -> Path:
+        calls.append(("configure", path))
+        return workspace
+
+    monkeypatch.setattr(server, "configure_workspace", fake_configure)
+    monkeypatch.setattr(server, "read_metadata", lambda path: None)
+    monkeypatch.setattr(server.mcp, "run", lambda *, transport: calls.append(("run", transport)))
+
+    server.run()
+
+    assert calls == [("configure", None), ("run", "stdio")]

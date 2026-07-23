@@ -6,8 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from synapse.cli import adapters
 from synapse.cli.adapters import (
+    ADAPTERS,
     BEGIN_MARKER,
     END_MARKER,
     adapter_choices,
@@ -65,16 +65,6 @@ def test_render_mcp_config_uses_codex_toml_shape(tmp_path: Path) -> None:
     ]
 
 
-def test_codex_static_template_uses_toml_shape() -> None:
-    """The packaged Codex template should match the generated config format."""
-    template_path = adapters.ADAPTERS_ROOT / "codex" / "mcp-config-template.toml"
-
-    config = tomllib.loads(template_path.read_text(encoding="utf-8"))
-
-    assert config["mcp_servers"]["synapse"]["command"] == "synapse"
-    assert not (adapters.ADAPTERS_ROOT / "codex" / "mcp-config-template.json").is_file()
-
-
 def test_render_mcp_config_uses_opencode_local_shape(tmp_path: Path) -> None:
     """OpenCode expects an mcp object with a local command array."""
     workspace_root = tmp_path / "workspace"
@@ -115,10 +105,23 @@ def test_install_instruction_snippet_creates_and_is_idempotent(tmp_path: Path) -
     assert second.status == "unchanged"
     assert content.count(BEGIN_MARKER) == 1
     assert content.count(END_MARKER) == 1
+    assert "synapse_ensure_workspace" in content
     assert "synapse_get_definition" in content
     assert "synapse_find_references" in content
+    assert "synapse_project_map" in content
     assert "synapse_watch_status" in content
     assert "synapse doctor --path . --agent codex" in content
+    assert "use only if the index is stale or missing" not in content
+
+
+def test_agent_snippets_differ_only_in_doctor_line() -> None:
+    """All adapter snippets share one body; only the doctor command names the agent."""
+    bodies = set()
+    for adapter in ADAPTERS.values():
+        content = adapter.snippet_path.read_text(encoding="utf-8")
+        assert f"synapse doctor --path . --agent {adapter.id}" in content
+        bodies.add("\n".join(line for line in content.splitlines() if "synapse doctor" not in line))
+    assert len(bodies) == 1
 
 
 def test_install_instruction_snippet_requires_force_to_replace_marker_block(

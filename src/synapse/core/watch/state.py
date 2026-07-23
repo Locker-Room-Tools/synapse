@@ -9,8 +9,10 @@ from typing import Any
 
 from synapse.core.workspace import (
     normalize_workspace_path,
+    read_metadata,
     require_workspace_path,
     watch_journal_path,
+    watch_state_file_path,
     watch_state_path,
     workspace_id,
 )
@@ -85,7 +87,7 @@ def default_watch_status(path: str | Path) -> WatchStatus:
 def read_watch_status(path: str | Path) -> WatchStatus:
     """Load watch status, returning a not-running default when absent."""
     root = normalize_workspace_path(path)
-    status_path = watch_state_path(root)
+    status_path = watch_state_file_path(root)
     if not status_path.exists():
         return default_watch_status(root)
     payload = json.loads(status_path.read_text(encoding="utf-8"))
@@ -125,8 +127,11 @@ def write_watch_status(path: str | Path, status: WatchStatus) -> None:
 
 def watch_status_payload(path: str | Path) -> dict[str, object]:
     """Return a token-frugal status payload for MCP and CLI JSON output."""
-    status = read_watch_status(require_workspace_path(path))
+    root = require_workspace_path(path)
+    status = read_watch_status(root)
     payload: dict[str, object] = asdict(status)
+    payload["initialized"] = read_metadata(root) is not None
+    payload["workspace_path"] = str(root)
     if status.running and not pid_is_running(status.pid):
         payload["running"] = False
         payload["pending"] = 0

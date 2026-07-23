@@ -8,23 +8,17 @@ compact structural code context without uploading source code to external servic
 1. Use Python >=3.12.
 2. Install Synapse as a managed CLI tool:
    `uv tool install locker-room-tools-synapse-mcp`.
-3. Download the supported tree-sitter grammars once:
-   `synapse grammars install`.
-4. Initialize a workspace for your agent:
-   `synapse setup codex --path .`
-5. Install a workspace-pinned MCP config into the client default path:
-   `synapse mcp install codex --workspace .`
-6. Verify the full MCP path:
-   `synapse doctor --path . --agent codex`
+3. Connect it globally to your agent:
+   `synapse install codex`
+4. Restart the agent once.
 
-The installer is guided by default. It indexes the workspace and prints next steps, but it
-does not edit repository files unless you pass `--write-instructions`.
-Use `synapse mcp install <client> --workspace . --print` to print config without writing,
-or `--dry-run` to preview the resolved write. Remove managed config and instructions with
-`synapse uninstall <client> --path .`.
+Replace `codex` with `claude-code` or `opencode`. No repository files are created. On the first
+code-navigation request, the global instruction calls `synapse_ensure_workspace`, which
+initializes the local index and daemon automatically.
 
-Run the MCP server over stdio with `synapse serve --workspace .` or
-`python -m synapse serve --workspace .`.
+See [Installation and lifecycle](docs/installation.md) for upgrades, custom scopes,
+troubleshooting, and uninstall instructions. See [MCP tools](docs/tools.md) for tool contracts
+and recommended agent flows.
 
 ## Development
 
@@ -36,24 +30,15 @@ serving only use the local grammar cache and never download parsers implicitly.
 
 ## Available MCP tools
 
-- `synapse_index_workspace`
-- `synapse_search_symbols`
-- `synapse_get_definition`
-- `synapse_get_file_outline`
-- `synapse_workspace_stats`
-- `synapse_watch_status`
-- `synapse_project_map`
-- `synapse_get_file_dependencies`
-- `synapse_get_symbol_context`
-- `synapse_get_dependencies`
-- `synapse_find_references`
-- `synapse_related_symbols`
-- `synapse_compact_context`
+Synapse exposes 14 deterministic MCP tools for initialization, symbol lookup, definitions, references,
+structural context, dependency navigation, project maps, indexing, and daemon health. The
+complete parameter and response reference is in [docs/tools.md](docs/tools.md).
 
 ## Watch daemon
 
-Synapse can keep an index fresh with a dependency-free polling daemon. Start it in the
-background with `synapse watch start --workspace .`; logs are written under the workspace data
+Synapse requires a healthy dependency-free polling daemon before query tools can read an
+index. `synapse_ensure_workspace` starts or repairs it lazily, and the MCP entry point restores
+it for initialized workspaces after a reboot. Logs are written under the workspace data
 directory at `logs/watch.log`, and status is written to `watch.json` in the same data directory.
 
 Use `synapse watch status --workspace . --json` to inspect `running`, `backend`, `pending`, PID,
@@ -67,9 +52,16 @@ The shipped backend is currently polling-only. Its interval defaults to the user
 
 ## Agent setup helpers
 
-- `synapse setup [claude-code|codex|opencode] [--write-instructions]`
+- `synapse install <claude-code|codex|opencode> [--dry-run] [--offline] [--no-skill]`
+- `synapse init --path <path> [--dry-run] [--offline]`
+- `synapse status --path <path> [--json]`
+- `synapse uninstall <client> --global`
+- `synapse setup <client> --path <path>` for advanced project-scoped integration
 - `synapse mcp install <client> --workspace <path> [--scope project|user] [--print]`
 - `synapse uninstall <client> --path <path> [--scope project|user]`
 - `synapse doctor --path <path> [--agent <client>] [--scope project|user]`
+
+Project setup, `mcp install`, manual indexing, `serve`, and foreground watch mode remain
+available for advanced integration and diagnostics.
 
 Read `docs/architecture.md` before changing the project structure.

@@ -52,30 +52,54 @@ implementation appears — for example, the Phase 2 Go indexer.
 - **`core.crawler`**: discovers indexable files and hashes them for incremental indexing.
 - **`mcp.server` / `mcp.tools`**: expose deterministic, token-frugal tools to agents
   (`synapse_index_workspace`, `synapse_search_symbols`, `synapse_get_definition`,
-  `synapse_get_file_outline`, `synapse_get_symbol_context`, `synapse_get_dependencies`,
+  `synapse_ensure_workspace`, `synapse_get_file_outline`, `synapse_get_symbol_context`,
+  `synapse_get_dependencies`,
   `synapse_workspace_stats`, `synapse_project_map`, `synapse_get_file_dependencies`,
   `synapse_find_references`, `synapse_related_symbols`, `synapse_compact_context`,
   `synapse_watch_status`).
   Relations populated during indexing are `CONTAINS` (resolved member edges), `IMPORTS`
   (unresolved import target name), and `REFERENCES` (resolved or confidence-marked usage
   edges from reference queries).
-- **`cli`**: provides `index`, `setup`, `serve`, `grammars install`, `mcp install`, and
-  `uninstall` commands. Grammar installation is the explicit network-enabled setup step.
+- **`cli`**: provides global `install`, workspace `init`/`status`, project-scoped `setup`,
+  `serve`, grammar, watch, doctor, and uninstall commands. Global install is the canonical
+  onboarding path; project setup remains an advanced compatibility path.
 - **`adapters`** (`src/synapse/adapters/`, packaged data): provides agent-specific metadata and instruction snippets.
 - **`cli.installer`**: owns reversible MCP client config writes. JSON configs are merged
   structurally, and Codex TOML config is managed with a marker block so uninstall removes
   only Synapse-owned content.
+- **`core.watch.daemon`**: owns detached process start, health verification, and bounded
+  lifecycle waits.
+- **`core.lifecycle`**: owns workspace state, lazy grammar/index initialization, query
+  readiness, and daemon repair. CLI and MCP call the same lifecycle.
 
 ## Agent adoption layers
 
-Synapse uses three default layers to make agents reach for structural context first:
+Synapse uses four global layers to make agents reach for structural context first:
 
-1. MCP server instructions are advertised during the MCP handshake.
-2. Entry-tool docstrings describe when to prefer Synapse over grep or file reads.
-3. Optional repository instruction snippets add the same flow to agent rule files.
+1. A marker-managed global instruction requires `synapse_ensure_workspace` before code
+   navigation.
+2. MCP server instructions advertise the same bootstrap and Synapse-first flow.
+3. Entry-tool docstrings describe when to prefer structural tools over text search.
+4. The managed `synapse-code-context` skill supplies the detailed multi-tool workflow.
 
-Skills are intentionally not part of the default install contract yet. They can be added
-later per adapter once each client's skill location and trigger behavior are confirmed.
+The instruction is the mandatory trigger and does not depend on skill activation. The skill
+is supplementary because implicit skill matching alone is not a reliable initialization
+contract. Project setup can still install repository instructions for shared integrations.
+
+## Runtime lifecycle
+
+The supported user path is globally configured and daemon-backed per workspace:
+
+1. `synapse install <agent>` writes a portable user MCP entry, global instruction, and skill.
+2. A new MCP process resolves the nearest Git root and starts in bootstrap mode when no
+   metadata exists.
+3. `synapse_ensure_workspace` installs parsers, builds the initial index, and starts the
+   detached polling daemon, which becomes the incremental index writer for that workspace.
+4. Initialized MCP sessions restore a missing daemon; query tools reject uninitialized or
+   degraded state instead of exposing an empty or stale index.
+
+Bare `synapse` displays global install help. Project setup, manual indexing, independent MCP
+config installation, and foreground watching remain explicit advanced entry points.
 
 ## Indexing flow
 

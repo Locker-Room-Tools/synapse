@@ -1,14 +1,16 @@
 """Tests for CLI argument parsing and dispatch."""
 
 import json
-import sys
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from synapse import __version__
+from synapse.cli import doctor as cli_doctor
 from synapse.cli import main as cli_main
+from synapse.cli.doctor import DoctorReport
 from synapse.core.indexing import IndexStats
 
 
@@ -80,24 +82,36 @@ def test_setup_command_prints_workspace_details(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The setup subcommand reports next steps without writing instructions by default."""
+    """The setup subcommand installs project config and managed instructions by default."""
     monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setattr(
         cli_main,
         "index_workspace",
         lambda path, *, force=False: IndexStats(str(path), 1, 0, 0, 0, 1, 1, ["python"]),
     )
     monkeypatch.setattr(cli_main, "_detect_workspace_root", lambda path: tmp_path)
+    monkeypatch.setattr(cli_main, "missing_grammars", lambda: ())
+    monkeypatch.setattr(
+        cli_main,
+        "ensure_watch_daemon",
+        lambda path: SimpleNamespace(backend="polling", pid=1234),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "run_doctor",
+        lambda path, *, agent, scope: DoctorReport(str(path), agent, []),
+    )
 
     exit_code = cli_main.main(["setup", "codex", "--path", str(tmp_path)])
 
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "Synapse workspace initialized." in captured.out
-    assert "Repository files changed: none" in captured.out
-    assert "synapse mcp install codex --workspace" in captured.out
-    assert "synapse doctor --path" in captured.out
-    assert not (tmp_path / "AGENTS.md").exists()
+    assert f"MCP config: {tmp_path / '.codex' / 'config.toml'} (created)" in captured.out
+    assert f"Repository instructions: {tmp_path / 'AGENTS.md'} (created)" in captured.out
+    assert "Watch daemon: running via polling (pid 1234)" in captured.out
+    assert (tmp_path / "AGENTS.md").exists()
 
 
 def test_setup_command_can_write_agent_instructions(
@@ -105,21 +119,33 @@ def test_setup_command_can_write_agent_instructions(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Instruction writes are explicit and use the adapter default target."""
+    """The legacy instruction flag remains accepted as a deprecated no-op."""
     monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setattr(
         cli_main,
         "index_workspace",
         lambda path, *, force=False: IndexStats(str(path), 1, 0, 0, 0, 1, 1, ["python"]),
     )
     monkeypatch.setattr(cli_main, "_detect_workspace_root", lambda path: tmp_path)
+    monkeypatch.setattr(cli_main, "missing_grammars", lambda: ())
+    monkeypatch.setattr(
+        cli_main,
+        "ensure_watch_daemon",
+        lambda path: SimpleNamespace(backend="polling", pid=1234),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "run_doctor",
+        lambda path, *, agent, scope: DoctorReport(str(path), agent, []),
+    )
 
     exit_code = cli_main.main(["setup", "codex", "--path", str(tmp_path), "--write-instructions"])
 
     captured = capsys.readouterr()
     instructions = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
     assert exit_code == 0
-    assert "Repository files changed:" in captured.out
+    assert "--write-instructions is deprecated" in captured.err
     assert "synapse doctor --path . --agent codex" in instructions
 
 
@@ -169,12 +195,12 @@ def test_mcp_install_auto_writes_default_project_config(
     assert f"MCP config created: {config_path}" in captured.out
 
 
-def test_mcp_install_auto_writes_default_user_config(
+def test_mcp_install_auto_writes_default_project_config_for_codex(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Codex defaults to user-scope TOML config."""
+    """Codex defaults to project-scope TOML without mutating the user config."""
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     home = tmp_path / "home"
@@ -184,11 +210,12 @@ def test_mcp_install_auto_writes_default_user_config(
     exit_code = cli_main.main(["mcp", "install", "codex", "--workspace", str(workspace_root)])
 
     captured = capsys.readouterr()
-    config_path = home / ".codex" / "config.toml"
+    config_path = workspace_root / ".codex" / "config.toml"
     config = tomllib.loads(config_path.read_text(encoding="utf-8"))
     assert exit_code == 0
     assert config["mcp_servers"]["synapse"]["args"][-1] == str(workspace_root)
     assert f"MCP config created: {config_path}" in captured.out
+    assert not (home / ".codex" / "config.toml").exists()
 
 
 def test_mcp_install_print_keeps_stdout_only_behavior(
@@ -284,17 +311,28 @@ def test_uninstall_removes_managed_config_and_instructions(
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setattr(
         cli_main,
         "index_workspace",
         lambda path, *, force=False: IndexStats(str(path), 1, 0, 0, 0, 1, 1, ["python"]),
     )
     monkeypatch.setattr(cli_main, "_detect_workspace_root", lambda path: workspace_root)
+    monkeypatch.setattr(cli_main, "missing_grammars", lambda: ())
+    monkeypatch.setattr(
+        cli_main,
+        "ensure_watch_daemon",
+        lambda path: SimpleNamespace(backend="polling", pid=1234),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "run_doctor",
+        lambda path, *, agent, scope: DoctorReport(str(path), agent, []),
+    )
     assert (
-        cli_main.main(["setup", "opencode", "--path", str(workspace_root), "--write-instructions"])
+        cli_main.main(["setup", "opencode", "--path", str(workspace_root)])
         == 0
     )
-    assert cli_main.main(["mcp", "install", "opencode", "--workspace", str(workspace_root)]) == 0
 
     exit_code = cli_main.main(["uninstall", "opencode", "--path", str(workspace_root)])
 
@@ -311,11 +349,20 @@ def test_doctor_validates_mcp_path(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Doctor indexes a workspace and proves the MCP server can answer a tool call."""
+    """Doctor indexes a workspace and validates the advertised MCP surface."""
     monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     (workspace_root / "sample.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+    async def fake_probe(_workspace_root: Path) -> tuple[list[str], int, str | None]:
+        return sorted(cli_doctor.EXPECTED_TOOLS), 1, "Use Synapse first"
+
+    monkeypatch.setattr(cli_doctor, "_probe_mcp", fake_probe)
+    monkeypatch.setattr(
+        cli_doctor,
+        "watch_status_payload",
+        lambda path: {"running": True, "degraded": False, "backend": "polling"},
+    )
 
     exit_code = cli_main.main(
         ["doctor", "--path", str(workspace_root), "--agent", "codex", "--json"]
@@ -402,62 +449,6 @@ def test_watch_start_once_requires_foreground(
     assert "requires --foreground" in captured.err
 
 
-def test_start_detached_watch_builds_foreground_child_command(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Detached start launches a foreground child process and redirects logs."""
-    seen: dict[str, object] = {}
-    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
-
-    class FakeProcess:
-        pid = 4321
-
-    def fake_popen(command: list[str], **kwargs: object) -> FakeProcess:
-        seen["command"] = command
-        seen["cwd"] = kwargs["cwd"]
-        seen["start_new_session"] = kwargs["start_new_session"]
-        return FakeProcess()
-
-    monkeypatch.setattr(cli_main, "_watch_is_running", lambda path: False)
-    monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr("synapse.cli.main.subprocess.Popen", fake_popen)
-
-    pid = cli_main._start_detached_watch(tmp_path, poll_interval_s=2)
-
-    command = seen["command"]
-    assert pid == 4321
-    assert isinstance(command, list)
-    assert command[-3:] == ["--foreground", "--poll-interval", "2"]
-    assert seen["cwd"] == str(tmp_path)
-    assert seen["start_new_session"] is True
-
-
-def test_start_detached_watch_uses_windows_process_flags(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Windows detachment avoids the POSIX-only start_new_session option."""
-    seen: dict[str, object] = {}
-    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
-
-    class FakeProcess:
-        pid = 4321
-
-    def fake_popen(command: list[str], **kwargs: object) -> FakeProcess:
-        seen.update(kwargs)
-        return FakeProcess()
-
-    monkeypatch.setattr(sys, "platform", "win32")
-    monkeypatch.setattr(cli_main, "_watch_is_running", lambda path: False)
-    monkeypatch.setattr("synapse.cli.main.subprocess.Popen", fake_popen)
-
-    cli_main._start_detached_watch(tmp_path)
-
-    assert seen["creationflags"] == 0x00000008 | 0x00000200
-    assert "start_new_session" not in seen
-
-
 def test_watch_restart_waits_for_stop_before_starting(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -473,13 +464,17 @@ def test_watch_restart_waits_for_stop_before_starting(
         calls.append("wait")
         return True
 
-    def fake_start(path: Path, *, poll_interval_s: int | None = None) -> int:
+    def fake_ensure(
+        path: Path,
+        *,
+        poll_interval_s: int | None = None,
+    ) -> SimpleNamespace:
         calls.append(f"start:{poll_interval_s}")
-        return 111
+        return SimpleNamespace(pid=111)
 
     monkeypatch.setattr(cli_main, "request_watch_stop", fake_stop)
-    monkeypatch.setattr(cli_main, "_wait_for_watch_to_stop", fake_wait)
-    monkeypatch.setattr(cli_main, "_start_detached_watch", fake_start)
+    monkeypatch.setattr(cli_main, "wait_for_watch_to_stop", fake_wait)
+    monkeypatch.setattr(cli_main, "ensure_watch_daemon", fake_ensure)
 
     exit_code = cli_main.main(
         ["watch", "restart", "--workspace", str(tmp_path), "--poll-interval", "3"]
@@ -497,16 +492,20 @@ def test_watch_restart_timeout_does_not_start_new_process(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Restart fails safely if the old daemon does not exit."""
-    started = False
+    started: list[Path] = []
     monkeypatch.setattr(cli_main, "request_watch_stop", lambda path: None)
-    monkeypatch.setattr(cli_main, "_wait_for_watch_to_stop", lambda path: False)
-    monkeypatch.setattr(cli_main, "_start_detached_watch", lambda path, **kwargs: started)
+    monkeypatch.setattr(cli_main, "wait_for_watch_to_stop", lambda path: False)
+    monkeypatch.setattr(
+        cli_main,
+        "ensure_watch_daemon",
+        lambda path, **kwargs: started.append(path),
+    )
 
     exit_code = cli_main.main(["watch", "restart", "--workspace", str(tmp_path)])
 
     captured = capsys.readouterr()
     assert exit_code == 2
-    assert started is False
+    assert started == []
     assert "did not stop" in captured.err
 
 
