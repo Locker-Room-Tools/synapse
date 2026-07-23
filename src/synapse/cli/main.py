@@ -135,11 +135,7 @@ def _handle_install(args: Namespace) -> int:
             portable=True,
         )
         instruction_result = install_global_instruction(args.agent, force=True)
-        skill_result = (
-            None
-            if args.no_skill
-            else install_global_skill(args.agent, force=args.force)
-        )
+        skill_result = None if args.no_skill else install_global_skill(args.agent, force=args.force)
 
     heading = "Synapse global install preview." if args.dry_run else "Synapse installed globally."
     print(heading)
@@ -212,10 +208,7 @@ def _handle_init(args: Namespace) -> int:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         print(f"Synapse workspace {result.action}: {result.workspace_path}")
-        print(
-            f"Index: {result.index['files']} files, "
-            f"{result.index['symbols']} symbols"
-        )
+        print(f"Index: {result.index['files']} files, {result.index['symbols']} symbols")
         print(f"Watch daemon: running (pid {result.daemon['pid']})")
     return 0
 
@@ -287,10 +280,7 @@ def _print_setup_preview(
             workspace_root,
             output_path=args.instructions_output,
         )
-        print(
-            "Instructions: would install at "
-            f"{instruction_path}"
-        )
+        print(f"Instructions: would install at {instruction_path}")
     print("Watch daemon: would ensure a healthy detached process")
     print("Doctor: would validate the completed installation")
     _print_legacy_codex_config_warning(args.agent, workspace_root, scope)
@@ -350,10 +340,7 @@ def _handle_setup(args: Namespace) -> int:
     print(f"Detected languages: {languages}")
     print(f"MCP config: {config_result.path} ({config_result.action})")
     if instructions_result is not None:
-        print(
-            f"Repository instructions: {instructions_result.path} "
-            f"({instructions_result.status})"
-        )
+        print(f"Repository instructions: {instructions_result.path} ({instructions_result.status})")
     else:
         print("Repository instructions: skipped")
     print(f"Watch daemon: running via {watch_status.backend} (pid {watch_status.pid})")
@@ -490,10 +477,7 @@ def _handle_uninstall(args: Namespace) -> int:
                 args.agent,
                 dry_run=args.dry_run,
             )
-            print(
-                f"Global instructions {instructions_result.status}: "
-                f"{instructions_result.path}"
-            )
+            print(f"Global instructions {instructions_result.status}: {instructions_result.path}")
             printed = True
         if not args.keep_skill:
             skill_result = remove_global_skill(args.agent, dry_run=args.dry_run)

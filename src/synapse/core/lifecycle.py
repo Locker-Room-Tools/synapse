@@ -94,9 +94,7 @@ def ensure_workspace(
 
     watch_before = read_watch_status(root)
     daemon_healthy_before = (
-        watch_before.running
-        and not watch_before.degraded
-        and pid_is_running(watch_before.pid)
+        watch_before.running and not watch_before.degraded and pid_is_running(watch_before.pid)
     )
     if missing:
         install_grammars()

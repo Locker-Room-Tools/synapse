@@ -129,4 +129,3 @@ def test_legacy_project_setup_remains_available(
     assert exit_code == 0
     assert "Synapse setup preview" in capsys.readouterr().out
     assert not (tmp_path / ".codex").exists()
-

@@ -105,8 +105,7 @@ def ensure_watch_daemon(
 
     log_path = logs_dir(root) / "watch.log"
     msg = (
-        f"Watch daemon did not become healthy for {root} within {timeout_s:g}s. "
-        f"Inspect {log_path}."
+        f"Watch daemon did not become healthy for {root} within {timeout_s:g}s. Inspect {log_path}."
     )
     raise WatchDaemonError(msg)
 

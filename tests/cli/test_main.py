@@ -329,10 +329,7 @@ def test_uninstall_removes_managed_config_and_instructions(
         "run_doctor",
         lambda path, *, agent, scope: DoctorReport(str(path), agent, []),
     )
-    assert (
-        cli_main.main(["setup", "opencode", "--path", str(workspace_root)])
-        == 0
-    )
+    assert cli_main.main(["setup", "opencode", "--path", str(workspace_root)]) == 0
 
     exit_code = cli_main.main(["uninstall", "opencode", "--path", str(workspace_root)])
 
@@ -354,6 +351,7 @@ def test_doctor_validates_mcp_path(
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
     (workspace_root / "sample.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+
     async def fake_probe(_workspace_root: Path) -> tuple[list[str], int, str | None]:
         return sorted(cli_doctor.EXPECTED_TOOLS), 1, "Use Synapse first"
 
