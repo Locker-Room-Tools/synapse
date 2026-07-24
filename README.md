@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="assets/brand/synapse-lockup.svg" width="320" alt="Synapse">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/synapse-lockup-dark.svg">
+    <img src="assets/brand/synapse-lockup.svg" width="320" alt="Synapse">
+  </picture>
 </p>
 
 <h1 align="center">Synapse MCP</h1>
