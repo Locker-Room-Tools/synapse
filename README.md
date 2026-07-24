@@ -1,11 +1,12 @@
 <p align="center">
-  <img src="assets/brand/synapse-lockup.svg" width="360" alt="Synapse">
+  <img src="assets/brand/synapse-lockup.svg" width="320" alt="Synapse">
 </p>
 
-# Synapse MCP
+<h1 align="center">Synapse MCP</h1>
 
-Synapse is a local-first, AST-based code context engine exposed over MCP. It gives AI agents
-compact structural code context without uploading source code to external services.
+<p align="center">
+  Local-first AST code context for AI agents — without uploading source code to external services.
+</p>
 
 ## Quickstart
 
