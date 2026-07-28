@@ -11,6 +11,13 @@
   Local-first AST code context for AI agents — without uploading source code to external services.
 </p>
 
+<p align="center">
+  <a href="https://github.com/Locker-Room-Tools/synapse/actions/workflows/ci.yml"><img src="https://github.com/Locker-Room-Tools/synapse/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://pypi.org/project/locker-room-tools-synapse-mcp/"><img src="https://img.shields.io/pypi/v/locker-room-tools-synapse-mcp" alt="PyPI"></a>
+  <img src="https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue" alt="Python 3.12 | 3.13 | 3.14">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT License"></a>
+</p>
+
 ## Quickstart
 
 1. Use Python >=3.12.

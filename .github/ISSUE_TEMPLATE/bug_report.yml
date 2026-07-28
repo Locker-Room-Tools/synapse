@@ -1,0 +1,103 @@
+name: Bug report
+description: Something in Synapse behaves incorrectly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. The two diagnostic blocks below resolve most issues on
+        their own, so please fill them in even if the bug seems unrelated to setup.
+
+        For security vulnerabilities, follow
+        [SECURITY.md](https://github.com/Locker-Room-Tools/synapse/blob/main/SECURITY.md)
+        instead of opening a public issue.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: What went wrong, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands or agent requests, in order.
+      placeholder: |
+        1. synapse install codex
+        2. Ask the agent to ...
+        3. ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Synapse version
+      description: Output of `synapse --version`.
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: Output of `python --version`.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: agent
+    attributes:
+      label: Agent
+      description: Which agent was connected when the problem appeared.
+      options:
+        - Claude Code
+        - Codex
+        - OpenCode
+        - None (CLI only)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: languages
+    attributes:
+      label: Affected languages
+      description: For indexing or parsing problems, which languages are involved.
+      placeholder: python, typescript
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: synapse doctor output
+      description: Output of `synapse doctor --path .`
+      render: console
+
+  - type: textarea
+    id: watch_status
+    attributes:
+      label: Watch daemon status
+      description: Output of `synapse watch status --workspace . --json`
+      render: json
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Errors or tracebacks, plus anything useful from `logs/watch.log` in the workspace data directory.
+      render: console

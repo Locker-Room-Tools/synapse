@@ -6,7 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-28
+
 ### Added
+- Contributor documentation: `CONTRIBUTING.md` with the local quality gate, the
+  language-addition path, and the MCP tool contract; `SECURITY.md` with the private
+  reporting channel and the local-first threat model; GitHub issue forms and a pull
+  request template.
 - Global `synapse install <agent>` onboarding with portable user-scoped MCP configuration,
   managed global instructions, and the `synapse-code-context` skill.
 - Lazy `synapse_ensure_workspace` initialization plus CLI `init` and read-only `status`

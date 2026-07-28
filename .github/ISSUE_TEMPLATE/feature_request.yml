@@ -1,0 +1,44 @@
+name: Feature request
+description: Suggest a capability or change
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that Synapse makes hard or impossible today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: |
+        What should happen instead. For a new MCP tool, sketch its parameters and return
+        shape — tools are typed, deterministic, and return structural data rather than prose.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing tools or workarounds you tried, and why they fall short.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This is a request for a new language
+        - label: This is a request for a new MCP tool
+        - label: I am willing to open a pull request for this
+
+  - type: markdown
+    attributes:
+      value: |
+        New languages are added declaratively — `.scm` queries plus a registry mapping, with
+        no per-language branching in the parser. See the language section in
+        [CONTRIBUTING.md](https://github.com/Locker-Room-Tools/synapse/blob/main/CONTRIBUTING.md)
+        if you plan to submit one.
