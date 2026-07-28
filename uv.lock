@@ -462,13 +462,13 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "mcp", specifier = ">=1.28.1,<2" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.3.0" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.0" },
-    { name = "tree-sitter", specifier = ">=0.26.0" },
-    { name = "tree-sitter-language-pack", specifier = ">=1.13.5,<1.14" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
+    { name = "tree-sitter", specifier = ">=0.25" },
+    { name = "tree-sitter-language-pack", specifier = ">=1.13.3,<1.14" },
 ]
 provides-extras = ["dev"]
 
