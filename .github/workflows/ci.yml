@@ -31,6 +31,19 @@ jobs:
       - name: Pytest with coverage floor
         run: uv run pytest -q --cov=synapse
 
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
+      - name: Install locked dependencies
+        run: uv sync --locked --extra dev
+      - name: Audit for known vulnerabilities
+        run: uvx pip-audit --skip-editable --path .venv/lib/python*/site-packages
+
   windows-test:
     name: Test (Windows, ${{ matrix.shard }})
     runs-on: windows-2022
