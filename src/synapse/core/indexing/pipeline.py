@@ -6,20 +6,20 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from synapse.core.crawler import hash_source, iter_source_files
 from synapse.core.index import SymbolIndex
-from synapse.core.index_schema import (
+from synapse.core.index.schema import (
     atomic_replace_database,
     cleanup_database_files,
     temporary_database_path,
 )
-from synapse.core.languages import detect_language
-from synapse.core.models import SourceFile
-from synapse.core.parser import ParsedSource, RawReference, build_relations, parse_source
-from synapse.core.reference_reconciliation import (
+from synapse.core.indexing.crawler import hash_source, iter_source_files
+from synapse.core.indexing.parser import ParsedSource, RawReference, build_relations, parse_source
+from synapse.core.indexing.references import (
     reconcile_affected_references,
     symbol_names,
 )
+from synapse.core.languages import detect_language
+from synapse.core.models import SourceFile
 from synapse.core.workspace import db_path, require_workspace_path, write_metadata
 
 
@@ -84,6 +84,7 @@ def index_workspace(workspace_path: str | Path = ".", *, force: bool = False) ->
     """Index or re-index a workspace into the local SQLite cache."""
     root = require_workspace_path(workspace_path)
     if force:
+        # Deferred: watch imports this package, so a module-level import would cycle.
         from synapse.core.watch.supervisor import WatchLock
 
         with WatchLock(root):

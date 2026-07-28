@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from synapse.core.parser import extract_references, parse_file
+from synapse.core.indexing.parser import extract_references, parse_file
 
 
 def test_parse_file_handles_empty_file(tmp_path: Path) -> None:

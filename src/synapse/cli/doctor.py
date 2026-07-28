@@ -25,14 +25,18 @@ from synapse.core.watch.state import watch_status_payload
 from synapse.core.workspace import db_path, normalize_workspace_path
 
 EXPECTED_TOOLS = {
+    "synapse_add_ignored_directories",
     "synapse_compact_context",
+    "synapse_ensure_workspace",
     "synapse_find_references",
+    "synapse_get_config",
     "synapse_get_definition",
     "synapse_get_dependencies",
     "synapse_get_file_dependencies",
     "synapse_get_file_outline",
     "synapse_get_symbol_context",
     "synapse_index_workspace",
+    "synapse_remove_ignored_directories",
     "synapse_project_map",
     "synapse_related_symbols",
     "synapse_search_symbols",

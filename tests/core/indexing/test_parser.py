@@ -2,8 +2,7 @@
 
 from pathlib import Path
 
-from synapse.core.models import SymbolKind
-from synapse.core.parser import (
+from synapse.core.indexing.parser import (
     _assign_containers,
     _candidate_symbol_ids,
     _capture_kind_to_symbol_kind,
@@ -14,6 +13,7 @@ from synapse.core.parser import (
     extract_references,
     parse_file,
 )
+from synapse.core.models import SymbolKind
 
 
 def test_parse_file_extracts_python_symbols_with_nesting(tmp_path: Path) -> None:

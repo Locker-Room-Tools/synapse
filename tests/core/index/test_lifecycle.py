@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from synapse.core.index import SymbolIndex
-from synapse.core.index_schema import create_connection
+from synapse.core.index.schema import create_connection
 from synapse.core.indexing import index_workspace
 from synapse.core.models import SourceFile
 from synapse.core.watch.supervisor import WatchAlreadyRunning, WatchLock
@@ -36,7 +36,7 @@ def test_automatically_opened_connections_close_on_success_and_failure(
         connections.append(connection)
         return connection
 
-    monkeypatch.setattr("synapse.core.index_schema.sqlite3.connect", tracked_connect)
+    monkeypatch.setattr("synapse.core.index.schema.sqlite3.connect", tracked_connect)
     index = SymbolIndex(tmp_path / "index.sqlite")
     index.upsert_file(
         SourceFile(
@@ -78,7 +78,7 @@ def test_connection_configuration_failure_closes_the_new_handle(
         return connection
 
     connection.set_authorizer(deny_pragmas)
-    monkeypatch.setattr("synapse.core.index_schema.sqlite3.connect", return_connection)
+    monkeypatch.setattr("synapse.core.index.schema.sqlite3.connect", return_connection)
 
     with pytest.raises(sqlite3.DatabaseError):
         create_connection(tmp_path / "index.sqlite")
@@ -125,7 +125,7 @@ def test_failed_atomic_replacement_preserves_old_index_and_cleans_temporary_file
     def fail_replace(_source: Path, _target: Path) -> None:
         raise OSError("replace blocked")
 
-    monkeypatch.setattr("synapse.core.index_schema.os.replace", fail_replace)
+    monkeypatch.setattr("synapse.core.index.schema.os.replace", fail_replace)
     with pytest.raises(OSError, match="replace blocked"):
         index_workspace(workspace, force=True)
 
@@ -148,7 +148,7 @@ def test_forced_rebuild_cleans_temporary_database_when_initialization_fails(
     def fail_index_initialization(_path: Path) -> SymbolIndex:
         raise sqlite3.DatabaseError("schema failed")
 
-    monkeypatch.setattr("synapse.core.indexing.SymbolIndex", fail_index_initialization)
+    monkeypatch.setattr("synapse.core.indexing.pipeline.SymbolIndex", fail_index_initialization)
     with pytest.raises(sqlite3.DatabaseError, match="schema failed"):
         index_workspace(workspace, force=True)
 

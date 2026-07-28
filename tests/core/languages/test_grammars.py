@@ -2,7 +2,7 @@
 
 import pytest
 
-from synapse.core import grammars
+from synapse.core.languages import grammars
 
 
 def test_get_installed_language_rejects_missing_grammar(

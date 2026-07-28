@@ -1,36 +1,24 @@
-"""Stable compatibility facade for the SQLite-backed symbol index."""
+"""Public entry object bundling SQLite schema, write, and read operations."""
 
 import sqlite3
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from synapse.core.index_queries import ReadProjections, relation_summary, symbol_summary
-from synapse.core.index_schema import (
-    SCHEMA,
-    SCHEMA_VERSION,
+from synapse.core.index.reads import ReadProjections
+from synapse.core.index.schema import (
     connection_scope,
     create_connection,
     initialize_schema,
     transaction_scope,
 )
-from synapse.core.index_writes import (
+from synapse.core.index.writes import (
     add_relations_for_file,
     remove_files,
     replace_symbols_for_file,
     upsert_file,
 )
 from synapse.core.models import Relation, SourceFile, Symbol, SymbolKind
-from synapse.core.workspace import DEFAULT_DB_NAME
-
-__all__ = [
-    "DEFAULT_DB_NAME",
-    "SCHEMA",
-    "SCHEMA_VERSION",
-    "SymbolIndex",
-    "relation_summary",
-    "symbol_summary",
-]
 
 
 class SymbolIndex:

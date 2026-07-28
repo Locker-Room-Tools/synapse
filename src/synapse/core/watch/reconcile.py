@@ -3,8 +3,8 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from synapse.core.crawler import hash_source, iter_source_files
 from synapse.core.index import SymbolIndex
+from synapse.core.indexing.crawler import hash_source, iter_source_files
 from synapse.core.watch.debounce import WatchBatch
 from synapse.core.watch.worker import WatchWorker
 from synapse.core.workspace import db_path, require_workspace_path

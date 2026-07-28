@@ -4,10 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from synapse.core.crawler import hash_source as calculate_source_hash
+from synapse.core.config import IgnoreMatcher, write_project_ignored_directories
 from synapse.core.index import SymbolIndex
-from synapse.core.parser import ParsedSource
-from synapse.core.parser import parse_source as parse_source_bytes
+from synapse.core.indexing.crawler import hash_source as calculate_source_hash
+from synapse.core.indexing.crawler import iter_source_files
+from synapse.core.indexing.parser import ParsedSource
+from synapse.core.indexing.parser import parse_source as parse_source_bytes
 from synapse.core.watch.debounce import CoalescingBuffer
 from synapse.core.watch.events import ChangeEvent, ChangeKind, EventNormalizer
 from synapse.core.watch.reconcile import reconcile_workspace
@@ -55,7 +57,7 @@ def test_event_normalizer_filters_ignored_temp_and_unsupported_paths(tmp_path: P
     """Only supported source files inside non-ignored directories pass normalization."""
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
-    normalizer = EventNormalizer(workspace_root, frozenset({"node_modules"}))
+    normalizer = EventNormalizer(workspace_root, IgnoreMatcher.from_entries({"node_modules"}))
 
     assert normalizer.normalize_path(workspace_root / "sample.py") == "sample.py"
     assert normalizer.normalize_path(workspace_root / "sample.py.tmp") is None
@@ -67,7 +69,7 @@ def test_event_normalizer_handles_rename_delete_and_outside_paths(tmp_path: Path
     """Rename/delete normalization stays workspace-relative and filters unsafe paths."""
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
-    normalizer = EventNormalizer(workspace_root, frozenset())
+    normalizer = EventNormalizer(workspace_root, IgnoreMatcher.from_entries([]))
 
     delete = normalizer.normalize(ChangeKind.DELETE, workspace_root / "sample.py", timestamp=1.0)
     renamed_to_unsupported = normalizer.normalize(
@@ -94,7 +96,51 @@ def test_event_normalizer_preserves_a_file_symlink_workspace_path(tmp_path: Path
     except OSError as exc:
         pytest.skip(f"file symlinks unavailable: {exc}")
 
-    assert EventNormalizer(workspace, frozenset()).normalize_path(link) == "linked.py"
+    assert (
+        EventNormalizer(workspace, IgnoreMatcher.from_entries([])).normalize_path(link)
+        == "linked.py"
+    )
+
+
+def test_event_normalizer_applies_directory_rules_to_directories_only(tmp_path: Path) -> None:
+    """A file sharing a name with an ignored directory is not filtered as one."""
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    normalizer = EventNormalizer(workspace_root, IgnoreMatcher.from_entries({"build"}))
+
+    assert normalizer.normalize_path(workspace_root / "build", require_language=False) == "build"
+    assert normalizer.normalize_path(workspace_root / "build" / "out.py") is None
+
+
+def test_event_normalizer_and_crawler_filter_identically(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Watch and crawl share one matcher, so anchored rules resolve the same way in both."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    workspace_root = tmp_path / "workspace"
+    source_files = [
+        workspace_root / "src" / "app.py",
+        workspace_root / "src" / "generated" / "x.py",
+        workspace_root / "pkg" / "src" / "generated" / "y.py",
+    ]
+    for source_file in source_files:
+        source_file.parent.mkdir(parents=True, exist_ok=True)
+        source_file.write_text("print('ok')\n", encoding="utf-8")
+    write_project_ignored_directories(workspace_root, {"src/generated"})
+
+    crawled = {
+        path.relative_to(workspace_root).as_posix() for path in iter_source_files(workspace_root)
+    }
+    normalizer = EventNormalizer(workspace_root)
+    normalized = {
+        path.relative_to(workspace_root).as_posix()
+        for path in source_files
+        if normalizer.normalize_path(path) is not None
+    }
+
+    assert crawled == {"src/app.py", "pkg/src/generated/y.py"}
+    assert normalized == crawled
 
 
 def test_coalescing_buffer_batches_latest_intent() -> None:
@@ -291,7 +337,7 @@ def test_watch_reconcile_reads_hashes_and_parses_changed_file_once(
 
     monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
     monkeypatch.setattr("synapse.core.watch.reconcile.hash_source", counting_hash_source)
-    monkeypatch.setattr("synapse.core.indexing.parse_source", counting_parse_source)
+    monkeypatch.setattr("synapse.core.indexing.pipeline.parse_source", counting_parse_source)
 
     reconcile_workspace(workspace)
 
@@ -311,7 +357,7 @@ def test_watch_worker_parse_failure_leaves_unfinished_journal(
     def fail_parse(*_args: object, **_kwargs: object) -> list[object]:
         raise RuntimeError("parse boom")
 
-    monkeypatch.setattr("synapse.core.indexing.parse_source", fail_parse)
+    monkeypatch.setattr("synapse.core.indexing.pipeline.parse_source", fail_parse)
 
     with pytest.raises(RuntimeError, match="parse boom"):
         WatchWorker(workspace_root).apply_batch(reindex_paths=["sample.py"], remove_paths=[])

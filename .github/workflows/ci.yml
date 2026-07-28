@@ -42,21 +42,23 @@ jobs:
             tests: tests/cli tests/mcp tests/test_smoke.py
           - shard: core queries
             tests: >-
-              tests/core/test_config.py tests/core/test_crawler.py
-              tests/core/test_grammars.py tests/core/test_index.py
-              tests/core/test_models.py tests/core/test_workspace.py
+              tests/core/config tests/core/index tests/core/languages
+              tests/core/test_lifecycle.py tests/core/test_models.py
+              tests/core/test_workspace.py
           - shard: indexing lifecycle
             tests: >-
-              tests/core/test_index_lifecycle.py tests/core/test_indexing.py
+              tests/core/indexing/test_pipeline.py
+              tests/core/indexing/test_crawler.py
           - shard: base parsers
             tests: >-
-              tests/core/test_languages.py tests/core/test_parser.py
-              tests/core/test_parser_edge_cases.py
+              tests/core/indexing/test_parser.py
+              tests/core/indexing/test_parser_edge_cases.py
           - shard: parser tiers
             tests: >-
-              tests/core/test_parser_tier2.py tests/core/test_parser_tier3.py
-              tests/core/test_parser_tier4.py tests/core/test_parser_tier5.py
-              tests/core/test_queries.py
+              tests/core/indexing/test_parser_tier2.py
+              tests/core/indexing/test_parser_tier3.py
+              tests/core/indexing/test_parser_tier4.py
+              tests/core/indexing/test_parser_tier5.py
           - shard: watch
             tests: tests/core/watch
     steps:

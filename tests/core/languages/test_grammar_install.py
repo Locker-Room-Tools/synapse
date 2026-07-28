@@ -4,8 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from synapse.core import grammar_install
-from synapse.core.languages import tree_sitter_language_names
+from synapse.core.languages import grammar_install, tree_sitter_language_names
 
 
 def test_install_grammars_prefetches_the_supported_registry(

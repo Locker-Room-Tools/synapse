@@ -145,6 +145,69 @@ Explicit incremental or forced indexing.
 This is a recovery and administration tool, not the first step in normal navigation. A forced
 rebuild is rejected while a live watcher owns the workspace.
 
+## Configuration
+
+Configuration resolves as a union of three layers: packaged defaults, the global user config
+(`~/.config/synapse/config.json`), and the project config (`<workspace>/.synapse/config.json`).
+The MCP tools write the **project** layer only, so an ignore added for one repository never
+leaks into another. The project config is meant to be committed.
+
+An ignored directory entry takes one of three forms:
+
+| Form | Example | Matches |
+| --- | --- | --- |
+| bare name | `node_modules` | a directory of that name at any depth |
+| root-anchored name | `/build` | only the top-level `build/` |
+| workspace-relative path | `src/generated` | only `<workspace>/src/generated/` |
+
+Absolute paths, `.`/`..` segments, and glob patterns are rejected. Matching is case-sensitive
+because entries are compared against real directory names.
+
+Anchoring is relative to the resolved `workspace_path`. Passing a subdirectory as
+`workspace_path` therefore selects a different, separately-anchored project config; every
+payload echoes the resolved `workspace_path` so this stays visible.
+
+### `synapse_get_config`
+
+Effective configuration with per-entry provenance and write targets. Safe before
+initialization.
+
+- Parameters: `workspace_path="."`
+- Returns: `workspace_path`, `project_config_path`, `project_config_exists`,
+  `global_config_path`, `watch_poll_interval_s`, and an `options` map. Each option carries its
+  type, `accepted_forms`, `rejected` forms, `writes_to`, `layers`, `takes_effect`, and an
+  `effective` list of `{value, sources}` where `sources` is any of `built-in`, `global`,
+  `project`
+
+### `synapse_add_ignored_directories`
+
+Stop indexing directories by writing the project config.
+
+- Parameters: `directories` (list), `workspace_path="."`
+- Returns: `added`, `already_present`, `already_covered_by_builtin`, `normalized`,
+  `project_ignored_directories`, `effective_ignored_directories`, `takes_effect`
+
+Built-in ignores are reported as already covered rather than duplicated. Any invalid entry
+rejects the whole call and writes nothing.
+
+### `synapse_remove_ignored_directories`
+
+Resume indexing directories by removing them from the project config.
+
+- Parameters: `directories` (list), `workspace_path="."`
+- Returns: `removed`, `not_present`, `normalized`, `project_ignored_directories`,
+  `effective_ignored_directories`, `takes_effect`
+
+Built-in ignores and entries inherited from the global config cannot be removed here; both
+raise an error naming where the entry comes from and how to remove it. An entry that is not
+ignored anywhere is reported in `not_present` and is not an error.
+
+### Applying a change
+
+No reindex is required. Ignored files leave the index and restored files re-enter it on the
+next watch sweep (at most `watch_poll_interval_s`). Call `synapse_index_workspace` to apply
+the change immediately.
+
 ## Pagination
 
 Paged tools accept `limit` and `offset` and return a `page` object containing the total and

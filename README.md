@@ -38,9 +38,30 @@ serving only use the local grammar cache and never download parsers implicitly.
 
 ## Available MCP tools
 
-Synapse exposes 14 deterministic MCP tools for initialization, symbol lookup, definitions, references,
+Synapse exposes 17 deterministic MCP tools for initialization, symbol lookup, definitions, references,
 structural context, dependency navigation, project maps, indexing, and daemon health. The
 complete parameter and response reference is in [docs/tools.md](docs/tools.md).
+
+## Configuration
+
+Synapse reads configuration from three layers, unioned together:
+
+| Layer | Location | Written by |
+| --- | --- | --- |
+| built-in defaults | packaged with Synapse | not editable |
+| global user config | `~/.config/synapse/config.json` | `synapse config ignored-dirs ... --scope global` |
+| project config | `<workspace>/.synapse/config.json` | agents over MCP, or `synapse config ignored-dirs ...` |
+
+`ignored_directories` accepts a bare name matched at any depth (`node_modules`), a
+root-anchored name (`/build`), or a workspace-relative path (`src/generated`). Globs,
+absolute paths, and `..` segments are rejected.
+
+Agents configure Synapse through `synapse_get_config`, `synapse_add_ignored_directories`, and
+`synapse_remove_ignored_directories`, which always write the project layer. `.synapse/config.json`
+is **meant to be committed** so the whole team indexes the same tree.
+
+A change needs no reindex: the next watch sweep purges newly-ignored files and picks up
+restored ones.
 
 ## Watch daemon
 

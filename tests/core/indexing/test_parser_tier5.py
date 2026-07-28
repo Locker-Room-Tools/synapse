@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from synapse.core.parser import extract_references, parse_file
+from synapse.core.indexing.parser import extract_references, parse_file
 
 TIER5_SAMPLES = (
     (

@@ -11,7 +11,7 @@ from enum import StrEnum
 from importlib import resources
 from pathlib import Path
 
-from synapse.core.ignores import IgnoreMatcher, normalize_ignore_entry
+from synapse.core.config.ignores import IgnoreMatcher, normalize_ignore_entry
 
 _PACKAGE_CONFIG = resources.files("synapse.core") / "default_ignored_directories.json"
 _DEFAULT_DEBOUNCE_MS = 250

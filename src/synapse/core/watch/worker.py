@@ -8,16 +8,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
-from synapse.core.crawler import hash_source
 from synapse.core.index import SymbolIndex
 from synapse.core.indexing import index_source_file
-from synapse.core.languages import detect_language
-from synapse.core.models import SourceFile
-from synapse.core.parser import RawReference
-from synapse.core.reference_reconciliation import (
+from synapse.core.indexing.crawler import hash_source
+from synapse.core.indexing.parser import RawReference
+from synapse.core.indexing.references import (
     reconcile_affected_references,
     symbol_names,
 )
+from synapse.core.languages import detect_language
+from synapse.core.models import SourceFile
 from synapse.core.watch.state import append_journal_complete, append_journal_intent, utc_now
 from synapse.core.workspace import db_path, require_workspace_path, write_metadata
 

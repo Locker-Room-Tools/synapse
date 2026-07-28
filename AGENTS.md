@@ -15,6 +15,17 @@ This file is the contract for any human or AI agent contributing to THIS reposit
 
 ## Project structure
 - `src/synapse/core` — core logic: model, parsing, indexing, querying. No MCP imports.
+  Grouped into cohesive sub-packages, each with a re-export `__init__.py` that is the
+  package's public surface — import from the package, not its private submodules:
+  - `core/models` — normalized symbol model.
+  - `core/config` — layered config (`settings.py`) and the shared ignore matcher (`ignores.py`).
+  - `core/languages` — the language seam: `registry.py`, `grammars.py`, `grammar_install.py`,
+    `queries.py` (`.scm` loading).
+  - `core/index` — SQLite index: `symbol_index.py` entry object over `schema.py`,
+    `writes.py`, `reads.py`.
+  - `core/indexing` — the pipeline: `crawler.py` → `parser.py` → `pipeline.py` → `references.py`.
+  - `core/watch` — incremental watch daemon.
+  - `core/workspace.py`, `core/lifecycle.py` — flat: a universal leaf and the top-level facade.
 - `src/synapse/mcp` — FastMCP presentation layer; thin, delegates to `core`.
 - `src/synapse/cli` — CLI entrypoints for indexing, setup, and MCP install helpers.
 - `src/synapse/adapters/` — agent-specific metadata and instruction snippets (packaged data).
@@ -44,7 +55,9 @@ This file is the contract for any human or AI agent contributing to THIS reposit
   `synapse_get_definition`, `synapse_get_file_outline`, `synapse_get_symbol_context`,
   `synapse_get_dependencies`, `synapse_workspace_stats`, `synapse_project_map`,
   `synapse_get_file_dependencies`, `synapse_find_references`,
-  `synapse_related_symbols`, `synapse_compact_context`, `synapse_watch_status`.
+  `synapse_related_symbols`, `synapse_compact_context`, `synapse_watch_status`,
+  `synapse_get_config`, `synapse_add_ignored_directories`,
+  `synapse_remove_ignored_directories`.
 
 ### Ideal Agent Flow
 

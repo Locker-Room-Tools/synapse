@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import cast
 
 from synapse.core.index import SymbolIndex
+from synapse.core.indexing.parser import build_relations, parse_file
 from synapse.core.models import (
     Confidence,
     Relation,
@@ -14,7 +15,6 @@ from synapse.core.models import (
     Symbol,
     SymbolKind,
 )
-from synapse.core.parser import build_relations, parse_file
 
 
 def _build_index(tmp_path: Path) -> tuple[SymbolIndex, list[Symbol]]:

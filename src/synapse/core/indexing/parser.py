@@ -6,10 +6,10 @@ from pathlib import Path
 
 from tree_sitter import Language, Parser, Query, QueryCursor, Tree
 
-from synapse.core.grammars import get_installed_language
 from synapse.core.languages import name_separator, to_treesitter_name, uses_uppercase_constants
+from synapse.core.languages.grammars import get_installed_language
+from synapse.core.languages.queries import load_query
 from synapse.core.models import Confidence, Relation, RelationKind, Symbol, SymbolKind
-from synapse.core.queries import load_query
 
 
 @dataclass(slots=True)

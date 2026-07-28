@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from synapse.core.crawler import hash_source as calculate_source_hash
 from synapse.core.index import SymbolIndex
 from synapse.core.indexing import index_workspace
-from synapse.core.parser import ParsedSource
-from synapse.core.parser import parse_source as parse_source_bytes
+from synapse.core.indexing.crawler import hash_source as calculate_source_hash
+from synapse.core.indexing.parser import ParsedSource
+from synapse.core.indexing.parser import parse_source as parse_source_bytes
 from synapse.core.workspace import db_path, read_metadata
 
 
@@ -104,7 +104,7 @@ def test_index_workspace_force_rebuild_keeps_existing_index_on_failure(
         msg = "boom"
         raise RuntimeError(msg)
 
-    monkeypatch.setattr("synapse.core.indexing.parse_source", fail_parse)
+    monkeypatch.setattr("synapse.core.indexing.pipeline.parse_source", fail_parse)
 
     with pytest.raises(RuntimeError, match="boom"):
         index_workspace(workspace_root, force=True)
@@ -269,8 +269,8 @@ def test_changed_file_is_read_hashed_and_parsed_once(
         return parse_source_bytes(path, language, source_bytes, workspace_root)
 
     monkeypatch.setattr(Path, "read_bytes", counting_read_bytes)
-    monkeypatch.setattr("synapse.core.indexing.hash_source", counting_hash_source)
-    monkeypatch.setattr("synapse.core.indexing.parse_source", counting_parse_source)
+    monkeypatch.setattr("synapse.core.indexing.pipeline.hash_source", counting_hash_source)
+    monkeypatch.setattr("synapse.core.indexing.pipeline.parse_source", counting_parse_source)
 
     index_workspace(workspace)
 

@@ -5,8 +5,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
 from synapse.core.index import SymbolIndex
+from synapse.core.indexing.parser import RawReference, build_reference_relations, parse_source
 from synapse.core.models import Symbol
-from synapse.core.parser import RawReference, build_reference_relations, parse_source
 
 
 def symbol_names(symbols: Iterable[Symbol]) -> set[str]:

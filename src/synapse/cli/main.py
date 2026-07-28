@@ -29,8 +29,8 @@ from synapse.cli.installer import (
     uninstall_global_mcp_server,
     uninstall_mcp_server,
 )
-from synapse.core.grammars import GrammarNotInstalledError
 from synapse.core.indexing import IndexStats, index_workspace
+from synapse.core.languages.grammars import GrammarNotInstalledError
 from synapse.core.lifecycle import (
     WorkspaceNotReadyError,
     ensure_workspace,

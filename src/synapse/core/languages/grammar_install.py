@@ -3,8 +3,8 @@
 from tree_sitter_language_pack import Error as LanguagePackError
 from tree_sitter_language_pack import downloaded_languages, prefetch
 
-from synapse.core.grammars import get_installed_language
-from synapse.core.languages import tree_sitter_language_names
+from synapse.core.languages.grammars import get_installed_language
+from synapse.core.languages.registry import tree_sitter_language_names
 
 
 def missing_grammars() -> tuple[str, ...]:

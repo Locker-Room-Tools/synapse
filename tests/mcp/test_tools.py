@@ -1,9 +1,11 @@
 """Tests for MCP tool delegation."""
 
+import json
 from pathlib import Path
 
 import pytest
 
+from synapse.core.config import config_file_path, write_global_ignored_directories
 from synapse.core.indexing import IndexStats
 from synapse.core.lifecycle import EnsureWorkspaceResult, WorkspaceNotReadyError
 from synapse.core.models import Confidence, Relation, RelationKind, Symbol, SymbolKind
@@ -506,3 +508,146 @@ def test_watch_status_is_available_before_initialization_and_read_only(
     assert result["initialized"] is False
     assert result["running"] is False
     assert not data_root.exists()
+
+
+def test_synapse_get_config_describes_the_option_surface(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The config tool is self-describing on a workspace that has no project config yet."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    result = tools.synapse_get_config(str(tmp_path))
+
+    option = result["options"]["ignored_directories"]
+    assert result["project_config_exists"] is False
+    assert result["project_config_path"] == str(tmp_path / ".synapse" / "config.json")
+    assert option["writes_to"] == str(tmp_path / ".synapse" / "config.json")
+    assert option["layers"] == ["built-in", "global", "project"]
+    assert option["case_sensitive"] is True
+    assert option["add_with"] == "synapse_add_ignored_directories"
+    assert {"value": ".git", "sources": ["built-in"]} in option["effective"]
+    assert "synapse_index_workspace" in option["takes_effect"]
+    assert not (tmp_path / ".synapse").exists()
+
+
+def test_synapse_add_ignored_directories_writes_project_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Adding writes the workspace config and reports normalization back to the agent."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    result = tools.synapse_add_ignored_directories(["./src/generated/", "dist"], str(tmp_path))
+
+    payload = json.loads((tmp_path / ".synapse" / "config.json").read_text(encoding="utf-8"))
+    assert result["added"] == ["src/generated"]
+    assert result["already_covered_by_builtin"] == ["dist"]
+    assert result["already_present"] == []
+    assert result["normalized"] == {"./src/generated/": "src/generated"}
+    assert result["scope"] == "project"
+    assert payload == {"ignored_directories": ["src/generated"]}
+
+    follow_up = tools.synapse_get_config(str(tmp_path))
+    option = follow_up["options"]["ignored_directories"]
+    assert follow_up["project_config_exists"] is True
+    assert {"value": "src/generated", "sources": ["project"]} in option["effective"]
+
+
+def test_synapse_add_ignored_directories_is_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Re-adding an entry reports it as present and leaves the file byte-identical."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    tools.synapse_add_ignored_directories(["generated"], str(tmp_path))
+    config_path = tmp_path / ".synapse" / "config.json"
+    before = config_path.read_bytes()
+
+    result = tools.synapse_add_ignored_directories(["generated", "generated"], str(tmp_path))
+
+    assert result["added"] == []
+    assert result["already_present"] == ["generated"]
+    assert config_path.read_bytes() == before
+
+
+def test_synapse_remove_ignored_directories_clears_project_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Removing drops project entries and reports unknown ones without failing."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    tools.synapse_add_ignored_directories(["generated"], str(tmp_path))
+
+    result = tools.synapse_remove_ignored_directories(["generated", "vendor"], str(tmp_path))
+
+    assert result["removed"] == ["generated"]
+    assert result["not_present"] == ["vendor"]
+    assert result["project_ignored_directories"] == []
+
+
+def test_synapse_remove_ignored_directories_rejects_built_ins(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Built-in ignores cannot be removed through the project layer."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    with pytest.raises(ValueError, match="not removable"):
+        tools.synapse_remove_ignored_directories([".git"], str(tmp_path))
+
+
+def test_synapse_remove_ignored_directories_points_at_the_global_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An inherited global entry cannot be removed here, so the error names the fix."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    write_global_ignored_directories({"generated"})
+
+    with pytest.raises(ValueError, match="inherited from the global config") as excinfo:
+        tools.synapse_remove_ignored_directories(["generated"], str(tmp_path))
+
+    message = str(excinfo.value)
+    assert str(config_file_path()) in message
+    assert "--scope global" in message
+
+
+@pytest.mark.parametrize("directories", [[], ["../escape"], ["*.py"], ["/"]])
+def test_config_mutations_reject_invalid_input_without_writing(
+    directories: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rejected call leaves no project config behind."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    with pytest.raises(ValueError):
+        tools.synapse_add_ignored_directories(directories, str(tmp_path))
+
+    assert not (tmp_path / ".synapse").exists()
+
+
+def test_config_mutations_are_all_or_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One bad entry rejects the whole call, leaving valid siblings unwritten."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    tools.synapse_add_ignored_directories(["generated"], str(tmp_path))
+    config_path = tmp_path / ".synapse" / "config.json"
+    before = config_path.read_bytes()
+
+    with pytest.raises(ValueError, match="Invalid ignored directory"):
+        tools.synapse_add_ignored_directories(["keep_me", "../escape"], str(tmp_path))
+
+    assert config_path.read_bytes() == before
+
+
+def test_config_tool_docstrings_document_contracts() -> None:
+    """The config tools carry their whole contract in the agent-facing docstring."""
+    assert "Self-describing" in (tools.synapse_get_config.__doc__ or "")
+    assert "workspace-relative path" in (tools.synapse_add_ignored_directories.__doc__ or "")
+    assert "next watch sweep" in (tools.synapse_add_ignored_directories.__doc__ or "")
+    assert "Built-in" in (tools.synapse_remove_ignored_directories.__doc__ or "")
+    assert "synapse_index_workspace" in (tools.synapse_remove_ignored_directories.__doc__ or "")

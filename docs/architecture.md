@@ -40,29 +40,43 @@ implementation appears — for example, the Phase 2 Go indexer.
 
 ## Component responsibilities
 
+Each `core` sub-package exposes its public surface through a re-export `__init__.py`. Callers
+import from the package (`core.index`, `core.languages`); the submodules named below are the
+package's internal decomposition, not separate import targets.
+
 - **`core.models`**: the normalized idiomatic symbol model, provenance metadata, and relation types.
-- **`core.languages`**: supported language registry, extension detection, and tree-sitter naming.
-- **`core.grammars`**: loads only parser binaries already present in the local cache;
-  implicit downloads are rejected at the core boundary.
-- **`core.parser`**: parses files with tree-sitter and maps captures to symbols.
-- **`core.queries`**: resolves `.scm` query files by language and query name.
+- **`core.languages`**: the language seam. `registry` holds the supported language registry,
+  extension detection, and tree-sitter naming; `grammars` loads only parser binaries already
+  present in the local cache, so implicit downloads are rejected at the core boundary;
+  `grammar_install` performs explicit installation; `queries` resolves `.scm` query files by
+  language and query name.
+- **`core.indexing`**: the ingest pipeline. `crawler` discovers indexable files and hashes them,
+  `parser` parses with tree-sitter and maps captures to symbols, `pipeline` orchestrates
+  crawl → hash → parse → upsert, and `references` reconciles reference edges. The parser lives
+  here rather than under `core.languages` because it stays generic while the language seam churns.
 - **`core.workspace`**: derives per-workspace storage paths and persists workspace metadata.
-- **`core.index`**: stable index facade; schema/lifecycle, writes, and read projections live in focused `core.index_*` modules.
-- **`core.indexing`**: orchestrates crawl → hash → parse → upsert incremental indexing.
-- **`core.crawler`**: discovers indexable files and hashes them for incremental indexing.
+- **`core.index`**: the SQLite symbol index. `symbol_index` is the entry object; `schema`,
+  `writes`, and `reads` hold schema/lifecycle, connection-explicit writes, and read projections.
+- **`core.config`**: `settings` resolves configuration across three layers — packaged defaults, the
+  global user config, and a workspace-local `.synapse/config.json` — and owns atomic writes.
+  `ignores` is the shared directory ignore matcher used by both the crawler and the watch layer,
+  so crawl and watch filter identically.
 - **`mcp.server` / `mcp.tools`**: expose deterministic, token-frugal tools to agents
   (`synapse_index_workspace`, `synapse_search_symbols`, `synapse_get_definition`,
   `synapse_ensure_workspace`, `synapse_get_file_outline`, `synapse_get_symbol_context`,
   `synapse_get_dependencies`,
   `synapse_workspace_stats`, `synapse_project_map`, `synapse_get_file_dependencies`,
   `synapse_find_references`, `synapse_related_symbols`, `synapse_compact_context`,
-  `synapse_watch_status`).
+  `synapse_watch_status`, `synapse_get_config`, `synapse_add_ignored_directories`,
+  `synapse_remove_ignored_directories`).
   Relations populated during indexing are `CONTAINS` (resolved member edges), `IMPORTS`
   (unresolved import target name), and `REFERENCES` (resolved or confidence-marked usage
   edges from reference queries).
 - **`cli`**: provides global `install`, workspace `init`/`status`, project-scoped `setup`,
   `serve`, grammar, watch, doctor, and uninstall commands. Global install is the canonical
   onboarding path; project setup remains an advanced compatibility path.
+- **`cli.config`**: `synapse config ignored-dirs list|add|remove`, scoped with
+  `--scope project|global`; delegates every write to `core.config`.
 - **`adapters`** (`src/synapse/adapters/`, packaged data): provides agent-specific metadata and instruction snippets.
 - **`cli.installer`**: owns reversible MCP client config writes. JSON configs are merged
   structurally, and Codex TOML config is managed with a marker block so uninstall removes
@@ -71,6 +85,23 @@ implementation appears — for example, the Phase 2 Go indexer.
   lifecycle waits.
 - **`core.lifecycle`**: owns workspace state, lazy grammar/index initialization, query
   readiness, and daemon repair. CLI and MCP call the same lifecycle.
+
+## Configuration layering
+
+Ignored directories resolve as a **union, not an override**: packaged defaults ∪ global user
+config (`~/.config/synapse/config.json`) ∪ project config (`<workspace>/.synapse/config.json`).
+A built-in entry therefore cannot be un-ignored by a lower layer, and every effective entry
+reports each layer that contributes it.
+
+Entries are gitignore-compatible: a bare name (`node_modules`) matches at any depth, while a
+leading or embedded slash anchors to the workspace root (`/build`, `src/generated`). Globs are
+not supported.
+
+Only `ignored_directories` is agent-writable, and only in the project layer. The `watch.*`
+tunables stay global and CLI-only. Because `core.config` is re-read on every crawl, an ignore
+change converges on the next sweep without a reindex or daemon restart.
+
+The project config is meant to be committed, so the whole team indexes the same tree.
 
 ## Agent adoption layers
 

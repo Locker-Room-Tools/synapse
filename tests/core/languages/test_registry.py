@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from synapse.core.languages import (
+from synapse.core.languages.registry import (
     LANGUAGES,
     LanguageSpec,
     _build_extension_map,

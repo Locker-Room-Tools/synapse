@@ -5,8 +5,7 @@ from enum import StrEnum
 from pathlib import Path
 from time import time
 
-from synapse.core.config import active_ignore_matcher
-from synapse.core.ignores import IgnoreMatcher
+from synapse.core.config import IgnoreMatcher, active_ignore_matcher
 from synapse.core.languages import detect_language
 from synapse.core.workspace import require_workspace_path
 

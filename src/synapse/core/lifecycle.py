@@ -4,9 +4,9 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from synapse.core.grammar_install import install_grammars, missing_grammars
 from synapse.core.index import SymbolIndex
 from synapse.core.indexing import index_workspace
+from synapse.core.languages.grammar_install import install_grammars, missing_grammars
 from synapse.core.watch.daemon import ensure_watch_daemon, wait_for_watch_to_stop
 from synapse.core.watch.state import pid_is_running, read_watch_status, watch_status_payload
 from synapse.core.watch.supervisor import request_watch_stop

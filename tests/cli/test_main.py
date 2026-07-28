@@ -517,7 +517,18 @@ def test_config_ignored_dirs_preserves_watch_settings(
     config_path.parent.mkdir(parents=True)
     config_path.write_text(json.dumps({"watch": {"poll_interval_s": 2}}), encoding="utf-8")
 
-    exit_code = cli_main.main(["config", "ignored-dirs", "add", "generated"])
+    exit_code = cli_main.main(
+        [
+            "config",
+            "ignored-dirs",
+            "add",
+            "generated",
+            "--scope",
+            "global",
+            "--path",
+            str(tmp_path),
+        ],
+    )
 
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     assert exit_code == 0

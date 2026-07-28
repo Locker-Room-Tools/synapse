@@ -2,7 +2,7 @@
 
 from importlib import resources
 
-from synapse.core.languages import query_dir
+from synapse.core.languages.registry import query_dir
 
 QUERY_ROOT = resources.files("synapse") / "queries"
 

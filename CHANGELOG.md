@@ -15,8 +15,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workspace index, writes project-scoped MCP configuration and managed instructions, starts
   the watch daemon, and validates the completed integration.
 - Installation and MCP tool references under `docs/`.
+- Workspace-local configuration at `<workspace>/.synapse/config.json`, unioned with the
+  packaged defaults and the global user config. Meant to be committed.
+- MCP configuration tools `synapse_get_config`, `synapse_add_ignored_directories`, and
+  `synapse_remove_ignored_directories`, so agents configure Synapse through a typed contract
+  instead of hand-editing JSON. `synapse_get_config` is self-describing: it returns accepted
+  input forms, per-entry provenance, the file writes land in, and when a change takes effect.
+- A shared ignore matcher (`core.config.ignores`) used by both the crawler and the watch layer,
+  so crawl and watch filter identically.
+- `synapse config ignored-dirs` gained `--scope project|global` and `--path`.
 
 ### Changed
+- Reorganized `core` into cohesive sub-packages — `core.config`, `core.index`, `core.indexing`,
+  and `core.languages` — each exposing its public surface through a re-export `__init__.py`.
+  The `core.index_*` name prefixes are gone. Internal module paths only; the CLI, the MCP tool
+  contracts, and the packaged data layout are unchanged.
+- `ignored_directories` entries now accept gitignore-style anchoring: a bare name matches at
+  any depth, while `/build` or `src/generated` anchors to the workspace root. Previously any
+  separator was rejected.
+- **Breaking:** `synapse config ignored-dirs add|remove` now writes the project config by
+  default; pass `--scope global` for the previous behavior. The resolved target path is always
+  printed.
+- **Breaking:** removing a built-in ignored directory now fails with exit code 2 instead of
+  silently doing nothing, matching the MCP contract.
+- `.synapse` is now a built-in ignored directory.
 - Global install is now the canonical user flow; project-scoped setup remains available for
   compatibility and shared repository configuration.
 - MCP can expose bootstrap tools for a new workspace, while all query tools require an
@@ -34,9 +56,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   valid `kind` values, and cross-tool disambiguation; server instructions now advertise the
   architecture and relation tools.
 
+### Fixed
+- Config writes are now atomic (temp file plus rename), so the watch daemon can never read a
+  partially written config, and they no longer append `os.linesep` in text mode (which
+  produced `\r\r\n` on Windows).
+- `synapse doctor` now checks for `synapse_ensure_workspace`, which was missing from its
+  expected-tool list despite being the mandatory entry point.
+- The watch layer applied directory ignore rules to filenames as well as directories; it now
+  matches the crawler exactly.
+
 ### Removed
 - Unused packaged data: static `mcp-config-template.*` files (configuration is rendered
   programmatically) and the empty Claude Code hooks placeholder.
+- `core.config.validate_directory_name` and `core.watch.events.default_normalizer`, both
+  superseded by `core.ignores`.
 
 ## [0.3.1] - 2026-07-23
 

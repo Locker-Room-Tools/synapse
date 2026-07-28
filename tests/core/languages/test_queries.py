@@ -3,7 +3,7 @@
 import pytest
 
 from synapse.core.languages import LANGUAGES
-from synapse.core.queries import load_query
+from synapse.core.languages.queries import load_query
 
 TIER2_LANGUAGES = (
     "ada",
