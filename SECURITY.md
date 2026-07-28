@@ -11,7 +11,7 @@ Report privately — do not open a public issue.
 
 Use [GitHub Security Advisories](https://github.com/Locker-Room-Tools/synapse/security/advisories/new)
 ("Report a vulnerability" on the repository's Security tab). If you cannot use that, email
-<lpdimakot11@gmail.com>.
+<dskrl@outlook.com>.
 
 Please include the Synapse version, your OS and Python version, and the smallest
 reproduction you can manage. Expect an initial response within a week.
