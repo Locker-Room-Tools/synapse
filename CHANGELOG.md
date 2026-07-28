@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-28
+
 ### Security
 - Raised the `mcp` floor to `>=1.28.1`, which validates `Host`/`Origin` on the WebSocket
   server transport. Synapse serves over stdio only, so the issue was not reachable here.
@@ -16,14 +18,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Dependabot configuration for the `uv` and `github-actions` ecosystems, and a
   `pip-audit` dependency-audit job in CI.
-
-### Changed
-- Bumped `actions/upload-artifact` and `actions/download-artifact` to `v5` so release
-  workflows stop running on the deprecated Node 20 shim.
-
-## [0.4.0] - 2026-07-28
-
-### Added
 - Contributor documentation: `CONTRIBUTING.md` with the local quality gate, the
   language-addition path, and the MCP tool contract; `SECURITY.md` with the private
   reporting channel and the local-first threat model; GitHub issue forms and a pull
@@ -47,6 +41,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `synapse config ignored-dirs` gained `--scope project|global` and `--path`.
 
 ### Changed
+- Bumped `actions/upload-artifact` and `actions/download-artifact` to `v5` so release
+  workflows stop running on the deprecated Node 20 shim.
 - Reorganized `core` into cohesive sub-packages — `core.config`, `core.index`, `core.indexing`,
   and `core.languages` — each exposing its public surface through a re-export `__init__.py`.
   The `core.index_*` name prefixes are gone. Internal module paths only; the CLI, the MCP tool
