@@ -5,8 +5,8 @@ from enum import StrEnum
 from pathlib import Path
 from time import time
 
-from synapse.core.config import load_user_config
-from synapse.core.crawler import _active_ignored_directories
+from synapse.core.config import active_ignore_matcher
+from synapse.core.ignores import IgnoreMatcher
 from synapse.core.languages import detect_language
 from synapse.core.workspace import require_workspace_path
 
@@ -40,13 +40,13 @@ class EventNormalizer:
     def __init__(
         self,
         workspace_path: str | Path,
-        ignored_directories: frozenset[str] | None = None,
+        matcher: IgnoreMatcher | None = None,
     ) -> None:
         self.root = require_workspace_path(workspace_path)
-        self.ignored_directories = ignored_directories or _active_ignored_directories()
+        self.matcher = matcher or active_ignore_matcher(self.root)
 
     def normalize_path(self, path: str | Path, *, require_language: bool = True) -> str | None:
-        """Return a workspace-relative POSIX path, or None when ignored/unsupported."""
+        """Return a workspace-relative POSIX file path, or None when ignored/unsupported."""
         candidate = Path(path).expanduser()
         absolute_path = candidate if candidate.is_absolute() else self.root / candidate
         try:
@@ -54,7 +54,7 @@ class EventNormalizer:
         except ValueError:
             return None
 
-        if any(part in self.ignored_directories for part in relative.parts):
+        if self.matcher.ignores_relative_path(relative.parts[:-1]):
             return None
         current = self.root
         for part in relative.parts[:-1]:
@@ -77,25 +77,23 @@ class EventNormalizer:
     ) -> ChangeEvent | None:
         """Normalize one backend event into a core change event."""
         event_time = time() if timestamp is None else timestamp
+        
         if kind is ChangeKind.OVERFLOW:
             return ChangeEvent(kind=kind, rel_path=None, timestamp=event_time)
         if path is None:
             return None
+        
         rel_path = self.normalize_path(path, require_language=True)
         old_rel_path = (
             self.normalize_path(old_path, require_language=True) if old_path is not None else None
         )
+
         if rel_path is None and old_rel_path is None:
             return None
+        
         return ChangeEvent(
             kind=kind,
             rel_path=rel_path,
             old_rel_path=old_rel_path,
             timestamp=event_time,
         )
-
-
-def default_normalizer(workspace_path: str | Path) -> EventNormalizer:
-    """Build a normalizer from the active user config."""
-    config = load_user_config()
-    return EventNormalizer(workspace_path, config.merged_ignored_directories())

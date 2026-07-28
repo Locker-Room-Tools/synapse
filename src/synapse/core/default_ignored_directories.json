@@ -5,6 +5,7 @@
     ".idea",
     ".mypy_cache",
     ".ruff_cache",
+    ".synapse",
     ".venv",
     "__pycache__",
     "build",

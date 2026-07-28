@@ -85,6 +85,7 @@ def ensure_workspace(
     root = require_workspace_path(workspace_path)
     initialized_before = read_metadata(root) is not None
     missing = missing_grammars()
+
     if missing and offline:
         msg = (
             f"{len(missing)} supported tree-sitter grammars are missing. "
@@ -96,10 +97,12 @@ def ensure_workspace(
     daemon_healthy_before = (
         watch_before.running and not watch_before.degraded and pid_is_running(watch_before.pid)
     )
+
     if missing:
         install_grammars()
 
     should_index = not initialized_before or force or bool(missing)
+
     if should_index:
         indexed = index_workspace(root, force=force)
         index_payload: dict[str, object] = {
@@ -120,6 +123,7 @@ def ensure_workspace(
         if not wait_for_watch_to_stop(root):
             msg = f"Degraded watch daemon did not stop for {root}."
             raise WorkspaceNotReadyError(msg)
+
     daemon = ensure_watch_daemon(root)
 
     if not initialized_before:
@@ -128,6 +132,7 @@ def ensure_workspace(
         action = "repaired"
     else:
         action = "reused"
+
     return EnsureWorkspaceResult(
         workspace_path=str(root),
         action=action,
