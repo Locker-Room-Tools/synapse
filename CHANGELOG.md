@@ -6,6 +6,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Raised the `mcp` floor to `>=1.28.1`, which validates `Host`/`Origin` on the WebSocket
+  server transport. Synapse serves over stdio only, so the issue was not reachable here.
+- Added a direct `pydantic-settings>=2.14.2` floor. It is transitive via `mcp`, which floors
+  it at `>=2.5.2`, so the constraint is stated here to keep the `NestedSecretsSettingsSource`
+  symlink-escape fix for downstream installs.
+
+### Added
+- Dependabot configuration for the `uv` and `github-actions` ecosystems, and a
+  `pip-audit` dependency-audit job in CI.
+
+### Changed
+- Bumped `actions/upload-artifact` and `actions/download-artifact` to `v5` so release
+  workflows stop running on the deprecated Node 20 shim.
+
 ## [0.4.0] - 2026-07-28
 
 ### Added
