@@ -76,12 +76,12 @@ class EventNormalizer:
     ) -> ChangeEvent | None:
         """Normalize one backend event into a core change event."""
         event_time = time() if timestamp is None else timestamp
-        
+
         if kind is ChangeKind.OVERFLOW:
             return ChangeEvent(kind=kind, rel_path=None, timestamp=event_time)
         if path is None:
             return None
-        
+
         rel_path = self.normalize_path(path, require_language=True)
         old_rel_path = (
             self.normalize_path(old_path, require_language=True) if old_path is not None else None
@@ -89,7 +89,7 @@ class EventNormalizer:
 
         if rel_path is None and old_rel_path is None:
             return None
-        
+
         return ChangeEvent(
             kind=kind,
             rel_path=rel_path,
