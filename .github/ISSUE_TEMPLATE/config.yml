@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Installation and lifecycle docs
+    url: https://github.com/Locker-Room-Tools/synapse/blob/main/docs/installation.md
+    about: Upgrades, custom scopes, troubleshooting, and uninstall instructions.
+  - name: MCP tool reference
+    url: https://github.com/Locker-Room-Tools/synapse/blob/main/docs/tools.md
+    about: Parameter and response contracts for every Synapse MCP tool.
+  - name: Report a security vulnerability
+    url: https://github.com/Locker-Room-Tools/synapse/security/advisories/new
+    about: Report privately through GitHub Security Advisories, not as a public issue.
