@@ -80,12 +80,12 @@ jobs:
           /tmp/smoke-venv/bin/synapse grammars install
           /tmp/smoke-venv/bin/synapse index .
           /tmp/smoke-venv/bin/synapse --version
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
           if-no-files-found: error
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v7
         with:
           name: release-notes
           path: release-notes.md
