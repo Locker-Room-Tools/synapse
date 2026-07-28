@@ -120,6 +120,20 @@ synapse --version
 
 Restart the agent after updating its global MCP integration.
 
+If `synapse` raises `ModuleNotFoundError: No module named 'synapse'` instead of running,
+`~/.local/bin/synapse` resolves to a stale shim rather than a real install — most often an old
+**editable** `uv tool install synapse-mcp` whose source checkout was moved or deleted. Confirm
+with:
+
+```console
+which -a synapse
+uv tool list
+```
+
+Uninstall the stale tool (`uv tool uninstall synapse-mcp`) and reinstall as shown above. If a
+`pipx` install of `locker-room-tools-synapse-mcp` is also present, keep only one manager on
+`PATH` — a second manager cannot claim `~/.local/bin/synapse` while another owns it.
+
 ## Uninstall
 
 Remove global MCP, instruction, and skill artifacts:
