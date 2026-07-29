@@ -38,12 +38,7 @@ def _run_python(script: str, *, workspace: Path, data_root: Path) -> dict[str, o
         capture_output=True,
         text=True,
         timeout=_PROCESS_TIMEOUT_S,
-        env={
-            "SYNAPSE_DATA_DIR": str(data_root),
-            "PATH": "/usr/bin:/bin",
-            "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src"),
-            "SYNAPSE_TEST_WORKSPACE": str(workspace),
-        },
+        env=_child_environment(workspace=workspace, data_root=data_root),
         check=False,
     )
     assert completed.returncode == 0, (
@@ -58,6 +53,17 @@ def _make_workspace(tmp_path: Path) -> tuple[Path, Path]:
     workspace.mkdir()
     (workspace / "thing.cs").write_text(_SOURCE, encoding="utf-8")
     return workspace, tmp_path / "data-root"
+
+
+def _child_environment(*, workspace: Path, data_root: Path) -> dict[str, str]:
+    """Return a deterministic environment for a fresh Synapse interpreter."""
+    return {
+        "SYNAPSE_DATA_DIR": str(data_root),
+        "XDG_CONFIG_HOME": str(data_root / "config"),
+        "PATH": "/usr/bin:/bin",
+        "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src"),
+        "SYNAPSE_TEST_WORKSPACE": str(workspace),
+    }
 
 
 _ENSURE_SCRIPT = """
@@ -171,12 +177,7 @@ def test_concurrent_ensure_calls_rebuild_once_and_leave_a_queryable_index(
     _stale_the_fingerprint(workspace)
 
     script = textwrap.dedent(_ENSURE_SCRIPT)
-    env = {
-        "SYNAPSE_DATA_DIR": str(data_root),
-        "PATH": "/usr/bin:/bin",
-        "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src"),
-        "SYNAPSE_TEST_WORKSPACE": str(workspace),
-    }
+    env = _child_environment(workspace=workspace, data_root=data_root)
     processes = [
         subprocess.Popen(  # noqa: S603 - fixed argv, no shell
             [sys.executable, "-c", script],
