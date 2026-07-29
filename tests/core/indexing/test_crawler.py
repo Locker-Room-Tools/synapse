@@ -80,14 +80,14 @@ def test_iter_source_files_anchors_leading_slash_entries_to_the_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """'/out' prunes the top-level directory while nested ones stay indexed."""
+    """'/artifacts' prunes the top-level directory while nested ones stay indexed."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    write_project_ignored_directories(tmp_path, {"/out"})
-    (tmp_path / "out").mkdir()
-    nested_out = tmp_path / "pkg" / "out"
-    nested_out.mkdir(parents=True)
-    (tmp_path / "out" / "skip.py").write_text("print('no')\n", encoding="utf-8")
-    keep_file = nested_out / "keep.py"
+    write_project_ignored_directories(tmp_path, {"/artifacts"})
+    (tmp_path / "artifacts").mkdir()
+    nested_artifacts = tmp_path / "pkg" / "artifacts"
+    nested_artifacts.mkdir(parents=True)
+    (tmp_path / "artifacts" / "skip.py").write_text("print('no')\n", encoding="utf-8")
+    keep_file = nested_artifacts / "keep.py"
     keep_file.write_text("print('ok')\n", encoding="utf-8")
 
     assert list(iter_source_files(tmp_path)) == [keep_file]

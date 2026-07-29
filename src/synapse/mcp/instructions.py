@@ -13,6 +13,7 @@ Prefer Synapse tools BEFORE grep/ripgrep/shell search or reading whole files:
 - Find usages -> synapse_find_references(symbol_id=...)
 - Understand a file before reading it -> synapse_get_file_outline
 - Understand a symbol -> synapse_compact_context / synapse_get_symbol_context
+- Read an implementation -> synapse_get_symbol_context(include_body=True)
 - Broad architecture -> synapse_project_map; index stats -> synapse_workspace_stats
 - Relations -> synapse_get_dependencies (outgoing), synapse_get_file_dependencies
   (file imports), synapse_related_symbols (neighbors)

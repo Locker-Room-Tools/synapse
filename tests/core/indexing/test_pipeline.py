@@ -1,12 +1,18 @@
 """Tests for incremental workspace indexing."""
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from synapse.core.index import SymbolIndex
-from synapse.core.indexing import index_workspace
+from synapse.core.indexing import (
+    REFERENCE_FINGERPRINT_KEY,
+    index_workspace,
+    reference_extraction_fingerprint,
+)
 from synapse.core.indexing.crawler import hash_source as calculate_source_hash
 from synapse.core.indexing.parser import ParsedSource
 from synapse.core.indexing.parser import parse_source as parse_source_bytes
@@ -322,3 +328,60 @@ def test_missing_workspace_fails_before_cache_creation(
         index_workspace(missing)
 
     assert not data_root.exists()
+
+
+def test_index_writes_reference_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every successful index run stamps the current extraction fingerprint."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "alpha.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+
+    index_workspace(workspace_root)
+
+    index = SymbolIndex(db_path(workspace_root))
+    assert index.get_meta(REFERENCE_FINGERPRINT_KEY) == reference_extraction_fingerprint()
+
+
+def test_fingerprint_change_invalidates_stale_relations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fingerprint mismatch escalates a plain reindex to a full forced rebuild."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "alpha.py").write_text(
+        "def target():\n    return 1\n\ndef caller():\n    return target()\n",
+        encoding="utf-8",
+    )
+
+    first = index_workspace(workspace_root)
+    assert first.indexed_files == 1
+
+    # Unchanged fingerprint and files: nothing is reindexed.
+    unchanged = index_workspace(workspace_root)
+    assert (unchanged.indexed_files, unchanged.skipped_files) == (0, 1)
+
+    with closing(sqlite3.connect(db_path(workspace_root))) as connection, connection:
+        connection.execute(
+            "UPDATE index_meta SET value = 'stale' WHERE key = ?",
+            (REFERENCE_FINGERPRINT_KEY,),
+        )
+
+    rebuilt = index_workspace(workspace_root)
+
+    # The stale index is fully rebuilt without --force and re-stamped.
+    assert rebuilt.indexed_files == 1
+    assert rebuilt.skipped_files == 0
+    index = SymbolIndex(db_path(workspace_root))
+    assert index.get_meta(REFERENCE_FINGERPRINT_KEY) == reference_extraction_fingerprint()
+    # The rebuilt relations carry the current extraction semantics.
+    rebuilt_references = index.find_references(name="target")
+    assert cast(dict[str, object], rebuilt_references["page"])["total"] == 1
+    items = rebuilt_references["items"]
+    assert isinstance(items, list)
+    assert items[0]["match"] == "heuristic"

@@ -5,8 +5,9 @@ from enum import StrEnum
 from pathlib import Path
 
 from synapse.core.index import SymbolIndex
-from synapse.core.indexing import index_workspace
+from synapse.core.indexing import index_workspace, reference_index_is_stale
 from synapse.core.languages.grammar_install import install_grammars, missing_grammars
+from synapse.core.provenance import runtime_provenance
 from synapse.core.watch.daemon import ensure_watch_daemon, wait_for_watch_to_stop
 from synapse.core.watch.state import pid_is_running, read_watch_status, watch_status_payload
 from synapse.core.watch.supervisor import request_watch_stop
@@ -35,6 +36,9 @@ class EnsureWorkspaceResult:
     initialized: bool
     daemon: dict[str, object]
     index: dict[str, object]
+    # Identity of the Synapse serving this call, so a stale globally-installed build
+    # is visible rather than mistaken for the checkout under development.
+    runtime: dict[str, object]
 
     def to_payload(self) -> dict[str, object]:
         """Return the MCP/CLI response shape."""
@@ -59,6 +63,7 @@ def workspace_status_payload(workspace_path: str | Path) -> dict[str, object]:
         "state": state.value,
         "initialized": initialized,
         "daemon": watch,
+        "runtime": runtime_provenance().to_payload(),
     }
 
 
@@ -101,10 +106,23 @@ def ensure_workspace(
     if missing:
         install_grammars()
 
-    should_index = not initialized_before or force or bool(missing)
+    # A stale reference fingerprint means the persisted relations were produced by
+    # older extraction semantics and must be rebuilt, not incrementally reused.
+    fingerprint_stale = reference_index_is_stale(root)
+    force_index = force or fingerprint_stale
+    should_index = not initialized_before or force_index or bool(missing)
+
+    # A forced rebuild takes the watch lock, so a live daemon must stop first;
+    # schema migration also only ever runs on this indexing path.
+    daemon_alive = watch_before.running and pid_is_running(watch_before.pid)
+    if daemon_alive and (force_index or watch_before.degraded):
+        request_watch_stop(root)
+        if not wait_for_watch_to_stop(root):
+            msg = f"Watch daemon did not stop for {root}."
+            raise WorkspaceNotReadyError(msg)
 
     if should_index:
-        indexed = index_workspace(root, force=force)
+        indexed = index_workspace(root, force=force_index)
         index_payload: dict[str, object] = {
             "files": indexed.total_files,
             "symbols": indexed.total_symbols,
@@ -117,12 +135,6 @@ def ensure_workspace(
             "symbols": stats["symbols"],
             "languages": stats["languages"],
         }
-
-    if watch_before.running and watch_before.degraded and pid_is_running(watch_before.pid):
-        request_watch_stop(root)
-        if not wait_for_watch_to_stop(root):
-            msg = f"Degraded watch daemon did not stop for {root}."
-            raise WorkspaceNotReadyError(msg)
 
     daemon = ensure_watch_daemon(root)
 
@@ -144,4 +156,5 @@ def ensure_workspace(
             "pid": daemon.pid,
         },
         index=index_payload,
+        runtime=runtime_provenance().to_payload(),
     )

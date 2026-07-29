@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -52,7 +52,17 @@ CREATE TABLE IF NOT EXISTS relations (
     to_name TEXT,
     source TEXT NOT NULL,
     confidence TEXT NOT NULL,
+    start_line INTEGER,
+    start_byte_col INTEGER,
+    resolution TEXT,
+    usage_kind TEXT,
+    to_qualified_name TEXT,
     FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS index_meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
@@ -122,9 +132,33 @@ def transaction_scope(connection: sqlite3.Connection) -> Iterator[sqlite3.Connec
         yield scoped_connection
 
 
+_RELATION_COLUMN_MIGRATIONS = (
+    ("start_line", "INTEGER"),
+    ("start_byte_col", "INTEGER"),
+    ("resolution", "TEXT"),
+    ("usage_kind", "TEXT"),
+    ("to_qualified_name", "TEXT"),
+)
+
+
+def _migrate_relation_columns(connection: sqlite3.Connection) -> None:
+    table_exists = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'relations'"
+    ).fetchone()
+    if table_exists is None:
+        return
+    existing = {
+        str(row[1]) for row in connection.execute("PRAGMA table_info(relations)").fetchall()
+    }
+    for column, column_type in _RELATION_COLUMN_MIGRATIONS:
+        if column not in existing:
+            connection.execute(f"ALTER TABLE relations ADD COLUMN {column} {column_type}")
+
+
 def initialize_schema(connection: sqlite3.Connection) -> None:
     """Create or migrate the index schema on an open connection."""
     version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    _migrate_relation_columns(connection)
     connection.executescript(SCHEMA)
     if version < SCHEMA_VERSION:
         connection.execute("INSERT INTO symbols_fts(symbols_fts) VALUES ('rebuild')")

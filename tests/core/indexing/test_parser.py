@@ -13,7 +13,7 @@ from synapse.core.indexing.parser import (
     extract_references,
     parse_file,
 )
-from synapse.core.models import SymbolKind
+from synapse.core.models import ResolutionMethod, SymbolKind
 
 
 def test_parse_file_extracts_python_symbols_with_nesting(tmp_path: Path) -> None:
@@ -658,6 +658,100 @@ def test_parse_file_extracts_csharp_symbols_with_nesting(tmp_path: Path) -> None
     assert greet.qualified_name.endswith("Greeter.Greet")
 
 
+def test_parse_file_extracts_csharp_file_scoped_namespace_members(tmp_path: Path) -> None:
+    """The parser extracts file-scoped namespaces, delegates, events, and enum members."""
+    file_path = tmp_path / "modern.cs"
+    file_path.write_text(
+        "namespace Sample.Modern;\n\n"
+        "public delegate void Notify(string message);\n\n"
+        "public enum Status\n"
+        "{\n"
+        "    Active,\n"
+        "    Retired,\n"
+        "}\n\n"
+        "public class Publisher\n"
+        "{\n"
+        "    public event Notify? Changed;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "csharp", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    namespace = by_kind_name[("namespace", "Sample.Modern")]
+    status = by_kind_name[("enum", "Status")]
+    active = by_kind_name[("constant", "Active")]
+    assert namespace.native_kind == "file_scoped_namespace_declaration"
+    assert by_kind_name[("type", "Notify")].native_kind == "delegate_declaration"
+    assert by_kind_name[("field", "Changed")].native_kind == "event_field_declaration"
+    assert active.container_id == status.id
+    assert by_kind_name[("constant", "Retired")].container_id == status.id
+    # A file-scoped namespace declaration ends at its semicolon but scopes the rest of
+    # the file, so its symbol range is widened and later declarations nest under it.
+    publisher = by_kind_name[("class", "Publisher")]
+    assert publisher.container_id == namespace.id
+    assert publisher.qualified_name == "Sample.Modern.Publisher"
+    assert by_kind_name[("type", "Notify")].qualified_name == "Sample.Modern.Notify"
+    # The signature still describes the declaration itself, not the widened range.
+    assert namespace.signature == "namespace Sample.Modern;"
+
+
+def test_extract_references_covers_csharp_member_access_types_and_attributes(
+    tmp_path: Path,
+) -> None:
+    """C# references include member accesses, type usages, and attributes, not only calls."""
+    file_path = tmp_path / "service.cs"
+    file_path.write_text(
+        "namespace Sample.App;\n\n"
+        "public class Service\n"
+        "{\n"
+        "    [Obsolete]\n"
+        "    public int Count(Repo repo)\n"
+        "    {\n"
+        "        DbSet<Item> items = repo.Items;\n"
+        "        Helper helper = new Helper();\n"
+        "        return items.CountAsync();\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "csharp", workspace_root=tmp_path)
+    references = extract_references(file_path, "csharp", symbols)
+    reference_names = {reference.name for reference in references}
+
+    assert "Items" in reference_names  # member access without invocation
+    assert "DbSet" in reference_names  # generic type name
+    assert "Item" in reference_names  # generic type argument
+    assert "Repo" in reference_names  # parameter type
+    assert "Helper" in reference_names  # local variable type / object creation
+    assert "CountAsync" in reference_names  # invocation via member access
+    assert "Obsolete" in reference_names  # attribute
+
+
+def test_parse_file_extracts_csharp_top_level_local_functions(tmp_path: Path) -> None:
+    """A top-level-statements Program.cs yields its local functions, not only imports."""
+    file_path = tmp_path / "Program.cs"
+    file_path.write_text(
+        "using System;\n\n"
+        "var greeting = Build();\n"
+        "Console.WriteLine(greeting);\n\n"
+        "static string Build()\n"
+        "{\n"
+        '    return "hello";\n'
+        "}\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "csharp", workspace_root=tmp_path)
+    by_kind_name = {(str(symbol.kind), symbol.name): symbol for symbol in symbols}
+
+    build = by_kind_name[("function", "Build")]
+    assert build.native_kind == "local_function_statement"
+    assert by_kind_name[("import", "System")].name == "System"
+
+
 def test_parse_file_extracts_dart_symbols(tmp_path: Path) -> None:
     """The parser extracts Dart classes, mixins, enums, methods, and functions."""
     file_path = tmp_path / "sample.dart"
@@ -1182,7 +1276,7 @@ def test_build_relations_emits_contains_and_imports(tmp_path: Path) -> None:
 
 
 def test_extract_references_and_resolve_candidates(tmp_path: Path) -> None:
-    """Reference queries find call sites and the resolver records confidence."""
+    """Reference queries find call sites and the resolver records resolution honestly."""
     file_path = tmp_path / "sample.py"
     file_path.write_text(
         "def target():\n    return 1\n\ndef caller():\n    return target()\n",
@@ -1196,13 +1290,19 @@ def test_extract_references_and_resolve_candidates(tmp_path: Path) -> None:
     assert [raw_ref.name for raw_ref in raw_refs] == ["target"]
     resolved = build_reference_relations(raw_refs, {"target": [target.id]})
     assert resolved[0].to_symbol_id == target.id
-    assert str(resolved[0].confidence) == "high"
-    low = build_reference_relations(raw_refs, {})
-    assert low[0].to_symbol_id is None
-    assert str(low[0].confidence) == "low"
-    medium = build_reference_relations(raw_refs, {"target": ["one", "two"]})
-    assert medium[0].to_symbol_id is None
-    assert str(medium[0].confidence) == "medium"
+    # A unique global name match stays a heuristic, never high confidence.
+    assert str(resolved[0].confidence) == "medium"
+    assert resolved[0].resolution is ResolutionMethod.UNIQUE_NAME
+    assert resolved[0].start_line == 5
+    assert resolved[0].start_byte_col is not None
+    unresolved = build_reference_relations(raw_refs, {})
+    assert unresolved[0].to_symbol_id is None
+    assert str(unresolved[0].confidence) == "low"
+    assert unresolved[0].resolution is ResolutionMethod.UNRESOLVED
+    ambiguous = build_reference_relations(raw_refs, {"target": ["one", "two"]})
+    assert ambiguous[0].to_symbol_id is None
+    assert str(ambiguous[0].confidence) == "low"
+    assert ambiguous[0].resolution is ResolutionMethod.AMBIGUOUS
 
 
 def test_uppercase_constant_heuristic_is_language_gated() -> None:
@@ -1235,3 +1335,298 @@ def test_fortran_uppercase_variables_stay_variables(tmp_path: Path) -> None:
     symbols = parse_file(file_path, "fortran", workspace_root=tmp_path)
 
     assert all(symbol.kind is not SymbolKind.CONSTANT for symbol in symbols)
+
+
+def test_extract_references_covers_csharp_type_positions(tmp_path: Path) -> None:
+    """C# type and member usages across declaration positions are all extracted."""
+    file_path = tmp_path / "coverage.cs"
+    file_path.write_text(
+        "namespace Sample;\n"
+        "public class Store\n"
+        "{\n"
+        "    public DbSet<Server> Entries { get; set; }\n"
+        "    private App.Widget widget;\n"
+        "    public Item[] Items;\n"
+        "    public Server? Maybe;\n"
+        "    public Wid Build(Repo repo)\n"
+        "    {\n"
+        "        var count = dbContext.Servers;\n"
+        "        var made = new Helper();\n"
+        "        var kind = typeof(Server);\n"
+        "        var cast = (Server)made;\n"
+        "        var safe = made as Server;\n"
+        "        if (made is Server match) { }\n"
+        "        try { } catch (BadError error) { }\n"
+        "        return items.CountAsync();\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "csharp", workspace_root=tmp_path)
+    references = extract_references(file_path, "csharp", symbols)
+    names = {reference.name for reference in references}
+
+    # Non-invoked member access, independent of the Server type references.
+    assert "Servers" in names
+    # DbSet<Server> yields the generic type and its argument as separate sites.
+    assert "DbSet" in names
+    server_sites = {r.start_byte for r in references if r.name == "Server"}
+    servers_sites = {r.start_byte for r in references if r.name == "Servers"}
+    assert server_sites and servers_sites
+    assert server_sites.isdisjoint(servers_sites)
+    # Qualified field type, array field type, nullable property type, return type,
+    # parameter type, object creation, typeof, cast, as, pattern, catch, invocation.
+    assert {
+        "Widget",
+        "Item",
+        "Repo",
+        "Wid",
+        "Helper",
+        "CountAsync",
+        "BadError",
+    } <= names
+
+
+def test_csharp_declarations_are_not_captured_as_references(tmp_path: Path) -> None:
+    """Declaration identifiers and using directives never surface as usages."""
+    file_path = tmp_path / "decls.cs"
+    file_path.write_text(
+        "using System.Text;\n"
+        "namespace Sample.App;\n"
+        "public class Catalog\n"
+        "{\n"
+        "    public int Total { get; set; }\n"
+        "    public void Refresh() { }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "csharp", workspace_root=tmp_path)
+    references = extract_references(file_path, "csharp", symbols)
+    names = {reference.name for reference in references}
+
+    assert names.isdisjoint({"System", "Text", "Sample", "App", "Catalog", "Total", "Refresh"})
+
+
+def test_csharp_reference_sites_are_captured_once(tmp_path: Path) -> None:
+    """Overlapping query patterns must not duplicate one syntactic site."""
+    file_path = tmp_path / "bases.cs"
+    file_path.write_text(
+        "namespace Sample;\npublic class Foo : BaseFoo, IHandler<Bar>\n{\n}\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "csharp", workspace_root=tmp_path)
+    references = extract_references(file_path, "csharp", symbols)
+
+    sites = [reference.start_byte for reference in references]
+    assert len(sites) == len(set(sites))
+    assert {reference.name for reference in references} == {"BaseFoo", "IHandler", "Bar"}
+
+
+def test_two_usages_of_same_method_have_distinct_locations(tmp_path: Path) -> None:
+    """Repeated usages inside one method keep distinct lines/columns and ids."""
+    file_path = tmp_path / "twice.cs"
+    file_path.write_text(
+        "namespace Sample;\n"
+        "public class Runner\n"
+        "{\n"
+        "    public void Go(Repo repo)\n"
+        "    {\n"
+        "        repo.Save(); repo.Save();\n"
+        "        repo.Save();\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "csharp", workspace_root=tmp_path)
+    references = extract_references(file_path, "csharp", symbols)
+    saves = [reference for reference in references if reference.name == "Save"]
+
+    assert len(saves) == 3
+    locations = {(reference.start_line, reference.start_byte_col) for reference in saves}
+    assert len(locations) == 3
+
+    relations = build_reference_relations(saves, {})
+    assert len({relation.id for relation in relations}) == 3
+    assert {(relation.start_line, relation.start_byte_col) for relation in relations} == locations
+
+
+def _csharp_reference_names(tmp_path: Path, file_name: str, source: str) -> set[str]:
+    """Write one C# source file and return the names its reference query captures."""
+    file_path = tmp_path / file_name
+    file_path.write_text(source, encoding="utf-8")
+    symbols = parse_file(file_path, "csharp", workspace_root=tmp_path)
+    references = extract_references(file_path, "csharp", symbols, workspace_root=tmp_path)
+    return {reference.name for reference in references}
+
+
+def test_csharp_nameof_captures_the_named_declaration_not_the_operator(
+    tmp_path: Path,
+) -> None:
+    """`nameof(X)` references X; the `nameof` operator itself is never a usage."""
+    names = _csharp_reference_names(
+        tmp_path,
+        "nameof.cs",
+        "namespace Sample;\n"
+        "public class C\n"
+        "{\n"
+        "    public string M(Repo repo)\n"
+        "    {\n"
+        "        var a = nameof(Server);\n"
+        "        var b = nameof(repo.Items);\n"
+        "        return a + b;\n"
+        "    }\n"
+        "}\n",
+    )
+
+    assert "Server" in names  # nameof argument
+    assert "Items" in names  # nameof of a member access
+    assert "nameof" not in names  # the operator is not a callable symbol
+
+
+def test_csharp_nested_generic_nullable_and_array_wrappers_are_captured(
+    tmp_path: Path,
+) -> None:
+    """Type arguments stay visible through generic, nullable, and array nesting."""
+    names = _csharp_reference_names(
+        tmp_path,
+        "wrappers.cs",
+        "namespace Sample;\n"
+        "public class C\n"
+        "{\n"
+        "    public Task<List<Server?>> Fetch() { return null; }\n"
+        "    public Location?[] Slots { get; set; }\n"
+        "    public List<Region?>[] Grid { get; set; }\n"
+        "}\n",
+    )
+
+    assert {"Task", "List", "Server"} <= names  # Task<List<Server?>>
+    assert "Location" in names  # nullable element of an array type
+    assert "Region" in names  # nullable type argument inside an array of generics
+
+
+def test_csharp_lambda_and_tuple_parameter_types_are_captured(tmp_path: Path) -> None:
+    """Explicitly typed lambda parameters and tuple elements are real usages."""
+    names = _csharp_reference_names(
+        tmp_path,
+        "lambdas.cs",
+        "namespace Sample;\n"
+        "public class C\n"
+        "{\n"
+        "    public (Server first, Location second) Pair() { return default; }\n"
+        "    public void Take((Region a, Zone b) pair) { }\n"
+        "    public void M()\n"
+        "    {\n"
+        "        var f = (Widget w) => w.Name;\n"
+        "    }\n"
+        "}\n",
+    )
+
+    assert {"Server", "Location"} <= names  # tuple return elements
+    assert {"Region", "Zone"} <= names  # tuple parameter elements
+    assert "Widget" in names  # explicitly typed lambda parameter
+
+
+def test_csharp_foreach_and_default_type_positions_are_captured(tmp_path: Path) -> None:
+    """`foreach` element types and `default(T)` name real declarations."""
+    names = _csharp_reference_names(
+        tmp_path,
+        "positions.cs",
+        "namespace Sample;\n"
+        "public class C\n"
+        "{\n"
+        "    public void M(object items)\n"
+        "    {\n"
+        "        foreach (Server s in items) { }\n"
+        "        var d = default(Location);\n"
+        "    }\n"
+        "}\n",
+    )
+
+    assert "Server" in names  # foreach element type
+    assert "Location" in names  # default(T)
+
+
+def test_csharp_qualified_and_alias_qualified_names_are_captured(tmp_path: Path) -> None:
+    """Dotted and `global::` qualified type names resolve to their trailing segment."""
+    names = _csharp_reference_names(
+        tmp_path,
+        "qualified.cs",
+        "namespace Sample;\n"
+        "public class C\n"
+        "{\n"
+        "    public global::System.String Text;\n"
+        "    public Overlock.Api.Servers.Server Item;\n"
+        "}\n",
+    )
+
+    assert "String" in names  # alias-qualified global::System.String
+    assert "Server" in names  # dotted qualified name
+    # The qualifier segments are context, not usages of their own.
+    assert names.isdisjoint({"Overlock", "Api", "System", "global"})
+
+
+def test_csharp_top_level_statements_produce_file_anchored_references(
+    tmp_path: Path,
+) -> None:
+    """Usages outside any declaration are kept, anchored to the file."""
+    file_path = tmp_path / "Program.cs"
+    file_path.write_text(
+        "var builder = WebApplication.CreateBuilder(args);\n"
+        "Server thing = new Server();\n"
+        "builder.Run();\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "csharp", workspace_root=tmp_path)
+    references = extract_references(file_path, "csharp", symbols, workspace_root=tmp_path)
+    names = {reference.name for reference in references}
+
+    assert {"CreateBuilder", "Server", "Run"} <= names
+    # The receiver of a member access is not captured (the `static-receiver-types`
+    # limitation), so the static type name itself is absent by design.
+    assert "WebApplication" not in names
+    # No enclosing declaration exists, so these anchor to the file instead of being dropped.
+    unanchored = [reference for reference in references if reference.from_symbol is None]
+    assert unanchored
+    assert {reference.file_path for reference in unanchored} == {"Program.cs"}
+
+    relations = build_reference_relations(references, {})
+    assert all(relation.from_file_path == "Program.cs" for relation in relations)
+    assert any(relation.from_symbol_id is None for relation in relations)
+    assert len({relation.id for relation in relations}) == len(relations)
+
+
+def test_csharp_references_carry_usage_kinds_and_qualified_text(tmp_path: Path) -> None:
+    """Every captured usage reports the syntactic position it was found in."""
+    file_path = tmp_path / "kinds.cs"
+    file_path.write_text(
+        "namespace Sample;\n"
+        "public class C : BaseC\n"
+        "{\n"
+        "    public void M(Repo repo)\n"
+        "    {\n"
+        "        var item = new Widget();\n"
+        "        repo.Save();\n"
+        "        var t = typeof(Marker);\n"
+        "        var q = Overlock.Api.Servers.Server.Create();\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "csharp", workspace_root=tmp_path)
+    references = extract_references(file_path, "csharp", symbols, workspace_root=tmp_path)
+    by_name = {reference.name: reference for reference in references}
+
+    assert by_name["BaseC"].usage_kind == "base-type"
+    assert by_name["Repo"].usage_kind == "declared-type"
+    assert by_name["Widget"].usage_kind == "object-creation"
+    assert by_name["Save"].usage_kind == "member-access"
+    assert by_name["Marker"].usage_kind == "type-literal"
+    assert by_name["Save"].receiver_text == "repo"
+    # The full dotted path survives extraction so the resolver can match it.
+    assert by_name["Server"].qualified_text == "Overlock.Api.Servers.Server"

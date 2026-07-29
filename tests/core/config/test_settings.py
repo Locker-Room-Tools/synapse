@@ -51,6 +51,10 @@ def test_load_default_ignored_directories_reads_package_config() -> None:
     assert ".git" in defaults
     assert "__pycache__" in defaults
     assert "node_modules" in defaults
+    assert "obj" in defaults
+    assert "bin" in defaults
+    assert "target" in defaults
+    assert ".vs" in defaults
 
 
 def test_load_user_config_returns_empty_when_missing(

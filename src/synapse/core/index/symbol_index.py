@@ -16,6 +16,7 @@ from synapse.core.index.writes import (
     add_relations_for_file,
     remove_files,
     replace_symbols_for_file,
+    set_meta,
     upsert_file,
 )
 from synapse.core.models import Relation, SourceFile, Symbol, SymbolKind
@@ -207,6 +208,17 @@ class SymbolIndex:
         with self._connection() as owned_connection:
             return ReadProjections(owned_connection).symbol_name_index()
 
+    def symbol_resolution_facts(
+        self,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Return per-symbol kinds and qualified names for structural resolution."""
+        if connection is not None:
+            return ReadProjections(connection).symbol_resolution_facts()
+        with self._connection() as owned_connection:
+            return ReadProjections(owned_connection).symbol_resolution_facts()
+
     def reference_source_files(
         self,
         names: Iterable[str],
@@ -265,6 +277,7 @@ class SymbolIndex:
         *,
         children_limit: int = 50,
         children_offset: int = 0,
+        max_body_lines: int = 200,
     ) -> dict[str, object] | None:
         """Return compact context around a symbol."""
         with self._connection() as connection:
@@ -273,6 +286,7 @@ class SymbolIndex:
                 include_body=include_body,
                 children_limit=children_limit,
                 children_offset=children_offset,
+                max_body_lines=max_body_lines,
             )
 
     def get_dependencies(self, symbol_id: str) -> list[Relation]:
@@ -294,6 +308,32 @@ class SymbolIndex:
                 limit=limit,
                 offset=offset,
             )
+
+    def get_meta(
+        self,
+        key: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> str | None:
+        """Return one index metadata value, or None when absent."""
+        if connection is not None:
+            return ReadProjections(connection).get_meta(key)
+        with self._connection() as owned_connection:
+            return ReadProjections(owned_connection).get_meta(key)
+
+    def set_meta(
+        self,
+        key: str,
+        value: str,
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        """Insert or update one index metadata entry."""
+        if connection is not None:
+            set_meta(connection, key, value)
+            return
+        with self.transaction() as owned_connection:
+            set_meta(owned_connection, key, value)
 
     def get_references(self, symbol_id: str) -> list[Relation]:
         """Return incoming resolved references for a symbol."""

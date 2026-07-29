@@ -2,7 +2,56 @@
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
+
+
+class ReferenceExtraction(StrEnum):
+    """How completely a language's reference query covers real usage syntax."""
+
+    NONE = "none"
+    PARTIAL = "partial"
+    # Reserved: requires demonstrated near-complete usage coverage.
+    BROAD = "broad"
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceSyntax:
+    """Grammar node and field names a structural reference resolver needs.
+
+    The resolver itself is language-agnostic; every syntax-specific fact it relies on
+    is named here. A language without this block resolves by unique name only.
+    """
+
+    # Dotted names: `(qualified_name qualifier: ... name: ...)`.
+    qualified_types: tuple[str, ...] = ()
+    # Alias-qualified names such as C# `global::System.String`.
+    alias_qualified_types: tuple[str, ...] = ()
+    qualifier_field: str = "qualifier"
+    name_field: str = "name"
+    # Member access: `(member_access_expression expression: <receiver> name: <member>)`.
+    member_access_types: tuple[str, ...] = ()
+    receiver_field: str = "expression"
+    # Declarations that establish the enclosing namespace for a byte range.
+    namespace_types: tuple[str, ...] = ()
+    # Import/using directives contributing in-scope namespaces and aliases.
+    import_types: tuple[str, ...] = ()
+    # Nodes binding one name to a syntactically declared type via `type`/`name` fields.
+    binder_types: tuple[str, ...] = ()
+    # Declarator style: `(variable_declaration type: T (variable_declarator name: N))`.
+    declarator_parent_types: tuple[str, ...] = ()
+    declarator_type: str = ""
+    type_field: str = "type"
+    # Tried in order; `foreach` binds its variable under `left`, most nodes under `name`.
+    binder_name_fields: tuple[str, ...] = ("name",)
+    # Type wrappers to unwrap when reading a declared type (nullable, array, generic).
+    type_wrapper_types: tuple[str, ...] = ()
+    # Generic type applications whose first child names the constructed type.
+    generic_types: tuple[str, ...] = ()
+    # Type nodes that name no indexable declaration (`var`, `int`, ...).
+    opaque_type_types: tuple[str, ...] = ()
+    # Ancestors that delimit a binder's scope; the nearest one wins.
+    scope_types: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +66,54 @@ class LanguageSpec:
     name_separator: str = "."
     # Whether ALL-CAPS fields/variables idiomatically denote constants.
     uppercase_constants: bool = True
+    # Reference-extraction coverage advertised to consumers of find_references.
+    reference_extraction: ReferenceExtraction = ReferenceExtraction.PARTIAL
+    # Usage-kind ids the reference query is known to capture.
+    reference_usage_kinds: tuple[str, ...] = ()
+    # Known extraction gaps, as short machine-readable ids.
+    reference_limitations: tuple[str, ...] = ()
+    # Grammar facts enabling structural resolution; absent means unique-name only.
+    reference_syntax: ReferenceSyntax | None = None
+    # Declarations that scope everything after them rather than a braced body, so
+    # their symbol range must be widened to their parent's (C# file-scoped namespaces).
+    file_scoped_container_types: tuple[str, ...] = ()
+
+
+CSHARP_REFERENCE_SYNTAX = ReferenceSyntax(
+    qualified_types=("qualified_name",),
+    alias_qualified_types=("alias_qualified_name",),
+    member_access_types=("member_access_expression",),
+    namespace_types=("namespace_declaration", "file_scoped_namespace_declaration"),
+    import_types=("using_directive",),
+    binder_types=(
+        "parameter",
+        "property_declaration",
+        "catch_declaration",
+        "foreach_statement",
+        "declaration_pattern",
+        "tuple_element",
+    ),
+    declarator_parent_types=("variable_declaration",),
+    declarator_type="variable_declarator",
+    binder_name_fields=("name", "left"),
+    type_wrapper_types=("nullable_type", "array_type"),
+    generic_types=("generic_name",),
+    opaque_type_types=("implicit_type", "predefined_type"),
+    scope_types=(
+        "block",
+        "lambda_expression",
+        "method_declaration",
+        "constructor_declaration",
+        "local_function_statement",
+        "property_declaration",
+        "class_declaration",
+        "struct_declaration",
+        "record_declaration",
+        "interface_declaration",
+        "enum_declaration",
+        "compilation_unit",
+    ),
+)
 
 
 LANGUAGES: dict[str, LanguageSpec] = {
@@ -102,6 +199,30 @@ LANGUAGES: dict[str, LanguageSpec] = {
         tree_sitter_name="csharp",
         extensions=(".cs",),
         query_dir="c_sharp",
+        reference_usage_kinds=(
+            "member-access",
+            "invocation",
+            "nameof",
+            "object-creation",
+            "generic-type",
+            "type-argument",
+            "declared-type",
+            "return-type",
+            "type-literal",
+            "cast-and-pattern",
+            "attribute",
+            "base-type",
+        ),
+        reference_limitations=(
+            # A member-access receiver is not itself captured, so a static access such
+            # as `EndpointTags.Servers` records the member but not the type.
+            "static-receiver-types",
+            "extension-methods",
+            "inherited-members",
+            "partial-classes",
+        ),
+        reference_syntax=CSHARP_REFERENCE_SYNTAX,
+        file_scoped_container_types=("file_scoped_namespace_declaration",),
     ),
     "cuda": LanguageSpec(
         id="cuda",
@@ -515,6 +636,51 @@ def query_dir(language: str) -> str:
     """Return the query directory name for a normalized language id."""
     try:
         return LANGUAGES[language].query_dir
+    except KeyError as exc:
+        msg = f"Unsupported language: {language}"
+        raise ValueError(msg) from exc
+
+
+def reference_extraction(language: str) -> ReferenceExtraction:
+    """Return the advertised reference-extraction coverage for a language id."""
+    try:
+        return LANGUAGES[language].reference_extraction
+    except KeyError as exc:
+        msg = f"Unsupported language: {language}"
+        raise ValueError(msg) from exc
+
+
+def reference_usage_kinds(language: str) -> tuple[str, ...]:
+    """Return the usage-kind ids covered by a language's reference query."""
+    try:
+        return LANGUAGES[language].reference_usage_kinds
+    except KeyError as exc:
+        msg = f"Unsupported language: {language}"
+        raise ValueError(msg) from exc
+
+
+def reference_limitations(language: str) -> tuple[str, ...]:
+    """Return the known reference-extraction gaps for a language id."""
+    try:
+        return LANGUAGES[language].reference_limitations
+    except KeyError as exc:
+        msg = f"Unsupported language: {language}"
+        raise ValueError(msg) from exc
+
+
+def reference_syntax(language: str) -> ReferenceSyntax | None:
+    """Return the structural-resolution grammar facts for a language id, if any."""
+    try:
+        return LANGUAGES[language].reference_syntax
+    except KeyError as exc:
+        msg = f"Unsupported language: {language}"
+        raise ValueError(msg) from exc
+
+
+def file_scoped_container_types(language: str) -> tuple[str, ...]:
+    """Return declaration node types that scope the remainder of their parent."""
+    try:
+        return LANGUAGES[language].file_scoped_container_types
     except KeyError as exc:
         msg = f"Unsupported language: {language}"
         raise ValueError(msg) from exc

@@ -40,3 +40,19 @@ class Confidence(StrEnum):
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
+
+
+class ResolutionMethod(StrEnum):
+    """How a reference relation was bound to its target symbol."""
+
+    # The source syntax plus the indexed declarations prove exactly one target:
+    # a fully-qualified name, an unambiguous dotted suffix, or a member reached
+    # through a receiver whose type is declared in the source.
+    EXACT = "exact"
+    # Narrowed to one candidate by namespace, import, or enclosing-type scope.
+    # Stronger than a bare name match, but a syntactic index cannot see extension
+    # methods, inherited members, or partial declarations — hence not EXACT.
+    SCOPED = "scoped"
+    UNIQUE_NAME = "unique-name"
+    AMBIGUOUS = "ambiguous"
+    UNRESOLVED = "unresolved"
