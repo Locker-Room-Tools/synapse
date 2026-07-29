@@ -7,6 +7,7 @@ cannot reproduce.
 """
 
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -57,13 +58,16 @@ def _make_workspace(tmp_path: Path) -> tuple[Path, Path]:
 
 def _child_environment(*, workspace: Path, data_root: Path) -> dict[str, str]:
     """Return a deterministic environment for a fresh Synapse interpreter."""
-    return {
-        "SYNAPSE_DATA_DIR": str(data_root),
-        "XDG_CONFIG_HOME": str(data_root / "config"),
-        "PATH": "/usr/bin:/bin",
-        "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src"),
-        "SYNAPSE_TEST_WORKSPACE": str(workspace),
-    }
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "SYNAPSE_DATA_DIR": str(data_root),
+            "XDG_CONFIG_HOME": str(data_root / "config"),
+            "PYTHONPATH": str(Path(__file__).resolve().parents[2] / "src"),
+            "SYNAPSE_TEST_WORKSPACE": str(workspace),
+        }
+    )
+    return environment
 
 
 _ENSURE_SCRIPT = """
