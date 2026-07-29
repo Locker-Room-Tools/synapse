@@ -2,15 +2,28 @@
   "ignored_directories": [
     ".ai",
     ".git",
+    ".gradle",
     ".idea",
     ".mypy_cache",
+    ".next",
+    ".nuxt",
+    ".pytest_cache",
     ".ruff_cache",
     ".synapse",
+    ".tox",
     ".venv",
+    ".vs",
+    "DerivedData",
+    "Pods",
     "__pycache__",
+    "bin",
     "build",
+    "coverage",
     "dist",
     "node_modules",
+    "obj",
+    "out",
+    "target",
     "venv"
   ]
 }

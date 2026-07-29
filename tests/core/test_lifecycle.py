@@ -261,3 +261,45 @@ def test_ensure_workspace_offline_fails_before_mutation(
 
     with pytest.raises(ValueError, match="offline mode"):
         lifecycle.ensure_workspace(tmp_path, offline=True)
+
+
+def test_ensure_workspace_forces_reindex_on_stale_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale reference fingerprint stops the daemon, then forces a full rebuild."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    calls: list[object] = []
+    healthy = _watch_status(tmp_path, running=True, pid=1234)
+    monkeypatch.setattr(lifecycle, "read_metadata", lambda path: SimpleNamespace())
+    monkeypatch.setattr(lifecycle, "missing_grammars", lambda: ())
+    monkeypatch.setattr(lifecycle, "read_watch_status", lambda path: healthy)
+    monkeypatch.setattr(lifecycle, "pid_is_running", lambda pid: True)
+    monkeypatch.setattr(lifecycle, "reference_index_is_stale", lambda root: True)
+
+    def fake_request_stop(path: Path) -> None:
+        calls.append("stop-daemon")
+
+    def fake_wait_stop(path: Path) -> bool:
+        calls.append("wait-stop")
+        return True
+
+    def fake_index(path: Path, *, force: bool = False) -> IndexStats:
+        calls.append(("index", force))
+        return IndexStats(str(path), 2, 0, 0, 0, 2, 5, ["csharp"])
+
+    def fake_ensure_daemon(path: Path) -> WatchStatus:
+        calls.append("ensure-daemon")
+        return healthy
+
+    monkeypatch.setattr(lifecycle, "request_watch_stop", fake_request_stop)
+    monkeypatch.setattr(lifecycle, "wait_for_watch_to_stop", fake_wait_stop)
+    monkeypatch.setattr(lifecycle, "index_workspace", fake_index)
+    monkeypatch.setattr(lifecycle, "ensure_watch_daemon", fake_ensure_daemon)
+
+    result = lifecycle.ensure_workspace(tmp_path)
+
+    # The daemon stops before the forced rebuild takes the watch lock.
+    assert calls == ["stop-daemon", "wait-stop", ("index", True), "ensure-daemon"]
+    assert result.action == "repaired"
+    assert result.index == {"files": 2, "symbols": 5, "languages": ["csharp"]}

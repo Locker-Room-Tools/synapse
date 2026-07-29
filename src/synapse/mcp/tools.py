@@ -17,6 +17,7 @@ from synapse.core.config import (
 from synapse.core.index import SymbolIndex, relation_summary, symbol_summary
 from synapse.core.indexing import index_workspace
 from synapse.core.lifecycle import ensure_workspace, require_workspace_ready
+from synapse.core.provenance import runtime_provenance
 from synapse.core.watch.state import watch_status_payload
 from synapse.core.workspace import db_path, require_workspace_path
 from synapse.mcp.server import mcp
@@ -196,7 +197,8 @@ def synapse_get_file_outline(
 ) -> dict[str, object] | None:
     """Structural outline of one file; prefer before reading a whole file.
 
-    file_path is workspace-relative (absolute paths inside the workspace are accepted).
+    Each item carries kind, name, signature, and line_range. file_path is
+    workspace-relative (absolute paths inside the workspace are accepted).
     Returns None when the file is not indexed.
     """
     workspace_root = _workspace_root(workspace_path)
@@ -209,8 +211,14 @@ def synapse_get_file_outline(
 
 @mcp.tool()
 def synapse_workspace_stats(workspace_path: str = ".") -> dict[str, object]:
-    """Return indexed workspace statistics (files, symbols, language mix)."""
-    return _workspace_index(workspace_path).workspace_stats()
+    """Return indexed workspace statistics (files, symbols, language mix).
+
+    Also reports `runtime`: which Synapse build is serving this call and where it was
+    loaded from, so a stale installed tool is distinguishable from a live checkout.
+    """
+    stats = _workspace_index(workspace_path).workspace_stats()
+    stats["runtime"] = runtime_provenance().to_payload()
+    return stats
 
 
 @mcp.tool()
@@ -231,7 +239,9 @@ def synapse_project_map(
 ) -> dict[str, object]:
     """Return a compact paged map of the workspace structure and key symbols.
 
-    Best first call for broad architecture questions.
+    Best first call for broad architecture questions. top_symbols contains type and
+    function declarations only; namespace names are aggregated (deduplicated, with a
+    total) under `namespaces`.
     """
     return _workspace_index(workspace_path).project_map(
         limit=limit,
@@ -268,18 +278,22 @@ def synapse_get_symbol_context(
     workspace_path: str = ".",
     children_limit: int = 50,
     children_offset: int = 0,
+    max_body_lines: int = 200,
 ) -> dict[str, object] | None:
     """Structural context around one symbol: parent, paged children, optional body.
 
     symbol_id comes from synapse_search_symbols or synapse_get_definition. Set
-    include_body=True only when implementation text is needed; for the smallest view
-    use synapse_compact_context. Returns None for an unknown symbol_id.
+    include_body=True to read the implementation source; prefer this over reading the
+    file. body is capped at max_body_lines and body_truncated reports a cut — narrow
+    to a child symbol or raise the cap for more. For the smallest view use
+    synapse_compact_context. Returns None for an unknown symbol_id.
     """
     return _workspace_index(workspace_path).get_symbol_context(
         symbol_id,
         include_body=include_body,
         children_limit=children_limit,
         children_offset=children_offset,
+        max_body_lines=max_body_lines,
     )
 
 
@@ -317,8 +331,12 @@ def synapse_find_references(
     """Find usages (incoming references); prefer over grep across the workspace.
 
     Provide symbol_id (preferred; from synapse_get_definition or
-    synapse_search_symbols) OR name. Returns reference items, affected files, and page
-    metadata.
+    synapse_search_symbols) OR name. Returns confirmed reference items (match:
+    heuristic), same-name possible_items (match: ambiguous/unresolved with candidate
+    symbol ids — never confirmed usages), per-item line/byte_column, affected files,
+    a coverage block (extraction completeness, counts, limitations), and page
+    metadata. Empty results mean no indexed references were found under partial
+    coverage — not proof the symbol is unused.
     """
     if symbol_id is None and name is None:
         msg = "Either symbol_id or name must be provided."

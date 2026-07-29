@@ -9,6 +9,7 @@ from synapse.core.config import config_file_path, write_global_ignored_directori
 from synapse.core.indexing import IndexStats
 from synapse.core.lifecycle import EnsureWorkspaceResult, WorkspaceNotReadyError
 from synapse.core.models import Confidence, Relation, RelationKind, Symbol, SymbolKind
+from synapse.core.provenance import runtime_provenance
 from synapse.mcp import tools
 from synapse.mcp.workspace import configure_workspace
 
@@ -266,7 +267,12 @@ def test_symbol_lookup_tools_delegate_to_the_index(
         "total": 0,
         "truncated": False,
     }
-    assert tools.synapse_workspace_stats() == {"files": 1, "symbols": 1, "languages": []}
+    assert tools.synapse_workspace_stats() == {
+        "files": 1,
+        "symbols": 1,
+        "languages": [],
+        "runtime": runtime_provenance().to_payload(),
+    }
     monkeypatch.setattr(tools, "watch_status_payload", lambda path: {"running": False})
     assert tools.synapse_watch_status() == {"running": False}
     assert tools.synapse_project_map() == {
@@ -295,6 +301,8 @@ def test_symbol_lookup_tools_delegate_to_the_index(
                 "to_name": "method",
                 "from_file_path": "sample.py",
                 "to_file_path": "sample.py",
+                "line": None,
+                "byte_column": None,
                 "source": "tree-sitter",
                 "confidence": "high",
             }
@@ -424,6 +432,7 @@ def test_synapse_ensure_workspace_returns_lifecycle_payload(
         initialized=True,
         daemon={"running": True, "degraded": False, "backend": "polling", "pid": 123},
         index={"files": 3, "symbols": 7, "languages": ["python"]},
+        runtime=runtime_provenance().to_payload(),
     )
     monkeypatch.setattr(tools, "ensure_workspace", lambda path: expected)
 
@@ -440,6 +449,7 @@ def test_synapse_ensure_workspace_returns_lifecycle_payload(
             "pid": 123,
         },
         "index": {"files": 3, "symbols": 7, "languages": ["python"]},
+        "runtime": runtime_provenance().to_payload(),
     }
 
 

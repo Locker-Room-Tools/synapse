@@ -5,10 +5,14 @@ from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from synapse.core.languages import reference_extraction as get_reference_extraction
+from synapse.core.languages import reference_limitations as get_reference_limitations
+from synapse.core.languages import reference_usage_kinds as get_reference_usage_kinds
 from synapse.core.models import (
     Confidence,
     Relation,
     RelationKind,
+    ResolutionMethod,
     SourceFile,
     Symbol,
     SymbolKind,
@@ -18,6 +22,9 @@ DEFAULT_PAGE_LIMIT = 50
 MAX_PAGE_LIMIT = 200
 DEFAULT_OUTLINE_LIMIT = 200
 MAX_TOP_SYMBOLS_LIMIT = 50
+DEFAULT_MAX_BODY_LINES = 200
+MAX_CANDIDATE_IDS = 8
+NAMESPACE_SUMMARY_LIMIT = 20
 
 
 def normalize_pagination(limit: int, offset: int) -> tuple[int, int]:
@@ -67,7 +74,22 @@ def _map_symbol(row: sqlite3.Row) -> Symbol:
     )
 
 
+def _optional_int_column(row: sqlite3.Row, column: str) -> int | None:
+    if column not in row.keys():  # noqa: SIM118 - sqlite3.Row supports no `in row`
+        return None
+    value = row[column]
+    return int(value) if value is not None else None
+
+
+def _optional_text_column(row: sqlite3.Row, column: str) -> str | None:
+    if column not in row.keys():  # noqa: SIM118 - sqlite3.Row supports no `in row`
+        return None
+    value = row[column]
+    return str(value) if value is not None else None
+
+
 def _map_relation(row: sqlite3.Row) -> Relation:
+    resolution = _optional_text_column(row, "resolution")
     return Relation(
         id=str(row["id"]),
         kind=RelationKind(str(row["kind"])),
@@ -78,6 +100,11 @@ def _map_relation(row: sqlite3.Row) -> Relation:
         to_name=row["to_name"],
         source=str(row["source"]),
         confidence=Confidence(str(row["confidence"])),
+        start_line=_optional_int_column(row, "start_line"),
+        start_byte_col=_optional_int_column(row, "start_byte_col"),
+        resolution=ResolutionMethod(resolution) if resolution is not None else None,
+        usage_kind=_optional_text_column(row, "usage_kind"),
+        to_qualified_name=_optional_text_column(row, "to_qualified_name"),
     )
 
 
@@ -98,16 +125,87 @@ def symbol_summary(symbol: Symbol) -> dict[str, object]:
 
 def relation_summary(relation: Relation) -> dict[str, object]:
     """Return the compact public representation for a relation."""
-    return {
+    summary: dict[str, object] = {
         "kind": str(relation.kind),
         "from_symbol_id": relation.from_symbol_id,
         "to_symbol_id": relation.to_symbol_id,
         "to_name": relation.to_name,
         "from_file_path": relation.from_file_path,
         "to_file_path": relation.to_file_path,
+        "line": relation.start_line,
+        "byte_column": relation.start_byte_col,
         "source": relation.source,
         "confidence": str(relation.confidence),
     }
+    if relation.usage_kind is not None:
+        summary["usage_kind"] = relation.usage_kind
+    if relation.to_qualified_name is not None:
+        summary["to_qualified_name"] = relation.to_qualified_name
+    return summary
+
+
+# Meaningful declarations for a project overview, in relevance order: nameable types
+# first, then callable entry points. Namespaces and imports are structural boilerplate
+# and never appear — they are aggregated separately.
+TOP_SYMBOL_KINDS: tuple[SymbolKind, ...] = (
+    SymbolKind.CLASS,
+    SymbolKind.RECORD,
+    SymbolKind.INTERFACE,
+    SymbolKind.STRUCT,
+    SymbolKind.ENUM,
+    SymbolKind.TYPE,
+    SymbolKind.FUNCTION,
+    SymbolKind.METHOD,
+)
+
+
+def _rank_top_symbols(
+    rows_by_kind: dict[SymbolKind, list[sqlite3.Row]],
+    limit: int,
+) -> list[sqlite3.Row]:
+    """Pick the page's top symbols with a deterministic per-kind cap.
+
+    A strict kind cascade returns only classes in a class-heavy repository. The cap is an
+    even share of the page across the kinds that actually have candidates, so a workspace
+    with classes, records, and methods shows all three; unused quota falls back to the
+    ranked remainder, so a single-kind workspace still fills the page. This is a cap, not
+    a round-robin: low-information symbols are never promoted just to add variety.
+    """
+    populated = sum(1 for rows in rows_by_kind.values() if rows) or 1
+    per_kind_cap = max(2, limit // populated)
+    selected: list[sqlite3.Row] = []
+    overflow: list[tuple[int, sqlite3.Row]] = []
+    for rank, kind in enumerate(TOP_SYMBOL_KINDS):
+        rows = rows_by_kind.get(kind, [])
+        selected.extend(rows[:per_kind_cap])
+        overflow.extend((rank, row) for row in rows[per_kind_cap:])
+
+    ranks = {str(kind): rank for rank, kind in enumerate(TOP_SYMBOL_KINDS)}
+
+    def sort_key(row: sqlite3.Row) -> tuple[int, str, str]:
+        return (ranks[str(row["kind"])], str(row["name"]), str(row["file_path"]))
+
+    selected.sort(key=sort_key)
+    if len(selected) < limit:
+        overflow.sort(
+            key=lambda entry: (entry[0], str(entry[1]["name"]), str(entry[1]["file_path"]))
+        )
+        selected.extend(row for _, row in overflow[: limit - len(selected)])
+        selected.sort(key=sort_key)
+    return selected[:limit]
+
+
+_MATCH_LABELS: dict[ResolutionMethod, str] = {
+    ResolutionMethod.EXACT: "exact",
+    ResolutionMethod.SCOPED: "scoped",
+}
+
+
+def _match_label(relation: Relation) -> str:
+    """Return the public match tier for a confirmed reference relation."""
+    if relation.resolution is None:
+        return "heuristic"
+    return _MATCH_LABELS.get(relation.resolution, "heuristic")
 
 
 def outline_item(symbol: Symbol) -> dict[str, object]:
@@ -117,6 +215,7 @@ def outline_item(symbol: Symbol) -> dict[str, object]:
         "kind": str(symbol.kind),
         "name": symbol.name,
         "line_range": [symbol.start_line, symbol.end_line],
+        "signature": symbol.signature,
         "children": [],
     }
 
@@ -376,6 +475,26 @@ class ReadProjections:
                     symbol_ids.append(symbol_id)
         return result
 
+    def symbol_resolution_facts(self) -> tuple[dict[str, str], dict[str, str]]:
+        """Return (kind by symbol id, qualified name by symbol id) for reference binding.
+
+        Symbols without a qualified name fall back to their simple name so every
+        declaration is reachable through the resolver's dotted-suffix lookups.
+        """
+        kinds: dict[str, str] = {}
+        qualified_names: dict[str, str] = {}
+        rows = self.connection.execute(
+            "SELECT id, kind, name, qualified_name FROM symbols ORDER BY id"
+        ).fetchall()
+        for row in rows:
+            symbol_id = str(row["id"])
+            kinds[symbol_id] = str(row["kind"])
+            qualified_name = row["qualified_name"]
+            qualified_names[symbol_id] = (
+                str(qualified_name) if qualified_name is not None else str(row["name"])
+            )
+        return kinds, qualified_names
+
     def reference_source_files(
         self,
         names: Iterable[str],
@@ -436,47 +555,43 @@ class ReadProjections:
         normalized_limit, normalized_offset = normalize_pagination(limit, offset)
         normalized_top_limit = min(MAX_TOP_SYMBOLS_LIMIT, max(1, top_symbols_limit))
         tree: dict[str, object] = {}
-        container_kinds = (
-            SymbolKind.NAMESPACE,
-            SymbolKind.CLASS,
-            SymbolKind.STRUCT,
-            SymbolKind.INTERFACE,
-            SymbolKind.ENUM,
-            SymbolKind.FUNCTION,
-            SymbolKind.METHOD,
-        )
-        placeholders = ", ".join("?" for _ in container_kinds)
+        placeholders = ", ".join("?" for _ in TOP_SYMBOL_KINDS)
         with self._connection() as connection:
             total = int(connection.execute("SELECT COUNT(*) FROM files").fetchone()[0])
             file_rows = connection.execute(
                 "SELECT path FROM files ORDER BY path LIMIT ? OFFSET ?",
                 (normalized_limit, normalized_offset),
             ).fetchall()
-            symbol_rows = connection.execute(
-                f"""
-                SELECT *
-                FROM symbols
-                WHERE kind IN ({placeholders})
-                ORDER BY
-                    CASE kind
-                        WHEN ? THEN 0
-                        WHEN ? THEN 1
-                        WHEN ? THEN 2
-                        WHEN ? THEN 3
-                        WHEN ? THEN 4
-                        WHEN ? THEN 5
-                        WHEN ? THEN 6
-                        ELSE 7
-                    END,
-                    name,
-                    file_path
-                LIMIT ?
-                """,
-                [
-                    *(str(kind) for kind in container_kinds),
-                    *(str(kind) for kind in container_kinds),
-                    normalized_top_limit,
-                ],
+            top_symbols_total = int(
+                connection.execute(
+                    f"SELECT COUNT(*) FROM symbols WHERE kind IN ({placeholders})",
+                    [str(kind) for kind in TOP_SYMBOL_KINDS],
+                ).fetchone()[0]
+            )
+            # Fetch each kind's best candidates separately so one populous kind cannot
+            # monopolise the page; the interleave below stays deterministic.
+            rows_by_kind: dict[SymbolKind, list[sqlite3.Row]] = {
+                kind: connection.execute(
+                    """
+                    SELECT * FROM symbols
+                    WHERE kind = ?
+                    ORDER BY name, file_path, start_line
+                    LIMIT ?
+                    """,
+                    (str(kind), normalized_top_limit),
+                ).fetchall()
+                for kind in TOP_SYMBOL_KINDS
+            }
+            symbol_rows = _rank_top_symbols(rows_by_kind, normalized_top_limit)
+            namespace_total = int(
+                connection.execute(
+                    "SELECT COUNT(DISTINCT name) FROM symbols WHERE kind = ?",
+                    (str(SymbolKind.NAMESPACE),),
+                ).fetchone()[0]
+            )
+            namespace_rows = connection.execute(
+                "SELECT DISTINCT name FROM symbols WHERE kind = ? ORDER BY name LIMIT ?",
+                (str(SymbolKind.NAMESPACE), NAMESPACE_SUMMARY_LIMIT),
             ).fetchall()
 
         for row in file_rows:
@@ -490,15 +605,23 @@ class ReadProjections:
                 current = child
             current[parts[-1]] = None
 
+        namespace_names = [str(row["name"]) for row in namespace_rows]
+        file_paths = [str(row["path"]) for row in file_rows]
+        # `tree` and `page` describe this page of files; `top_symbols` and `namespaces`
+        # are workspace-wide aggregates that repeat unchanged on every page.
+        page = page_metadata(total, normalized_limit, normalized_offset, len(file_rows))
+        page["files"] = file_paths
         return {
             "tree": tree,
             "top_symbols": [symbol_summary(_map_symbol(row)) for row in symbol_rows],
-            "page": page_metadata(
-                total,
-                normalized_limit,
-                normalized_offset,
-                len(file_rows),
-            ),
+            "top_symbols_total": top_symbols_total,
+            "top_symbols_truncated": top_symbols_total > len(symbol_rows),
+            "namespaces": {
+                "items": namespace_names,
+                "total": namespace_total,
+                "truncated": namespace_total > len(namespace_names),
+            },
+            "page": page,
         }
 
     def get_file_outline(
@@ -556,6 +679,7 @@ class ReadProjections:
         *,
         children_limit: int = DEFAULT_PAGE_LIMIT,
         children_offset: int = 0,
+        max_body_lines: int = DEFAULT_MAX_BODY_LINES,
     ) -> dict[str, object] | None:
         """Return compact context around a symbol."""
         symbol = self.get_symbol(symbol_id)
@@ -590,16 +714,23 @@ class ReadProjections:
                 (symbol.file_path,),
             ).fetchone()
         body: str | None = None
+        body_truncated = False
         if include_body and file_row is not None and file_row["project_root"] is not None:
             absolute_path = Path(str(file_row["project_root"])) / symbol.file_path
             if absolute_path.exists():
                 lines = absolute_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                body = "\n".join(lines[symbol.start_line - 1 : symbol.end_line])
+                body_lines = lines[symbol.start_line - 1 : symbol.end_line]
+                normalized_max = max(1, max_body_lines)
+                if len(body_lines) > normalized_max:
+                    body_lines = body_lines[:normalized_max]
+                    body_truncated = True
+                body = "\n".join(body_lines)
         return {
             "symbol": symbol_summary(symbol),
             "parent": symbol_summary(_map_symbol(parent_row)) if parent_row is not None else None,
             "children": [symbol_summary(_map_symbol(row)) for row in child_rows],
             "body": body,
+            "body_truncated": body_truncated,
             "page": page_metadata(
                 child_total,
                 normalized_limit,
@@ -644,6 +775,14 @@ class ReadProjections:
             normalized_offset,
             len(relations),
         )
+
+    def get_meta(self, key: str) -> str | None:
+        """Return one index metadata value, or None when absent."""
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT value FROM index_meta WHERE key = ?", (key,)
+            ).fetchone()
+        return str(row["value"]) if row is not None else None
 
     def get_references(self, symbol_id: str) -> list[Relation]:
         """Return incoming resolved references for a symbol."""
@@ -724,6 +863,49 @@ class ReadProjections:
             ),
         }
 
+    def _languages_for_paths(self, paths: set[str]) -> list[str]:
+        if not paths:
+            return []
+        ordered_paths = sorted(paths)
+        placeholders = ", ".join("?" for _ in ordered_paths)
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"SELECT DISTINCT language FROM files WHERE path IN ({placeholders})",
+                ordered_paths,
+            ).fetchall()
+        return sorted(str(row["language"]) for row in rows)
+
+    def _workspace_languages(self) -> list[str]:
+        with self._connection() as connection:
+            rows = connection.execute("SELECT DISTINCT language FROM files").fetchall()
+        return sorted(str(row["language"]) for row in rows)
+
+    def _reference_coverage(
+        self,
+        languages: list[str],
+        counts: dict[str, int],
+        *,
+        zero_result: bool,
+    ) -> dict[str, object]:
+        extraction = [
+            {
+                "language": language,
+                "completeness": str(get_reference_extraction(language)),
+                "usage_kinds": list(get_reference_usage_kinds(language)),
+                "limitations": list(get_reference_limitations(language)),
+            }
+            for language in languages
+        ]
+        coverage: dict[str, object] = {
+            "resolution_model": "syntactic-structural",
+            "exhaustive": False,
+            "extraction": extraction,
+            "counts": counts,
+        }
+        if zero_result:
+            coverage["zero_result"] = "no-indexed-matches"
+        return coverage
+
     def find_references(
         self,
         *,
@@ -732,38 +914,131 @@ class ReadProjections:
         limit: int = DEFAULT_PAGE_LIMIT,
         offset: int = 0,
     ) -> dict[str, object]:
-        """Return locations that reference a symbol by id or name."""
+        """Return references to a symbol: confirmed items plus same-name possible items.
+
+        Resolution is syntactic and name-based. `items` holds relations bound to the
+        target(s) by a unique-name heuristic; `possible_items` holds same-name relations
+        whose target is ambiguous or unresolved and must never be read as confirmed usages.
+
+        Both collections are paged by the same `limit`/`offset`, each reporting its own
+        page block (`page` and `possible_page`). `files` aggregates every matched path
+        across the full result, not just the current page; `page.files` is the page-scoped
+        view. `coverage.counts` is likewise global, so it stays comparable across pages.
+        """
         normalized_limit, normalized_offset = normalize_pagination(limit, offset)
-        relations_by_id: dict[str, Relation] = {}
-        unresolved_names: set[str] = set()
+        confirmed_by_id: dict[str, Relation] = {}
+        possible_by_id: dict[str, tuple[Relation, list[str]]] = {}
+        zero_result_languages: list[str] | None = None
+
         if symbol_id is not None:
             symbol = self.get_symbol(symbol_id)
             if symbol is not None:
-                unresolved_names.add(symbol.name)
+                zero_result_languages = [symbol.language]
                 for relation in self.get_references(symbol.id):
-                    relations_by_id[relation.id] = relation
+                    confirmed_by_id[relation.id] = relation
+                candidate_ids = [candidate.id for candidate in self.get_definition(symbol.name)]
+                if symbol.id in candidate_ids:
+                    for relation in self.get_references_by_name(symbol.name):
+                        possible_by_id[relation.id] = (relation, candidate_ids)
         elif name is not None:
-            unresolved_names.add(name)
-            for symbol in self.get_definition(name):
-                for relation in self.get_references(symbol.id):
-                    relations_by_id[relation.id] = relation
+            for definition in self.get_definition(name):
+                for relation in self.get_references(definition.id):
+                    confirmed_by_id[relation.id] = relation
+            candidate_ids = [candidate.id for candidate in self.get_definition(name)]
+            for relation in self.get_references_by_name(name):
+                possible_by_id[relation.id] = (relation, candidate_ids)
 
-        for unresolved_name in unresolved_names:
-            for relation in self.get_references_by_name(unresolved_name):
-                relations_by_id[relation.id] = relation
+        def sort_key(relation: Relation) -> tuple[str, int, int, str]:
+            # Source order within a file, not lexicographic order of the synthetic id.
+            return (
+                relation.from_file_path,
+                relation.start_line if relation.start_line is not None else 0,
+                relation.start_byte_col if relation.start_byte_col is not None else 0,
+                relation.id,
+            )
 
-        relations = sorted(
-            relations_by_id.values(), key=lambda item: (item.from_file_path, item.id)
+        confirmed = sorted(confirmed_by_id.values(), key=sort_key)
+        possible = sorted(possible_by_id.values(), key=lambda entry: sort_key(entry[0]))
+
+        page_confirmed = confirmed[normalized_offset : normalized_offset + normalized_limit]
+        # Ambiguous results are paged by the same window, so callers can walk past page one.
+        shown_possible = possible[normalized_offset : normalized_offset + normalized_limit]
+
+        items = [
+            {**relation_summary(relation), "match": _match_label(relation)}
+            for relation in page_confirmed
+        ]
+        possible_items: list[dict[str, object]] = []
+        # Ambiguity is read from the persisted resolution, not recomputed from whatever
+        # definitions happen to match at query time.
+        ambiguous_total = sum(
+            1 for relation, _ in possible if relation.resolution is not ResolutionMethod.UNRESOLVED
         )
-        page_relations = relations[normalized_offset : normalized_offset + normalized_limit]
+        unresolved_total = len(possible) - ambiguous_total
+        for relation, candidates in shown_possible:
+            summary = relation_summary(relation)
+            if relation.resolution is ResolutionMethod.UNRESOLVED:
+                summary["match"] = "unresolved"
+            else:
+                summary["match"] = "ambiguous"
+                summary["candidate_symbol_ids"] = candidates[:MAX_CANDIDATE_IDS]
+                summary["candidate_count"] = len(candidates)
+                summary["candidates_truncated"] = len(candidates) > MAX_CANDIDATE_IDS
+            possible_items.append(summary)
+
+        exact_total = sum(
+            1 for relation in confirmed if relation.resolution is ResolutionMethod.EXACT
+        )
+        scoped_total = sum(
+            1 for relation in confirmed if relation.resolution is ResolutionMethod.SCOPED
+        )
+        counts = {
+            "exact": exact_total,
+            "scoped": scoped_total,
+            "heuristic": len(confirmed) - exact_total - scoped_total,
+            "ambiguous": ambiguous_total,
+            "unresolved": unresolved_total,
+            # Compatibility alias for the original counter; only proven bindings count.
+            "resolved": exact_total,
+        }
+        # `files` answers "which files does this symbol appear in", so it spans the whole
+        # result; the page-scoped view lives under page.files.
+        matched_paths = {relation.from_file_path for relation in confirmed}
+        matched_paths.update(relation.from_file_path for relation, _ in possible)
+        page_paths = {relation.from_file_path for relation in page_confirmed}
+        page_paths.update(relation.from_file_path for relation, _ in shown_possible)
+        zero_result = not confirmed and not possible
+        if zero_result:
+            languages = (
+                zero_result_languages
+                if zero_result_languages is not None
+                else self._workspace_languages()
+            )
+        else:
+            languages = self._languages_for_paths(
+                {relation.from_file_path for relation in confirmed}
+                | {relation.from_file_path for relation, _ in possible}
+            )
+        page = page_metadata(
+            len(confirmed),
+            normalized_limit,
+            normalized_offset,
+            len(page_confirmed),
+        )
+        page["files"] = sorted(page_paths)
         return {
-            "items": [relation_summary(relation) for relation in page_relations],
-            "files": sorted({relation.from_file_path for relation in page_relations}),
-            "page": page_metadata(
-                len(relations),
+            "items": items,
+            "possible_items": possible_items,
+            # Retained for compatibility; identical to possible_page["total"].
+            "possible_total": len(possible),
+            "files": sorted(matched_paths),
+            "coverage": self._reference_coverage(languages, counts, zero_result=zero_result),
+            "page": page,
+            "possible_page": page_metadata(
+                len(possible),
                 normalized_limit,
                 normalized_offset,
-                len(page_relations),
+                len(shown_possible),
             ),
         }
 

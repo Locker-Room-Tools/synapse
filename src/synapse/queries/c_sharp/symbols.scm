@@ -1,6 +1,9 @@
 (namespace_declaration
   name: (_) @name) @definition.namespace
 
+(file_scoped_namespace_declaration
+  name: (_) @name) @definition.namespace
+
 (class_declaration
   name: (identifier) @name) @definition.class
 
@@ -21,6 +24,20 @@
 
 (method_declaration
   name: (identifier) @name) @definition.method
+
+(local_function_statement
+  name: (identifier) @name) @definition.function
+
+(delegate_declaration
+  name: (identifier) @name) @definition.type
+
+(event_field_declaration
+  (variable_declaration
+    (variable_declarator
+      name: (identifier) @name))) @definition.field
+
+(enum_member_declaration
+  name: (identifier) @name) @definition.constant
 
 (property_declaration
   name: (identifier) @name) @definition.property

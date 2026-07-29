@@ -27,6 +27,9 @@ Use Synapse as the first source of code structure. Keep calls bounded and reuse 
 3. Reuse the returned `symbol_id`:
    - Usages: `synapse_find_references(symbol_id=...)`.
    - Local structure: `synapse_get_symbol_context` or `synapse_compact_context`.
+   - Implementation source: `synapse_get_symbol_context(symbol_id=..., include_body=True)`
+     instead of reading the file; when `body_truncated` is true, narrow to a child
+     symbol or raise `max_body_lines`.
    - Relations: `synapse_get_dependencies`, `synapse_get_file_dependencies` (file
      imports), or `synapse_related_symbols`.
 4. Follow pagination metadata instead of requesting unbounded results.
