@@ -10,8 +10,8 @@ from synapse.cli.adapters import (
     ADAPTERS,
     BEGIN_MARKER,
     END_MARKER,
-    adapter_choices,
     install_instruction_snippet,
+    project_snippet,
     remove_instruction_snippet,
     render_mcp_config,
 )
@@ -78,7 +78,6 @@ def test_render_mcp_config_uses_opencode_local_shape(tmp_path: Path) -> None:
         )
     )
 
-    assert set(adapter_choices()) == {"claude-code", "codex", "opencode"}
     server = config["mcp"]["synapse"]
     assert config["$schema"] == "https://opencode.ai/config.json"
     assert server["type"] == "local"
@@ -115,10 +114,10 @@ def test_install_instruction_snippet_creates_and_is_idempotent(tmp_path: Path) -
 
 
 def test_agent_snippets_differ_only_in_doctor_line() -> None:
-    """All adapter snippets share one body; only the doctor command names the agent."""
+    """One shared template renders every adapter snippet; only the doctor line differs."""
     bodies = set()
     for adapter in ADAPTERS.values():
-        content = adapter.snippet_path.read_text(encoding="utf-8")
+        content = project_snippet(adapter.id)
         assert f"synapse doctor --path . --agent {adapter.id}" in content
         bodies.add("\n".join(line for line in content.splitlines() if "synapse doctor" not in line))
     assert len(bodies) == 1

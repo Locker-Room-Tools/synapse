@@ -20,17 +20,6 @@ from synapse.cli.adapters import (
 from synapse.cli.installer import install_mcp_server
 
 
-@pytest.fixture
-def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Route every supported agent home to the temporary directory."""
-    home = tmp_path / "home"
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.delenv("CODEX_HOME", raising=False)
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    return home
-
-
 @pytest.mark.parametrize(
     ("agent", "instruction", "skill"),
     [
@@ -99,8 +88,9 @@ def test_global_instruction_and_skill_are_idempotent(
     assert instruction_text.count(BEGIN_MARKER) == 1
     assert instruction_text.count(END_MARKER) == 1
     assert "synapse_ensure_workspace" in instruction_text
-    assert "before grep" in instruction_text
-    assert "exact-text search" in instruction_text
+    assert "synapse_project_map" in instruction_text
+    assert "include_body=True" in instruction_text
+    assert "exact text" in instruction_text
     assert "<!-- SYNAPSE MANAGED SKILL -->" in skill_text
     assert "synapse_get_definition" in skill_text
     assert "synapse_find_references" in skill_text
