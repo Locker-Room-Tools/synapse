@@ -70,17 +70,50 @@ package's internal decomposition, not separate import targets.
   `synapse_watch_status`, `synapse_get_config`, `synapse_add_ignored_directories`,
   `synapse_remove_ignored_directories`).
   Relations populated during indexing are `CONTAINS` (resolved member edges), `IMPORTS`
-  (unresolved import target name), and `REFERENCES` (resolved or confidence-marked usage
-  edges from reference queries).
+  (unresolved import target name), and `REFERENCES` (usage edges from reference queries).
+  Reference resolution is syntactic and structural, never semantic.
+  `core.indexing.resolution` binds a reference as `exact` only when the source syntax plus
+  the indexed declarations prove one target — a fully-qualified name, an unambiguous dotted
+  suffix, or a member reached through a receiver whose type is declared in the source.
+  Narrowing by namespace, import, or enclosing type is weaker and recorded as `scoped`; a
+  workspace-unique name match remains `unique-name` (a heuristic, never proof);
+  multi-candidate names are `ambiguous` and unknown names `unresolved`. Each reference edge
+  carries its source line, byte column, usage kind, and the dotted name written at the
+  site. The resolver itself is language-agnostic: every syntax-specific fact it consults
+  arrives via `LanguageSpec.reference_syntax`, so a language without that metadata falls
+  back to unique-name resolution. `synapse_find_references` keeps confirmed and ambiguous
+  matches in separate collections, pages both with the same window, and reports
+  per-language extraction coverage from the language registry.
+  Indexing stamps a reference-extraction fingerprint (packaged `.scm` queries +
+  extractor version + schema version) into the index; `ensure_workspace` and plain
+  `synapse index` detect a mismatch with a read-only probe and force an atomic full
+  rebuild, so upgraded extraction semantics never silently reuse stale relations.
+- **`core.provenance`**: reports which Synapse build is serving a call — version, the
+  directory the package was imported from, schema/extractor versions, the reference
+  fingerprint, and PEP 610 editability. Surfaced additively on `ensure_workspace`,
+  `workspace_stats`, and `synapse status`, so a stale globally-installed tool is
+  distinguishable from a live checkout. Installation identity only; no environment data.
 - **`cli`**: provides global `install`, workspace `init`/`status`, project-scoped `setup`,
   `serve`, grammar, watch, doctor, and uninstall commands. Global install is the canonical
   onboarding path; project setup remains an advanced compatibility path.
 - **`cli.config`**: `synapse config ignored-dirs list|add|remove`, scoped with
   `--scope project|global`; delegates every write to `core.config`.
-- **`adapters`** (`src/synapse/adapters/`, packaged data): provides agent-specific metadata and instruction snippets.
-- **`cli.installer`**: owns reversible MCP client config writes. JSON configs are merged
-  structurally, and Codex TOML config is managed with a marker block so uninstall removes
-  only Synapse-owned content.
+- **`adapters`** (`src/synapse/adapters/`, packaged data): the shared instruction snippet
+  templates. One project template renders per agent from an `{agent_id}` placeholder.
+- **`cli.adapters`**: the declarative agent seam. `model.py` defines the capability model,
+  `registry.py` holds one data-only entry per agent, and `paths.py`, `instructions.py`,
+  `skills.py`, `render.py` are agent-agnostic. Adding an agent is a registry entry plus tests —
+  never a branch in generic code. Every capability (project/global MCP, project/global
+  instructions, project/global skills) is independently optional, and home overrides are
+  declared **per path**, because agents like Cline relocate some paths but not others.
+- **`cli.config_codecs`**: format concerns in one place. JSON and YAML share a single merge
+  algorithm — `dict`/`CommentedMap` are both mappings and `list`/`CommentedSeq` are both
+  sequences, so shape-aware entry access is parameterised by container shape and key path
+  rather than by agent. YAML is round-tripped through ruamel so user comments, key order, and
+  anchor/alias pairs survive. TOML keeps a marker-block strategy because the standard library
+  has no structure-preserving TOML writer.
+- **`cli.installer`**: owns reversible MCP client config writes, delegating format handling to
+  `cli.config_codecs`, so uninstall removes only Synapse-owned content.
 - **`core.watch.daemon`**: owns detached process start, health verification, and bounded
   lifecycle waits.
 - **`core.lifecycle`**: owns workspace state, lazy grammar/index initialization, query
@@ -105,17 +138,23 @@ The project config is meant to be committed, so the whole team indexes the same 
 
 ## Agent adoption layers
 
-Synapse uses four global layers to make agents reach for structural context first:
+Synapse uses five global layers to make agents reach for structural context first:
 
 1. A marker-managed global instruction requires `synapse_ensure_workspace` before code
    navigation.
 2. MCP server instructions advertise the same bootstrap and Synapse-first flow.
 3. Entry-tool docstrings describe when to prefer structural tools over text search.
 4. The managed `synapse-code-context` skill supplies the detailed multi-tool workflow.
+5. For Claude Code, a suggest-only `PreToolUse` hook (`synapse hook claude-pre-bash`)
+   injects a Synapse reminder when shell exploration commands run inside an indexed
+   workspace. It never blocks or auto-approves the command and returns only
+   `additionalContext`.
 
 The instruction is the mandatory trigger and does not depend on skill activation. The skill
 is supplementary because implicit skill matching alone is not a reliable initialization
-contract. Project setup can still install repository instructions for shared integrations.
+contract. The hook exists because advisory instructions do not reliably shape the first
+tool call of a session. Project setup can still install repository instructions for shared
+integrations.
 
 ## Runtime lifecycle
 

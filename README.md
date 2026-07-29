@@ -27,8 +27,9 @@
    `synapse install codex`
 4. Restart the agent once.
 
-Replace `codex` with `claude-code` or `opencode`. No repository files are created. On the first
-code-navigation request, the global instruction calls `synapse_ensure_workspace`, which
+Replace `codex` with `claude-code`, `cline`, `continue`, `copilot`, `cursor`, `gemini`,
+`hermes`, `kiro`, `opencode`, `qwen`, or `windsurf`. No repository files are created. On the
+first code-navigation request, the global instruction calls `synapse_ensure_workspace`, which
 initializes the local index and daemon automatically.
 
 See [Installation and lifecycle](docs/installation.md) for upgrades, custom scopes,
@@ -88,7 +89,8 @@ The shipped backend is currently polling-only. Its interval defaults to the user
 
 ## Agent setup helpers
 
-- `synapse install <claude-code|codex|opencode> [--dry-run] [--offline] [--no-skill]`
+- `synapse install <agent> [--dry-run] [--offline] [--no-skill]` — see the
+  [support matrix](docs/installation.md#supported-agents) for every supported agent id
 - `synapse init --path <path> [--dry-run] [--offline]`
 - `synapse status --path <path> [--json]`
 - `synapse uninstall <client> --global`
