@@ -48,7 +48,17 @@ Primary symbol lookup.
 Compact workspace structure and high-value symbols.
 
 - Parameters: `limit=50`, `offset=0`, `top_symbols_limit=20`, `workspace_path="."`
-- Returns: paged project/file structure plus top symbols
+- Returns:
+  - `tree` and `page` — one page of indexed files; `page.files` lists that page's
+    paths. `limit`/`offset` page files only
+  - `top_symbols` (+ `top_symbols_total`, `top_symbols_truncated`) — type and
+    callable declarations only; namespaces and imports never fill slots. Ranked by
+    kind relevance with a per-kind cap, so a class-heavy repository still surfaces
+    records, enums, and methods rather than only classes
+  - `namespaces` — `items` deduplicated and sorted, plus `total` (distinct names,
+    independent of the item limit) and `truncated`
+- `top_symbols` and `namespaces` are workspace-wide aggregates and repeat unchanged
+  on every file page
 
 ### `synapse_workspace_stats`
 
@@ -73,15 +83,18 @@ Returns a declaration by `symbol_id` or exact `name`.
 Structural outline to call before opening a whole file.
 
 - Parameters: `file_path`, `max_symbols=200`, `workspace_path="."`
-- Returns: file metadata and nested symbols, or `null` when the file is not indexed
+- Returns: file metadata and nested symbols (each with kind, name, signature, and
+  line range), or `null` when the file is not indexed
 
 ### `synapse_get_symbol_context`
 
 Structural context around one symbol.
 
 - Parameters: `symbol_id`, `include_body=false`, `children_limit=50`,
-  `children_offset=0`, `workspace_path="."`
+  `children_offset=0`, `max_body_lines=200`, `workspace_path="."`
 - Returns: the symbol, parent/children context, and optional body, or `null`
+- With `include_body=true` the body is the symbol's source, capped at
+  `max_body_lines`; `body_truncated` reports when the cap cut the text
 
 ### `synapse_compact_context`
 
@@ -94,12 +107,32 @@ Minimum useful context for understanding one symbol.
 
 ### `synapse_find_references`
 
-Finds usages across the workspace.
+Finds usages across the workspace. Resolution is syntactic and name-based; results
+distinguish confirmed matches from same-name possibilities instead of merging them.
 
 - Parameters: optional `symbol_id`, optional `name`, `limit=50`, `offset=0`,
   `workspace_path="."`
-- Returns: reference `items`, affected `files`, and `page` metadata
+- Returns:
+  - `items` — relations bound to the target by a unique-name heuristic
+    (`match: "heuristic"`), each with `line` and `byte_column`
+  - `possible_items` (+ `possible_total`) — same-name relations whose target is
+    ambiguous or unresolved; ambiguous entries carry `candidate_symbol_ids`
+    (capped), `candidate_count`, and `candidates_truncated`, and must never be
+    read as confirmed usages
+  - `coverage` — `resolution_model`, `exhaustive: false`, per-language
+    `extraction` (completeness, usage kinds, limitation ids), match-kind
+    `counts`, and `zero_result: "no-indexed-matches"` on empty answers
+  - `files` — every affected path across the whole result, not just this page
+  - `page` (confirmed) and `possible_page` (ambiguous/unresolved) — both honour
+    the same `limit`/`offset`, so ambiguous results past the first page are
+    reachable; `page.files` is the page-scoped path list
+- Both collections are ordered by `from_file_path`, then line, then byte column,
+  then relation id, so paging is stable and duplicate-free
+- `coverage.counts`, `possible_total`, and `candidate_count` always describe the
+  full result; only serialized lists are capped
 - Prefer `symbol_id`; use `name` only when a stable identifier is unavailable
+- An empty result means no references are indexed under partial coverage — it is
+  not proof the symbol is unused
 
 ### `synapse_get_dependencies`
 

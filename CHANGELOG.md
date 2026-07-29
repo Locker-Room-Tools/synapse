@@ -6,6 +6,140 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Nine new agent adapters for `synapse install` / `synapse uninstall` / `synapse setup`,
+  each verified against official documentation on 2026-07-29: `hermes`, `gemini`, `copilot`,
+  `cursor`, `windsurf`, `cline`, `kiro`, `qwen`, and `continue`. Capabilities are declared
+  per agent and independently optional, so unsupported scopes fail with a capability-specific
+  message and unsupported instructions or skills are skipped cleanly instead of guessed.
+  See the support matrix in `docs/installation.md`, including the agents that were
+  investigated and deliberately deferred with their exact blockers.
+- YAML MCP configuration support, covering both container shapes in use: Hermes' mapping
+  under `mcp_servers` and Continue's list under `mcpServers` matched on an inner `name`.
+  Configs are round-tripped with `ruamel.yaml`, so user comments, key order, and
+  anchor/alias pairs survive install and uninstall.
+- Project-scoped skill installation for agents that document a project skill directory.
+  `synapse setup` installs it alongside the project instruction file; `--no-skill` skips it
+  and `synapse uninstall --keep-skill` retains it.
+- Suggest-only Claude Code `PreToolUse` hook (`synapse hook claude-pre-bash`): when a
+  shell exploration command runs in an indexed workspace, it injects a reminder to use
+  Synapse tools via `additionalContext` without blocking or auto-approving the command.
+  Installed by `synapse install claude-code` (skip with `--no-hook`; removed by
+  `synapse uninstall claude-code --global`).
+- C# reference queries now capture member accesses, generic type names and arguments,
+  variable/parameter/return/property/field types (including qualified, nullable, and
+  array forms), object creation, `typeof`, casts, `as`/`is` patterns, `catch` types,
+  attributes, and base lists — `synapse_find_references` no longer returns false zeros
+  for symbols used outside call positions.
+- Honest reference resolution: relations carry a `resolution` marker (`unique-name`,
+  `ambiguous`, `unresolved`) plus the reference site's `line`/`byte_column`;
+  `synapse_find_references` returns confirmed `items` (`match: "heuristic"`) separately
+  from same-name `possible_items` (ambiguous entries expose `candidate_symbol_ids`,
+  `candidate_count`, `candidates_truncated`) and a `coverage` block (resolution model,
+  per-language extraction completeness and limitation ids, match-kind counts,
+  `zero_result` marker). A unique global name match is reported as a heuristic, not as
+  semantically exact.
+- Reference-extraction fingerprint stored in the index (`index_meta`): changing packaged
+  `.scm` queries or extractor semantics now deterministically forces a full rebuild on
+  the next `ensure_workspace`/`synapse index` instead of silently reusing stale
+  relations.
+- Per-language reference coverage metadata on `LanguageSpec`
+  (`reference_extraction`, `reference_usage_kinds`, `reference_limitations`,
+  `reference_syntax`).
+- Conservative structural reference resolution. A reference is now bound as
+  `resolution: "exact"` (`match: "exact"`, high confidence) only when the syntax plus the
+  indexed declarations prove a single target: a fully-qualified name, an unambiguous
+  dotted suffix, or a member reached through a receiver whose type is declared in the
+  source — so `dbContext.Servers` resolves while `location.Servers` on an implicitly
+  typed lambda parameter stays ambiguous. Namespace, import, and enclosing-type narrowing
+  report the new, weaker `resolution: "scoped"` tier rather than claiming proof. The
+  resolver is language-agnostic; C# grammar facts come from `LanguageSpec.reference_syntax`.
+  No compiler, Roslyn, LSP, or network dependency is involved.
+- Reference relations carry `usage_kind` (the advertised syntactic position of the usage)
+  and `to_qualified_name` (the dotted name written at the site), both surfaced on
+  `synapse_find_references` items.
+- C# reference extraction now covers `nameof(...)` arguments, tuple element and tuple
+  parameter types, `foreach` element types, `default(T)`, and usages in top-level
+  statements (anchored to the file when no enclosing declaration exists). `nameof` itself
+  is no longer reported as an invocation.
+- Runtime provenance (`runtime`) on `synapse_ensure_workspace`, `synapse_workspace_stats`,
+  and `synapse status`: package version, the directory the code was imported from, schema
+  and extractor versions, the reference fingerprint, and whether the install is editable
+  (PEP 610). This makes a stale globally-installed tool distinguishable from the checkout
+  under development. No environment or secret data is exposed.
+- C# symbol queries for file-scoped namespaces, local functions (covers
+  top-level-statements `Program.cs`), delegates, event fields, and enum members.
+- `signature` on every `synapse_get_file_outline` item.
+- `max_body_lines` parameter (default 200) and a `body_truncated` flag on
+  `synapse_get_symbol_context`, so implementation source is readable without
+  unbounded dumps.
+- Build-output directories in the default ignore list: `obj`, `bin`, `target`,
+  `out`, `coverage`, `.vs`, `.gradle`, `.next`, `.nuxt`, `.tox`, `.pytest_cache`,
+  `DerivedData`, `Pods`.
+
+### Fixed
+- `synapse install opencode` no longer adds a `$schema` key to an existing `opencode.json`
+  that lacked one. Synapse seeded a key it never removed, so install followed by uninstall
+  did not restore the original file.
+- `synapse_project_map` excludes namespaces and imports from `top_symbols` entirely
+  (delegates surface via the `type` kind) and aggregates deduplicated namespace names
+  under `namespaces` (`items`, `total`, `truncated`), so per-file C# namespaces no
+  longer crowd out or pad the declaration list.
+- `synapse_find_references(symbol_id=...)` no longer presents every unresolved
+  same-name reference as a confirmed usage of that symbol.
+- `synapse_find_references` pages `possible_items` with the same `limit`/`offset` as
+  confirmed `items` and reports a matching `possible_page` block, so ambiguous results
+  beyond the first page are reachable instead of being re-served from the start on every
+  request. Both collections are ordered by file path, line, byte column, then relation
+  id.
+- `ensure_workspace` stops a live watch daemon before a forced rebuild instead of
+  crashing on the watch lock.
+- A schema upgrade migrates the `relations` table in place; legacy rows read with
+  empty locations until the fingerprint-triggered rebuild replaces them.
+- C# file-scoped namespaces (`namespace X;`) now scope the rest of the file, so types
+  declared under them carry fully-qualified names (`Overlock.Api.Servers.Server`) instead
+  of bare ones. Previously the declaration ended at its semicolon and nothing nested
+  under it.
+- `synapse_find_references` reads the persisted `resolution` to classify ambiguous versus
+  unresolved results, instead of recomputing it from whatever definitions happen to match
+  at query time.
+- `synapse_project_map` no longer returns a page of nothing but classes: `top_symbols`
+  uses a deterministic relevance ranking with a per-kind cap, and reports
+  `top_symbols_total` / `top_symbols_truncated`.
+
+### Changed
+- Agent adapters are now declarative. `cli/adapters.py` became the `cli.adapters` package
+  (capability model, data-only registry, path resolution, instructions, skills, rendering)
+  and format handling moved into `cli.config_codecs`, where JSON and YAML share one merge
+  algorithm. Twelve agent-id conditionals were removed from generic install, uninstall,
+  render, and path-resolution code. Claude Code, Codex, and OpenCode behaviour, including
+  their serialized MCP config, is unchanged.
+- Home-directory overrides are resolved per path rather than per agent. This is required by
+  Cline, where `CLINE_DATA_DIR` replaces `~/.cline/data/` and therefore relocates the global
+  rules and skill but not `~/.cline/mcp.json`. `CODEX_HOME` and `XDG_CONFIG_HOME` keep their
+  existing behaviour.
+- The three near-identical per-agent instruction snippets were replaced by one shared
+  template rendered per agent.
+- `synapse_find_references`'s `files` now lists every path in the whole result rather
+  than only the current page; the page-scoped list moved to `page.files`.
+- `synapse_find_references` `coverage.counts` gained `exact` and `scoped` keys and
+  reports `heuristic` as unique-name matches only. `resolved` is retained as an alias for
+  `exact`. `coverage.resolution_model` is now `"syntactic-structural"`.
+- The advertised C# `reference_usage_kinds` gained `nameof`, and `typeof` was renamed to
+  `type-literal` now that it also covers `default(T)`. The `reference_limitations` ids
+  changed: the extraction gaps (`top-level-statements`, `nameof-arguments`,
+  `nested-type-wrappers`, `lambda-and-tuple-types`) are closed and replaced by the
+  remaining semantic ones (`static-receiver-types`, `extension-methods`,
+  `inherited-members`, `partial-classes`).
+- `synapse_project_map` nests the current page's file list under `page.files`;
+  `top_symbols` and `namespaces` remain workspace-wide aggregates.
+- `SCHEMA_VERSION` 3 → 4 and the reference extractor version 1 → 2. Existing workspaces
+  perform one fingerprint-forced rebuild on the next `ensure_workspace`.
+- Rewrote the managed agent instructions (global snippet, per-agent snippets, MCP
+  server instructions, skill) around explicit shell-command-to-tool substitutions
+  and the `include_body=True` read path, so agents stop falling back to
+  `find`/`grep`/`cat` for indexed codebases.
+
 ## [0.4.0] - 2026-07-28
 
 ### Security
