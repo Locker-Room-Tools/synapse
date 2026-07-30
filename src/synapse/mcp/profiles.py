@@ -23,6 +23,7 @@ class ToolSpec:
 
     func: Callable[..., object]
     tier: ToolProfile
+    structured_output: bool | None = None
 
 
 _SPECS: list[ToolSpec] = []
@@ -30,11 +31,19 @@ _SPECS: list[ToolSpec] = []
 _ToolFunc = TypeVar("_ToolFunc", bound=Callable[..., object])
 
 
-def tool(tier: ToolProfile = ToolProfile.FULL) -> Callable[[_ToolFunc], _ToolFunc]:
-    """Record a tool for profile-based registration; the function is returned unchanged."""
+def tool(
+    tier: ToolProfile = ToolProfile.FULL,
+    *,
+    structured_output: bool | None = None,
+) -> Callable[[_ToolFunc], _ToolFunc]:
+    """Record a tool for profile-based registration; the function is returned unchanged.
+
+    structured_output=False keeps a result out of structuredContent so the payload is
+    serialized exactly once on the wire (required for budget-bound string results).
+    """
 
     def record(func: _ToolFunc) -> _ToolFunc:
-        _SPECS.append(ToolSpec(func=func, tier=tier))
+        _SPECS.append(ToolSpec(func=func, tier=tier, structured_output=structured_output))
         return func
 
     return record

@@ -132,7 +132,7 @@ def synapse_ensure_workspace(workspace_path: str = ".") -> dict[str, object]:
     return ensure_workspace(_workspace_root(workspace_path)).to_payload()
 
 
-@tool(ToolProfile.DEFAULT)
+@tool(ToolProfile.DEFAULT, structured_output=False)
 def synapse_query_context(
     question: str,
     symbol_ids: list[str] | None = None,

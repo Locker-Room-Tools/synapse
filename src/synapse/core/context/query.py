@@ -119,25 +119,14 @@ def _parent_id(edge: TraversedEdge) -> str | None:
 
 
 def _build_flows(outcome: TraversalOutcome) -> list[list[str]]:
-    """Project root-to-leaf chains over the BFS discovery tree, best evidence first."""
+    """Project root-to-leaf chains over the BFS discovery tree, best evidence first.
+
+    Chains routed through test code rank below production chains of the same depth —
+    a ranking choice only; stored facts are unchanged.
+    """
     edges_by_id = {edge.relation.id: edge for edge in outcome.edges}
-    candidates = [node for node in outcome.nodes.values() if node.parent_edge_id is not None]
 
-    def leaf_rank(node: TraversedNode) -> tuple[int, int, int, str]:
-        edge = edges_by_id[node.parent_edge_id or ""]
-        relation = edge.relation
-        return (
-            -node.depth,
-            resolution_rank(relation.resolution),
-            confidence_rank(relation.confidence),
-            node.symbol.id,
-        )
-
-    flows: list[list[str]] = []
-    covered: set[str] = set()
-    for node in sorted(candidates, key=leaf_rank):
-        if node.symbol.id in covered:
-            continue
+    def chain_for(node: TraversedNode) -> list[str]:
         chain: list[str] = []
         current: TraversedNode | None = node
         while current is not None:
@@ -148,6 +137,31 @@ def _build_flows(outcome: TraversalOutcome) -> list[list[str]]:
             parent = _parent_id(parent_edge) if parent_edge is not None else None
             current = outcome.nodes.get(parent) if parent is not None else None
         chain.reverse()
+        return chain
+
+    ranked_chains: list[tuple[tuple[int, int, int, int, str], list[str]]] = []
+    for node in outcome.nodes.values():
+        if node.parent_edge_id is None:
+            continue
+        relation = edges_by_id[node.parent_edge_id].relation
+        chain = chain_for(node)
+        test_penalty = sum(
+            1 for node_id in chain if is_test_path(outcome.nodes[node_id].symbol.file_path)
+        )
+        rank = (
+            test_penalty,
+            -node.depth,
+            resolution_rank(relation.resolution),
+            confidence_rank(relation.confidence),
+            node.symbol.id,
+        )
+        ranked_chains.append((rank, chain))
+
+    flows: list[list[str]] = []
+    covered: set[str] = set()
+    for _, chain in sorted(ranked_chains, key=lambda entry: entry[0]):
+        if chain[-1] in covered:
+            continue
         flows.append(chain)
         covered.update(chain)
         if len(flows) >= MAX_FLOWS:

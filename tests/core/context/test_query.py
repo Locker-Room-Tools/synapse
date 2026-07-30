@@ -270,3 +270,32 @@ def test_stale_reference_fingerprint_is_reported(
     )
     payload = json.loads(result)
     assert payload["coverage"]["index"]["stale"] is True
+
+
+def test_flows_prefer_production_chains_over_test_chains(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _add_file(
+        index,
+        "src/hub.py",
+        [_symbol("sym-hub", "hub", "src/hub.py")],
+        [],
+    )
+    _add_file(
+        index,
+        "tests/test_hub.py",
+        [_symbol("sym-test", "test_hub", "tests/test_hub.py")],
+        [_reference("ref-test", "sym-test", "sym-hub", file_path="tests/test_hub.py")],
+    )
+    _add_file(
+        index,
+        "src/caller.py",
+        [_symbol("sym-caller", "caller", "src/caller.py")],
+        [_reference("ref-prod", "sym-caller", "sym-hub", file_path="src/caller.py")],
+    )
+    result = query_context(
+        index, ContextQuery(question="who uses `hub`?"), workspace_root=workspace_root
+    )
+    payload = json.loads(result)
+    assert payload["flows"][0] == ["sym-hub", "sym-caller"]

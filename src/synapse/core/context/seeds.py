@@ -5,7 +5,7 @@ from enum import StrEnum
 
 from synapse.core.context.keywords import QueryKeywords
 from synapse.core.index import TOP_SYMBOL_KINDS, ReadProjections
-from synapse.core.models import Symbol
+from synapse.core.models import Symbol, SymbolKind
 
 MAX_SEEDS = 5
 MAX_ALTERNATES = 10
@@ -88,10 +88,26 @@ def seed_rank_key(seed: Seed) -> tuple[int, int, int, int, str, int, str]:
     )
 
 
-def _merge_candidate(candidates: dict[str, Seed], seed: Seed) -> None:
+@dataclass(slots=True)
+class _Candidate:
+    seed: Seed
+    matched_tokens: set[str]
+
+
+def _candidate_rank_key(candidate: _Candidate) -> tuple[int, int, int, int, int, str, int, str]:
+    """Like seed_rank_key, but rewards symbols matched by more distinct query tokens."""
+    base = seed_rank_key(candidate.seed)
+    return (base[0], base[1], -len(candidate.matched_tokens), *base[2:])
+
+
+def _merge_candidate(candidates: dict[str, _Candidate], seed: Seed) -> None:
     existing = candidates.get(seed.symbol.id)
-    if existing is None or seed_rank_key(seed) < seed_rank_key(existing):
-        candidates[seed.symbol.id] = seed
+    if existing is None:
+        candidates[seed.symbol.id] = _Candidate(seed=seed, matched_tokens={seed.matched_token})
+        return
+    existing.matched_tokens.add(seed.matched_token)
+    if seed_rank_key(seed) < seed_rank_key(existing.seed):
+        existing.seed = seed
 
 
 def _discover_explicit(
@@ -121,19 +137,22 @@ def _collect_token_candidates(
     reads: ReadProjections,
     tokens: tuple[str, ...],
     match: SeedMatch,
-    candidates: dict[str, Seed],
+    candidates: dict[str, _Candidate],
 ) -> None:
     for token in tokens:
         if match is not SeedMatch.TERM:
             for symbol in reads.get_definition(token):
+                if symbol.kind is SymbolKind.IMPORT:
+                    continue
                 _merge_candidate(
                     candidates,
                     Seed(symbol=symbol, match=SeedMatch.EXACT_NAME, matched_token=token),
                 )
         prefix_matches, _ = reads.search_symbols_page(token, limit=PER_TOKEN_CANDIDATE_LIMIT)
         for symbol in prefix_matches:
-            if match is not SeedMatch.TERM and not _name_matches(symbol, token):
-                # Search also hits file paths; identifier tiers keep name evidence only.
+            # Search also hits file paths; seeds keep name evidence only, and import
+            # symbols are re-declarations of a name, not the entity the question means.
+            if symbol.kind is SymbolKind.IMPORT or not _name_matches(symbol, token):
                 continue
             exact = symbol.name == token or symbol.qualified_name == token
             seed_match = SeedMatch.EXACT_NAME if exact and match is not SeedMatch.TERM else match
@@ -164,12 +183,12 @@ def discover_seeds(
     else:
         unknown = ()
 
-    candidates: dict[str, Seed] = {}
+    candidates: dict[str, _Candidate] = {}
     _collect_token_candidates(reads, keywords.identifiers, SeedMatch.PREFIX, candidates)
     if not candidates:
         _collect_token_candidates(reads, keywords.terms, SeedMatch.TERM, candidates)
 
-    ranked = sorted(candidates.values(), key=seed_rank_key)
+    ranked = [candidate.seed for candidate in sorted(candidates.values(), key=_candidate_rank_key)]
     return SeedDiscovery(
         seeds=tuple(ranked[:MAX_SEEDS]),
         alternates=tuple(ranked[MAX_SEEDS : MAX_SEEDS + MAX_ALTERNATES]),

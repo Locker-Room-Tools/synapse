@@ -20,7 +20,7 @@ def register_tools(server: FastMCP, profile: ToolProfile) -> None:
     names = _registered.setdefault(id(server), set())
     for spec in specs_for_profile(profile):
         if spec.func.__name__ not in names:
-            server.tool()(spec.func)
+            server.tool(structured_output=spec.structured_output)(spec.func)
             names.add(spec.func.__name__)
 
 

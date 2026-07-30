@@ -159,3 +159,19 @@ def test_discovery_is_deterministic(tmp_path: Path) -> None:
         first = discover_seeds(reads, keywords)
         second = discover_seeds(reads, keywords)
     assert first == second
+
+
+def test_symbols_matching_more_query_terms_rank_higher(tmp_path: Path) -> None:
+    index = _build_index(
+        tmp_path,
+        {
+            "src/watch.py": [
+                _symbol("sym-one-term", "watcher", "src/watch.py"),
+                _symbol("sym-two-terms", "watch_daemon_loop", "src/watch.py", start_line=10),
+            ]
+        },
+    )
+    keywords = QueryKeywords(identifiers=(), terms=("watch", "daemon"))
+    with index.read_session() as reads:
+        discovery = discover_seeds(reads, keywords)
+    assert discovery.seeds[0].symbol.id == "sym-two-terms"
