@@ -674,3 +674,206 @@ def test_impact_query_still_surfaces_relevant_tests_within_the_cap(
     test_nodes = [node for node in payload["nodes"] if node["file"].startswith("tests/")]
     assert 1 <= len(test_nodes) <= 5
     assert payload["coverage"]["projection"]["tests"]["discovered"] == 12
+
+
+def _contains(container_id: str, child_id: str, *, file_path: str, child_name: str) -> Relation:
+    return Relation(
+        id=f"contains:{container_id}:{child_id}",
+        kind=RelationKind.CONTAINS,
+        from_symbol_id=container_id,
+        to_symbol_id=child_id,
+        from_file_path=file_path,
+        to_file_path=file_path,
+        to_name=child_name,
+        source="test",
+        confidence=Confidence.HIGH,
+    )
+
+
+def _build_field_swarm(
+    index: SymbolIndex, field_count: int, *, last_name: str | None = None
+) -> None:
+    """One class whose CONTAINS children are data fields, in one production file."""
+    path = "src/spec.py"
+    fields = [
+        _symbol(
+            f"sym-field-{position}",
+            (
+                last_name
+                if last_name is not None and position == field_count - 1
+                else f"df_{position:02d}"
+            ),
+            path,
+            kind=SymbolKind.FIELD,
+            start_line=10 + position,
+        )
+        for position in range(field_count)
+    ]
+    _add_file(
+        index,
+        path,
+        [_symbol("sym-spec", "SpecHolder", path, kind=SymbolKind.CLASS), *fields],
+        [
+            _contains("sym-spec", field.id, file_path=path, child_name=field.name)
+            for field in fields
+        ],
+    )
+
+
+def test_pure_containment_chain_into_a_field_never_outranks_a_reference_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An exact field-containment descent is structure, not the question's answer."""
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _build_field_swarm(index, 2)
+    _add_file(
+        index,
+        "src/registry.py",
+        [_symbol("sym-register", "register_things", "src/registry.py")],
+        [
+            _reference(
+                "ref-reg-helper",
+                "sym-register",
+                "sym-helper",
+                file_path="src/registry.py",
+                resolution=ResolutionMethod.SCOPED,
+            )
+        ],
+    )
+    _add_file(index, "src/helpers.py", [_symbol("sym-helper", "helper_fn", "src/helpers.py")], [])
+    result = query_context(
+        index,
+        ContextQuery(question="How does register_things registration work in SpecHolder?"),
+        workspace_root=workspace_root,
+    )
+    payload = json.loads(result)
+    assert payload["flows"][0]["ids"] == ["sym-register", "sym-helper"]
+    assert all(not flow["ids"][-1].startswith("sym-field") for flow in payload["flows"])
+
+
+def test_flows_are_omitted_when_no_chain_is_question_relevant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No relevant flow beats an irrelevant one; the omission is explicit coverage."""
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _build_field_swarm(index, 2)
+    result = query_context(
+        index,
+        ContextQuery(question="Explain SpecHolder"),
+        workspace_root=workspace_root,
+    )
+    payload = json.loads(result)
+    assert "flows" not in payload
+    assert payload["coverage"]["projection"]["flows_omitted"] == "no-relevant-flow"
+    assert [seed["id"] for seed in payload["seeds"]] == ["sym-spec"]
+
+
+def test_member_swarms_are_capped_with_explicit_accounting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _build_field_swarm(index, 10)
+    result = query_context(
+        index,
+        ContextQuery(question="Explain SpecHolder"),
+        workspace_root=workspace_root,
+    )
+    payload = json.loads(result)
+    field_nodes = [node for node in payload.get("nodes", []) if node["kind"] == "field"]
+    assert len(field_nodes) == 3
+    projection = payload["coverage"]["projection"]
+    assert projection["nodes_demoted_low_relevance"] == 7
+    edges = projection["edges"]
+    assert (
+        edges["discovered"]
+        == edges["tree_projected"] + edges["extra_projected"] + (edges["omitted"])
+    )
+    # Policy demotion is not budget truncation: the result is still complete.
+    assert payload["truncation"]["complete"] is True
+
+
+def test_question_matched_members_survive_the_member_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _build_field_swarm(index, 10, last_name="special_marker")
+    result = query_context(
+        index,
+        ContextQuery(question="Where does SpecHolder keep special_marker?"),
+        workspace_root=workspace_root,
+    )
+    payload = json.loads(result)
+    projected = {node["name"] for node in payload.get("nodes", [])} | {
+        seed["name"] for seed in payload["seeds"]
+    }
+    assert "special_marker" in projected
+
+
+def test_duplicate_extra_edges_are_deduped_with_accounting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeated call sites of one link are one piece of evidence, not three."""
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _add_file(
+        index,
+        "src/a.py",
+        [_symbol("sym-a", "alpha", "src/a.py")],
+        [
+            _reference("ref-ab-1", "sym-a", "sym-b", file_path="src/a.py"),
+            _reference("ref-ab-2", "sym-a", "sym-b", file_path="src/a.py"),
+            _reference("ref-ab-3", "sym-a", "sym-b", file_path="src/a.py"),
+        ],
+    )
+    _add_file(index, "src/b.py", [_symbol("sym-b", "beta", "src/b.py")], [])
+    result = query_context(
+        index,
+        ContextQuery(question="How does alpha work?"),
+        workspace_root=workspace_root,
+    )
+    payload = json.loads(result)
+    assert "edges" not in payload
+    projection = payload["coverage"]["projection"]
+    assert projection["extra_edges_deduped"] == 2
+    edges = projection["edges"]
+    assert (
+        edges["discovered"]
+        == edges["tree_projected"] + edges["extra_projected"] + (edges["omitted"])
+    )
+
+
+def test_deep_heuristic_leaves_without_question_relevance_are_demoted_upfront(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _add_file(
+        index,
+        "src/a.py",
+        [_symbol("sym-a", "alpha", "src/a.py")],
+        [_reference("ref-ab", "sym-a", "sym-b", file_path="src/a.py")],
+    )
+    _add_file(
+        index,
+        "src/b.py",
+        [_symbol("sym-b", "beta", "src/b.py")],
+        [
+            _reference(
+                "ref-bc",
+                "sym-b",
+                "sym-c",
+                file_path="src/b.py",
+                resolution=ResolutionMethod.UNIQUE_NAME,
+            )
+        ],
+    )
+    _add_file(index, "src/c.py", [_symbol("sym-c", "unrelated_tail", "src/c.py")], [])
+    result = query_context(
+        index,
+        ContextQuery(question="How does alpha work?"),
+        workspace_root=workspace_root,
+    )
+    payload = json.loads(result)
+    node_ids = [node["id"] for node in payload.get("nodes", [])]
+    assert "sym-c" not in node_ids
+    assert payload["coverage"]["projection"]["nodes_demoted_low_relevance"] == 1
+    assert payload["flows"] == [{"ids": ["sym-a", "sym-b"], "trust": "exact"}]
+    assert payload["truncation"]["complete"] is True

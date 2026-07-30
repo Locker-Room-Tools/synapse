@@ -70,7 +70,17 @@ package's internal decomposition, not separate import targets.
   The whole read runs on one consistent SQLite snapshot via `SymbolIndex.read_session()`.
   Traversal trust policy: containment and exact/scoped references are transit edges;
   heuristic (unique-name) references stay leaf evidence and are never expanded, and
-  flows are ranked by aggregate path trust before depth. The advertised token budget
+  flows are ranked by aggregate path trust, then question relevance, then depth.
+  A flow must be substantive — carry at least one reference edge or end at a
+  question-relevant symbol; pure containment descent into unmatched members projects
+  as nodes only, and when no substantive chain exists the flows section is omitted
+  with `coverage.projection.flows_omitted` instead of fronting an irrelevant chain.
+  The token budget is a maximum, not a target: low-relevance evidence (data-member
+  swarms beyond a per-container cap, deep heuristic leaves, extra edges repeating an
+  already-projected link) is demoted upfront as policy with explicit
+  `coverage.projection` accounting (`nodes_demoted_low_relevance`,
+  `extra_edges_deduped`), while seeds, the primary flow, unresolved gaps, and
+  coverage are preserved. The advertised token budget
   is an estimate at 4 chars/token; the hard guarantee is a character cap of
   `token_budget * 4` on the exact serialized result. Ranking may reorder stored facts
   (for example demoting test paths) but never upgrades stored confidence, and

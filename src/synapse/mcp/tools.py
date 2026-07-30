@@ -149,8 +149,11 @@ def synapse_query_context(
     max_depth (direction: in|out|both; only exact/scoped edges are transit —
     heuristic references stay leaf evidence), and returns one JSON bundle: ranked
     seeds, nodes and extra edges with file:line + resolution + confidence, flows
-    ranked by aggregate path trust, and explicit coverage/truncation. token_budget
-    is an estimate at 4 chars/token; the returned string never exceeds
+    ranked by aggregate path trust then question relevance, and explicit
+    coverage/truncation. token_budget is a maximum, not a target: low-relevance
+    evidence is omitted with explicit coverage accounting, and flows are omitted
+    (coverage.projection.flows_omitted) when no chain is question-relevant.
+    token_budget is an estimate at 4 chars/token; the returned string never exceeds
     token_budget*4 characters. Empty or truncated results are never proof of
     absence — check coverage. Follow up with at most a few targeted
     synapse_get_definition / synapse_find_references / synapse_get_symbol_context

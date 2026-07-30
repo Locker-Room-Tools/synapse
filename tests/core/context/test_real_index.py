@@ -46,6 +46,18 @@ _FILES = {
         "    return open_repository()\n"
     ),
     "main.py": ("from app import open_repository\n\ndef main():\n    return open_repository()\n"),
+    "app/registry.py": (
+        "class ToolSpec:\n"
+        "    name = ''\n"
+        "    title = ''\n"
+        "    profile = ''\n"
+        "    hidden = False\n"
+        "    deprecated = False\n\n"
+        "def tool(spec):\n"
+        "    return spec\n\n"
+        "def register_tools(server):\n"
+        "    return tool(ToolSpec())\n"
+    ),
     "tests/test_service.py": (
         "from app.service import handle_request\n\n"
         "def test_handle_request_works():\n"
@@ -125,6 +137,48 @@ def test_identifier_free_question_orients_on_public_production_surfaces(
     production_nodes = [file for file in node_files if not file.startswith("tests/")]
     test_nodes = [file for file in node_files if file.startswith("tests/")]
     assert len(production_nodes) >= len(test_nodes)
+
+
+def test_registration_question_primary_flow_is_relevant_or_absent(
+    real_workspace: tuple[Path, SymbolIndex],
+) -> None:
+    """A field-only containment descent must never front a behavior question."""
+    workspace, index = real_workspace
+    result = query_context(
+        index,
+        ContextQuery(question="How does tool registration work?"),
+        workspace_root=workspace,
+    )
+    payload = json.loads(result)
+    flows = payload.get("flows")
+    if flows is None:
+        assert payload["coverage"]["projection"]["flows_omitted"] == "no-relevant-flow"
+    else:
+        names_by_id = {node["id"]: node["name"] for node in payload.get("nodes", [])}
+        names_by_id.update({seed["id"]: seed["name"] for seed in payload["seeds"]})
+        primary_names = [names_by_id.get(node_id, node_id) for node_id in flows[0]["ids"]]
+        assert any(name in {"register_tools", "tool", "ToolSpec"} for name in primary_names), (
+            primary_names
+        )
+        field_names = {"name", "title", "profile", "hidden", "deprecated"}
+        assert not set(primary_names) <= ({"ToolSpec"} | field_names)
+
+
+def test_trusted_exact_chain_stays_primary_under_relevance_ranking(
+    real_workspace: tuple[Path, SymbolIndex],
+) -> None:
+    workspace, index = real_workspace
+    result = query_context(
+        index,
+        ContextQuery(question="Trace `sync_records` to the repository."),
+        workspace_root=workspace,
+    )
+    payload = json.loads(result)
+    names_by_id = {node["id"]: node["name"] for node in payload.get("nodes", [])}
+    names_by_id.update({seed["id"]: seed["name"] for seed in payload["seeds"]})
+    primary = [names_by_id.get(node_id, node_id) for node_id in payload["flows"][0]["ids"]]
+    assert primary[0] == "sync_records"
+    assert len(primary) >= 2
 
 
 def test_incoming_test_callers_stay_visible_but_bounded(

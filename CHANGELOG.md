@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `synapse_query_context` treats the token budget as a maximum, not a target:
+  flow ranking adds question relevance after aggregate path trust; a flow must
+  carry a reference edge or end at a question-relevant symbol (pure containment
+  descent into unmatched members projects as nodes only, and
+  `coverage.projection.flows_omitted: "no-relevant-flow"` replaces an irrelevant
+  primary flow); data-member swarms are capped per container, deep heuristic
+  leaves and extra edges repeating an already-projected link are demoted upfront —
+  all with explicit `coverage.projection` accounting
+  (`nodes_demoted_low_relevance`, `extra_edges_deduped`).
 - Python receiver resolution is conservative about value-position type proofs:
   a constructor call or static type-name access resolves `exact` only when no
   same-name non-type declaration contests the name and no local binding

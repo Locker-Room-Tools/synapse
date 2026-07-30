@@ -11,7 +11,7 @@ from synapse.core.context.budget import (
     clamp_token_budget,
     enforce_budget,
 )
-from synapse.core.context.keywords import extract_keywords
+from synapse.core.context.keywords import QueryKeywords, extract_keywords
 from synapse.core.context.seeds import (
     Seed,
     SeedDiscovery,
@@ -50,6 +50,12 @@ MAX_IDS_ECHOED = 10
 MAX_EXTRA_EDGES = 30
 MAX_UNRESOLVED_SHOWN = 10
 MAX_TEST_NODES = 5
+MAX_CONTAINED_MEMBERS_PER_CONTAINER = 3
+MIN_RELEVANCE_TOKEN_LENGTH = 3
+
+# Data-shaped members whose containment children rarely answer a question on
+# their own; capped per container unless question-relevant.
+_LOW_VALUE_MEMBER_KINDS = frozenset({"field", "constant", "variable", "property"})
 
 
 def _bounded_text(value: str, cap: int) -> str:
@@ -208,14 +214,41 @@ class Flow:
     trust: str
 
 
-def _build_flows(outcome: TraversalOutcome) -> list[Flow]:
+def _relevant_node_ids(
+    outcome: TraversalOutcome, seed_ids: set[str], keywords: QueryKeywords
+) -> set[str]:
+    """Seeds plus nodes whose own name carries a question token.
+
+    Deliberately narrower than seed matching: the qualified name is excluded, so a
+    matched container does not bless every member it contains as relevant.
+    """
+    tokens = {
+        token.lower()
+        for token in (*keywords.identifiers, *keywords.terms)
+        if len(token) >= MIN_RELEVANCE_TOKEN_LENGTH
+    }
+    relevant = set(seed_ids)
+    if not tokens:
+        return relevant
+    for node_id, node in outcome.nodes.items():
+        name = node.symbol.name.lower()
+        if any(token in name for token in tokens):
+            relevant.add(node_id)
+    return relevant
+
+
+def _build_flows(outcome: TraversalOutcome, *, relevant_ids: set[str]) -> tuple[list[Flow], bool]:
     """Project root-to-leaf chains over the BFS discovery tree, best evidence first.
 
     Ranking uses aggregate path trust before depth: a chain's trust is its weakest
     edge, so one heuristic hop marks the whole flow heuristic and a long weak path
-    never outranks a shorter exact/scoped path. Chains routed through test code rank
-    below production chains at equal trust — ranking choices only; stored facts are
-    unchanged.
+    never outranks a shorter exact/scoped path. Among equally trusted chains,
+    question relevance decides. A chain must be substantive — carry at least one
+    reference edge or end at a question-relevant symbol; pure containment descent
+    into unmatched members is structure, not an answer, and projects as nodes only.
+    Returns the flows and whether chains existed but none was substantive. Chains
+    routed through test code rank below production chains at equal trust — ranking
+    choices only; stored facts are unchanged.
     """
     edges_by_id = {edge.relation.id: edge for edge in outcome.edges}
 
@@ -235,11 +268,19 @@ def _build_flows(outcome: TraversalOutcome) -> list[Flow]:
         chain.reverse()
         return chain, edges
 
-    ranked_chains: list[tuple[tuple[int, int, int, int, int, str], Flow]] = []
+    chains_existed = False
+    ranked_chains: list[tuple[tuple[int, int, int, int, int, int, str], Flow]] = []
     for node in outcome.nodes.values():
         if node.parent_edge_id is None:
             continue
+        chains_existed = True
         chain, chain_edges = path_edges(node)
+        substantive = (
+            any(edge.relation.kind is RelationKind.REFERENCES for edge in chain_edges)
+            or chain[-1] in relevant_ids
+        )
+        if not substantive:
+            continue
         trusts = [edge_trust(edge.relation) for edge in chain_edges]
         heuristic_hops = sum(1 for trust in trusts if trust == "heuristic")
         worst_resolution = max(
@@ -252,10 +293,12 @@ def _build_flows(outcome: TraversalOutcome) -> list[Flow]:
         test_penalty = sum(
             1 for node_id in chain if is_test_path(outcome.nodes[node_id].symbol.file_path)
         )
+        relevance = sum(1 for node_id in chain if node_id in relevant_ids)
         rank = (
             heuristic_hops,
             worst_resolution,
             test_penalty,
+            -relevance,
             -node.depth,
             worst_confidence,
             node.symbol.id,
@@ -272,7 +315,7 @@ def _build_flows(outcome: TraversalOutcome) -> list[Flow]:
         covered.update(flow.ids)
         if len(flows) >= MAX_FLOWS:
             break
-    return flows
+    return flows, chains_existed and not flows
 
 
 def _node_drop_order(
@@ -312,6 +355,50 @@ def _node_drop_order(
         if min_depth <= node.depth <= max_depth and node.symbol.id not in protected
     ]
     return [node.symbol.id for node in sorted(candidates, key=drop_rank, reverse=True)]
+
+
+def _low_relevance_demotions(
+    outcome: TraversalOutcome, *, protected: set[str], relevant_ids: set[str]
+) -> list[str]:
+    """Node ids to demote upfront as policy, regardless of remaining budget.
+
+    Two shapes of low-value evidence: data-member swarms (more than
+    MAX_CONTAINED_MEMBERS_PER_CONTAINER contained fields of one container) and deep
+    heuristic leaves (depth >= 2 reached only through a heuristic edge). Question-
+    relevant and protected nodes are never demoted; everything demoted is counted in
+    coverage, so omission stays visible.
+    """
+    edges_by_id = {edge.relation.id: edge for edge in outcome.edges}
+    demoted: list[str] = []
+    members_by_container: dict[str, list[TraversedNode]] = {}
+    for node in outcome.nodes.values():
+        node_id = node.symbol.id
+        if node_id in protected or node_id in relevant_ids or node.parent_edge_id is None:
+            continue
+        edge = edges_by_id.get(node.parent_edge_id)
+        if edge is None:
+            continue
+        if node.depth >= 2 and edge_trust(edge.relation) == "heuristic":
+            demoted.append(node_id)
+            continue
+        parent = _parent_id(edge)
+        if (
+            parent is not None
+            and edge.relation.kind is RelationKind.CONTAINS
+            and str(node.symbol.kind) in _LOW_VALUE_MEMBER_KINDS
+        ):
+            members_by_container.setdefault(parent, []).append(node)
+    for members in members_by_container.values():
+        members.sort(
+            key=lambda node: (
+                kind_rank(node.symbol.kind),
+                node.symbol.file_path,
+                node.symbol.start_line,
+                node.symbol.id,
+            )
+        )
+        demoted.extend(node.symbol.id for node in members[MAX_CONTAINED_MEMBERS_PER_CONTAINER:])
+    return sorted(set(demoted))
 
 
 def _seed_snippets(seeds: tuple[Seed, ...], workspace_root: Path) -> list[dict[str, object]]:
@@ -404,7 +491,8 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
 
     symbol_count = int(stats["symbols"]) if isinstance(stats["symbols"], int) else 0
     seed_ids = {seed.symbol.id for seed in discovery.seeds}
-    flows = _build_flows(outcome)
+    relevant_ids = _relevant_node_ids(outcome, seed_ids, keywords)
+    flows, flows_omitted_for_relevance = _build_flows(outcome, relevant_ids=relevant_ids)
     protected = set(flows[0].ids) | seed_ids if flows else set(seed_ids)
 
     # Projection policy: a query about test symbols keeps full test evidence;
@@ -428,16 +516,48 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
             if node_id in node_set and is_test_path(outcome.nodes[node_id].symbol.file_path):
                 node_set.discard(node_id)
                 tests_demoted += 1
-        flows = [
-            flow
-            for index_position, flow in enumerate(flows)
-            if index_position == 0 or flow.ids[-1] in node_set | seed_ids
-        ]
+
+    # Relevance policy: low-value evidence is demoted even when budget remains —
+    # the budget is a maximum, not a target. Counted in coverage.projection.
+    low_relevance_demoted = [
+        node_id
+        for node_id in _low_relevance_demotions(
+            outcome, protected=protected, relevant_ids=relevant_ids
+        )
+        if node_id in node_set
+    ]
+    node_set.difference_update(low_relevance_demoted)
+    flows = [
+        flow
+        for index_position, flow in enumerate(flows)
+        if index_position == 0 or flow.ids[-1] in node_set | seed_ids
+    ]
     flow_state = list(flows)
     alternates = list(discovery.alternates)
     ranked_extras = _ranked_extra_edges(outcome)
-    extra_edges_state = ranked_extras[:MAX_EXTRA_EDGES]
-    extra_edges_capped = len(ranked_extras) - len(extra_edges_state)
+    deduped_extras: list[TraversedEdge] = []
+    edges_by_id = {edge.relation.id: edge for edge in outcome.edges}
+    # An extra edge repeating a tree edge's endpoints and kind (another call site of
+    # the same link) is the evidence the node's `via` already shows; dedup both ways.
+    seen_extra_keys: set[tuple[str | None, str | None, str]] = {
+        (tree.relation.from_symbol_id, tree.relation.to_symbol_id, str(tree.relation.kind))
+        for node in outcome.nodes.values()
+        if node.parent_edge_id is not None
+        and (tree := edges_by_id.get(node.parent_edge_id)) is not None
+    }
+    for edge in ranked_extras:
+        key = (
+            edge.relation.from_symbol_id,
+            edge.relation.to_symbol_id,
+            str(edge.relation.kind),
+        )
+        if key in seen_extra_keys:
+            continue
+        seen_extra_keys.add(key)
+        deduped_extras.append(edge)
+    extra_edges_deduped = len(ranked_extras) - len(deduped_extras)
+    extra_edges_state = deduped_extras[:MAX_EXTRA_EDGES]
+    extra_edges_capped = len(deduped_extras) - len(extra_edges_state)
     unresolved_state = _unresolved_items(outcome)
 
     def projected_extra_edges() -> list[TraversedEdge]:
@@ -542,6 +662,12 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
                 "demoted": tests_discovered - tests_projected,
             },
         }
+        if low_relevance_demoted:
+            projection["nodes_demoted_low_relevance"] = len(low_relevance_demoted)
+        if extra_edges_deduped:
+            projection["extra_edges_deduped"] = extra_edges_deduped
+        if flows_omitted_for_relevance:
+            projection["flows_omitted"] = "no-relevant-flow"
         if extra_edges_capped:
             projection["extra_edges_capped"] = extra_edges_capped
         if query.include_source:
