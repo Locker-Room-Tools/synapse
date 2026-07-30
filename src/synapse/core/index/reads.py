@@ -1,7 +1,7 @@
 """SQLite read projections and the symbol-index facade implementation."""
 
 import sqlite3
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -20,6 +20,7 @@ from synapse.core.models import (
 
 DEFAULT_PAGE_LIMIT = 50
 MAX_PAGE_LIMIT = 200
+IN_CLAUSE_BATCH_SIZE = 500
 DEFAULT_OUTLINE_LIMIT = 200
 MAX_TOP_SYMBOLS_LIMIT = 50
 DEFAULT_MAX_BODY_LINES = 200
@@ -41,6 +42,13 @@ def page_metadata(total: int, limit: int, offset: int, returned: int) -> dict[st
         "total": total,
         "has_more": offset + returned < total,
     }
+
+
+def _sorted_batches(values: Iterable[str]) -> Iterator[list[str]]:
+    """Yield deduplicated, sorted values in IN-clause-safe batches."""
+    ordered = sorted(set(values))
+    for start in range(0, len(ordered), IN_CLAUSE_BATCH_SIZE):
+        yield ordered[start : start + IN_CLAUSE_BATCH_SIZE]
 
 
 def _map_source_file(row: sqlite3.Row) -> SourceFile:
@@ -519,6 +527,81 @@ class ReadProjections:
             ).fetchall()
             paths.update(str(row["file_id"]) for row in rows)
         return paths
+
+    def get_symbols_by_ids(self, symbol_ids: Sequence[str]) -> dict[str, Symbol]:
+        """Return the indexed symbols for the given ids; missing ids are omitted."""
+        symbols: dict[str, Symbol] = {}
+        for batch in _sorted_batches(symbol_ids):
+            placeholders = ", ".join("?" for _ in batch)
+            rows = self.connection.execute(
+                f"SELECT * FROM symbols WHERE id IN ({placeholders})",
+                batch,
+            ).fetchall()
+            for row in rows:
+                symbol = _map_symbol(row)
+                symbols[symbol.id] = symbol
+        return symbols
+
+    def relations_from_symbols(
+        self,
+        symbol_ids: Sequence[str],
+        *,
+        kinds: tuple[RelationKind, ...],
+    ) -> list[Relation]:
+        """Return outgoing relations of the given kinds for a set of symbols."""
+        return self._relations_for_symbols(symbol_ids, kinds=kinds, column="from_symbol_id")
+
+    def relations_to_symbols(
+        self,
+        symbol_ids: Sequence[str],
+        *,
+        kinds: tuple[RelationKind, ...],
+    ) -> list[Relation]:
+        """Return incoming relations of the given kinds for a set of symbols."""
+        return self._relations_for_symbols(symbol_ids, kinds=kinds, column="to_symbol_id")
+
+    def _relations_for_symbols(
+        self,
+        symbol_ids: Sequence[str],
+        *,
+        kinds: tuple[RelationKind, ...],
+        column: str,
+    ) -> list[Relation]:
+        if not kinds:
+            return []
+        kind_values = [str(kind) for kind in kinds]
+        kind_placeholders = ", ".join("?" for _ in kind_values)
+        relations: list[Relation] = []
+        for batch in _sorted_batches(symbol_ids):
+            placeholders = ", ".join("?" for _ in batch)
+            rows = self.connection.execute(
+                f"""
+                SELECT * FROM relations
+                WHERE {column} IN ({placeholders}) AND kind IN ({kind_placeholders})
+                ORDER BY {column}, id
+                """,
+                [*batch, *kind_values],
+            ).fetchall()
+            relations.extend(_map_relation(row) for row in rows)
+        return relations
+
+    def imports_for_files(self, file_paths: Sequence[str]) -> dict[str, list[str]]:
+        """Return the distinct imported names per file, ordered by name."""
+        imports: dict[str, list[str]] = {}
+        for batch in _sorted_batches(file_paths):
+            placeholders = ", ".join("?" for _ in batch)
+            rows = self.connection.execute(
+                f"""
+                SELECT DISTINCT from_file_path, to_name
+                FROM relations
+                WHERE kind = ? AND to_name IS NOT NULL AND from_file_path IN ({placeholders})
+                ORDER BY from_file_path, to_name
+                """,
+                [str(RelationKind.IMPORTS), *batch],
+            ).fetchall()
+            for row in rows:
+                imports.setdefault(str(row["from_file_path"]), []).append(str(row["to_name"]))
+        return imports
 
     def workspace_stats(
         self,

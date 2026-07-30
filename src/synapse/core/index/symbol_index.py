@@ -45,6 +45,22 @@ class SymbolIndex:
         with transaction_scope(self._connect()) as connection:
             yield connection
 
+    @contextmanager
+    def read_session(self) -> Iterator[ReadProjections]:
+        """Yield read projections pinned to one consistent snapshot.
+
+        sqlite3 never opens a transaction for SELECT statements, so a shared
+        connection alone does not isolate a multi-statement read from concurrent
+        watch-daemon commits; the explicit BEGIN pins one WAL snapshot for the
+        whole session.
+        """
+        with self._connection() as connection:
+            connection.execute("BEGIN")
+            try:
+                yield ReadProjections(connection)
+            finally:
+                connection.rollback()
+
     def upsert_file(
         self,
         source_file: SourceFile,
