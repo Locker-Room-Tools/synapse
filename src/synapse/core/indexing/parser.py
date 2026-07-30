@@ -35,7 +35,7 @@ from synapse.core.models import (
 
 # Bump whenever Python-side reference-extraction or resolution semantics change;
 # feeds the index-content fingerprint that invalidates stale relation rows.
-REFERENCE_EXTRACTOR_VERSION = 3
+REFERENCE_EXTRACTOR_VERSION = 4
 
 
 @dataclass(slots=True)
@@ -56,12 +56,25 @@ class _ExtractedSymbol:
 
 @dataclass(frozen=True, slots=True)
 class TypeBinding:
-    """One name bound to a syntactically declared type over a byte range."""
+    """One name bound over a byte range, with type evidence when the syntax gives any.
+
+    `type_name` is None for bindings that prove no type (untyped assignments and
+    parameters, `def` statements); they still shadow the name. `annotated` is True
+    only when the type came from an explicit annotation rather than a constructor
+    call. The frame range is the nearest real variable frame (function/module), which
+    tells conditional rebinding apart from a genuinely separate nested scope.
+    """
 
     name: str
-    type_name: str
+    type_name: str | None
     scope_start_byte: int
     scope_end_byte: int
+    annotated: bool = False
+    frame_start_byte: int = 0
+    frame_end_byte: int = 0
+    # True only for untyped parameter-list bindings: a parameter *introduces* the
+    # name, so it never counts as a local reassignment of `self`/`cls`.
+    parameter: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,28 +115,73 @@ class FileScope:
             return None
         return min(covering, key=lambda entry: entry[1])[0]
 
-    def declared_type_at(self, name: str, start_byte: int) -> str | None:
-        """Return the declared type of `name` in the innermost scope covering an offset."""
+    def declared_type_at(self, name: str, start_byte: int) -> TypeBinding | None:
+        """Return the typed binding of `name` in the innermost scope covering an offset.
+
+        The proof is conservative: it fails whenever any other binding for the name
+        could change what the name holds at the use site — a different-or-untyped
+        binding at the same scope span, or any rebinding in a scope nested inside the
+        proving scope within the same frame (a conditional/loop body is not a real
+        frame, so a rebinding there may have executed before the use).
+        """
         covering = [
             binding
             for binding in self.bindings
             if binding.name == name
             and binding.scope_start_byte <= start_byte <= binding.scope_end_byte
         ]
-        if not covering:
+        typed = [binding for binding in covering if binding.type_name is not None]
+        if not typed:
             return None
         # Inner scopes shadow outer ones; this is language semantics, not proximity.
         innermost = min(
-            covering,
+            typed,
             key=lambda binding: binding.scope_end_byte - binding.scope_start_byte,
         )
+        span = (innermost.scope_start_byte, innermost.scope_end_byte)
         distinct = {
             binding.type_name
             for binding in covering
-            if binding.scope_end_byte - binding.scope_start_byte
-            == innermost.scope_end_byte - innermost.scope_start_byte
+            if (binding.scope_start_byte, binding.scope_end_byte) == span
         }
-        return innermost.type_name if len(distinct) == 1 else None
+        if distinct != {innermost.type_name}:
+            return None
+        for binding in self.bindings:
+            if binding.name != name or binding is innermost:
+                continue
+            nested = (
+                binding.scope_start_byte >= span[0]
+                and binding.scope_end_byte <= span[1]
+                and (binding.scope_start_byte, binding.scope_end_byte) != span
+            )
+            same_frame = (
+                binding.frame_start_byte == innermost.frame_start_byte
+                and binding.frame_end_byte == innermost.frame_end_byte
+            )
+            if nested and same_frame and binding.type_name != innermost.type_name:
+                return None
+        return innermost
+
+    def binds_name_at(self, name: str, start_byte: int) -> bool:
+        """Return whether any binding (typed or not) covers the offset for this name."""
+        return any(
+            binding.name == name
+            and binding.scope_start_byte <= start_byte <= binding.scope_end_byte
+            for binding in self.bindings
+        )
+
+    def rebinds_name_at(self, name: str, start_byte: int) -> bool:
+        """Return whether a non-parameter binding covers the offset for this name.
+
+        A parameter introduces the name, so only assignments count as evidence that
+        a conventional receiver spelling (`self`, `cls`) no longer holds the instance.
+        """
+        return any(
+            binding.name == name
+            and not binding.parameter
+            and binding.scope_start_byte <= start_byte <= binding.scope_end_byte
+            for binding in self.bindings
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +203,9 @@ class RawReference:
     # When the receiver is itself a call, the called function's dotted name
     # (`factory` in `factory(...).method()`); receiver_text stays None then.
     receiver_call: str | None = None
+    # True only when a `self`/`cls`-spelled receiver is structurally the first
+    # parameter of a non-static enclosing callable; spelling alone proves nothing.
+    receiver_is_self: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -551,6 +612,89 @@ def _binder_scope(node: Node, syntax: ReferenceSyntax) -> tuple[int, int] | None
     return None
 
 
+def _binder_frame(node: Node, syntax: ReferenceSyntax, root: Node) -> tuple[int, int]:
+    """Return the byte range of the nearest frame-defining ancestor of a binder.
+
+    Languages without frame metadata treat the whole file as one frame, which keeps
+    their current single-frame rebinding behavior.
+    """
+    if syntax.frame_types:
+        current = node.parent
+        while current is not None:
+            if current.type in syntax.frame_types:
+                return current.start_byte, current.end_byte
+            current = current.parent
+    return root.start_byte, root.end_byte
+
+
+def _parameter_name(child: Node, source_bytes: bytes, syntax: ReferenceSyntax) -> str | None:
+    """Return the bound name of one parameter-list child, typed or not."""
+    if child.type in syntax.binder_name_child_types:
+        return _node_text(source_bytes, child)
+    for field in syntax.binder_name_fields:
+        found = _field_child(child, field)
+        if found is not None:
+            return _node_text(source_bytes, found)
+    for sub in child.named_children:
+        if sub.type in syntax.binder_name_child_types:
+            return _node_text(source_bytes, sub)
+    return None
+
+
+def _callable_parameter_names(
+    callable_node: Node, source_bytes: bytes, syntax: ReferenceSyntax
+) -> list[str]:
+    params = next(
+        (
+            child
+            for child in callable_node.named_children
+            if child.type in syntax.parameter_list_types
+        ),
+        None,
+    )
+    if params is None:
+        return []
+    names = [
+        name
+        for child in params.named_children
+        if (name := _parameter_name(child, source_bytes, syntax)) is not None
+    ]
+    return names
+
+
+def _is_static_callable(callable_node: Node, source_bytes: bytes, syntax: ReferenceSyntax) -> bool:
+    parent = callable_node.parent
+    if parent is None or parent.type not in syntax.decorator_wrapper_types:
+        return False
+    return any(
+        child.type in syntax.decorator_types
+        and _node_text(source_bytes, child).lstrip("@").strip() in syntax.static_decorators
+        for child in parent.named_children
+    )
+
+
+def _structural_self(
+    node: Node, receiver_text: str, source_bytes: bytes, syntax: ReferenceSyntax
+) -> bool:
+    """Return whether a `self`/`cls`-spelled receiver is structurally the instance.
+
+    Walking enclosing callables innermost-outward, the first one that declares the
+    spelling among its parameters decides: the spelling must be its FIRST parameter
+    and the callable must not carry a static decorator. A spelling no enclosing
+    callable declares is just a name and proves nothing.
+    """
+    current = node.parent
+    while current is not None:
+        if current.type in syntax.callable_types:
+            parameters = _callable_parameter_names(current, source_bytes, syntax)
+            if receiver_text in parameters:
+                return parameters[0] == receiver_text and not _is_static_callable(
+                    current, source_bytes, syntax
+                )
+        current = current.parent
+    return False
+
+
 def _walk(node: Node) -> Iterator[Node]:
     yield node
     for child in node.children:
@@ -619,6 +763,42 @@ def _build_file_scope(
                         conflicting_returns.add(callable_name)
                     else:
                         return_types[callable_name] = return_type
+            if syntax.callable_defs_bind_names and name_node is not None:
+                scope = _binder_scope(node, syntax)
+                if scope is not None:
+                    frame = _binder_frame(node, syntax, tree.root_node)
+                    bindings.append(
+                        TypeBinding(
+                            name=_node_text(source_bytes, name_node),
+                            type_name=None,
+                            scope_start_byte=scope[0],
+                            scope_end_byte=scope[1],
+                            frame_start_byte=frame[0],
+                            frame_end_byte=frame[1],
+                        )
+                    )
+        if node.type in syntax.parameter_list_types:
+            enclosing = node.parent
+            if enclosing is not None:
+                for child in node.named_children:
+                    # Typed parameters are binders and already yield typed bindings.
+                    if child.type in syntax.binder_types:
+                        continue
+                    parameter_name = _parameter_name(child, source_bytes, syntax)
+                    if parameter_name is None:
+                        continue
+                    bindings.append(
+                        TypeBinding(
+                            name=parameter_name,
+                            type_name=None,
+                            scope_start_byte=enclosing.start_byte,
+                            scope_end_byte=enclosing.end_byte,
+                            frame_start_byte=enclosing.start_byte,
+                            frame_end_byte=enclosing.end_byte,
+                            parameter=True,
+                        )
+                    )
+            continue
         if node.type in syntax.binder_types:
             type_node = _field_child(node, syntax.type_field)
             name_node = next(
@@ -646,24 +826,28 @@ def _build_file_scope(
                 else _constructor_call_type(source_bytes, node, syntax)
             )
             scope = _binder_scope(node, syntax)
-            if type_name is None or scope is None:
+            if scope is None:
                 continue
+            frame = _binder_frame(node, syntax, tree.root_node)
+            # An untyped binding (`x = value`) proves no type but still shadows the
+            # name, so it is recorded and gates type-name receiver proofs.
             bindings.append(
                 TypeBinding(
                     name=_node_text(source_bytes, name_node),
                     type_name=type_name,
                     scope_start_byte=scope[0],
                     scope_end_byte=scope[1],
+                    annotated=type_node is not None and type_name is not None,
+                    frame_start_byte=frame[0],
+                    frame_end_byte=frame[1],
                 )
             )
             continue
         if node.type in syntax.declarator_parent_types:
             type_node = _field_child(node, syntax.type_field)
-            if type_node is None:
-                continue
-            type_name = _base_type_name(source_bytes, type_node, syntax)
-            if type_name is None:
-                continue
+            type_name = (
+                _base_type_name(source_bytes, type_node, syntax) if type_node is not None else None
+            )
             for child in node.children:
                 if child.type != syntax.declarator_type:
                     continue
@@ -671,12 +855,16 @@ def _build_file_scope(
                 scope = _binder_scope(node, syntax)
                 if name_node is None or scope is None:
                     continue
+                frame = _binder_frame(node, syntax, tree.root_node)
                 bindings.append(
                     TypeBinding(
                         name=_node_text(source_bytes, name_node),
                         type_name=type_name,
                         scope_start_byte=scope[0],
                         scope_end_byte=scope[1],
+                        annotated=type_name is not None,
+                        frame_start_byte=frame[0],
+                        frame_end_byte=frame[1],
                     )
                 )
 
@@ -737,8 +925,11 @@ def _extract_references_from_tree(
         from_symbol = _enclosing_symbol(symbols, node.start_byte)
         receiver_text: str | None = None
         receiver_call: str | None = None
+        receiver_is_self = False
         if syntax is not None:
             receiver_text, receiver_call = _receiver_parts(source_bytes, node, syntax)
+            if receiver_text is not None and receiver_text in syntax.self_receivers:
+                receiver_is_self = _structural_self(node, receiver_text, source_bytes, syntax)
         raw_refs.append(
             RawReference(
                 name=_decode_node_text(source_bytes, node.start_byte, node.end_byte),
@@ -754,6 +945,7 @@ def _extract_references_from_tree(
                 ),
                 receiver_text=receiver_text,
                 receiver_call=receiver_call,
+                receiver_is_self=receiver_is_self,
             )
         )
     return raw_refs
@@ -871,30 +1063,43 @@ def build_reference_relations(
     """
     relations: list[Relation] = []
     file_scope = scope if scope is not None else FileScope()
-    declared_types_cache: dict[tuple[str, int], str] = {}
     for raw_ref in raw_refs:
         if facts is None:
             resolved = _unique_name_resolution(raw_ref, name_to_symbol_ids)
         else:
-            declared_type_of: dict[str, str] = {}
+            separator = name_separator(raw_ref.language)
+            declared_type_of: dict[str, tuple[str, bool]] = {}
+            receiver_bound_locally = False
+            receiver_rebound = False
             if raw_ref.receiver_text:
-                cache_key = (raw_ref.receiver_text, raw_ref.start_byte)
-                cached = declared_types_cache.get(cache_key)
-                if cached is None:
-                    found = file_scope.declared_type_at(
-                        raw_ref.receiver_text,
-                        raw_ref.start_byte,
+                binding = file_scope.declared_type_at(
+                    raw_ref.receiver_text,
+                    raw_ref.start_byte,
+                )
+                if binding is not None and binding.type_name is not None:
+                    declared_type_of[raw_ref.receiver_text] = (
+                        binding.type_name,
+                        binding.annotated,
                     )
-                    if found is not None:
-                        declared_types_cache[cache_key] = found
-                        cached = found
-                if cached is not None:
-                    declared_type_of[raw_ref.receiver_text] = cached
+                # Local bindings shadow type names: the chain's root decides.
+                receiver_bound_locally = file_scope.binds_name_at(
+                    raw_ref.receiver_text.split(separator)[0],
+                    raw_ref.start_byte,
+                )
+                receiver_rebound = file_scope.rebinds_name_at(
+                    raw_ref.receiver_text,
+                    raw_ref.start_byte,
+                )
             return_type_of: dict[str, str] = {}
+            receiver_call_bound_locally = False
             if raw_ref.receiver_call is not None:
                 annotated_return = file_scope.return_type_of(raw_ref.receiver_call)
                 if annotated_return is not None:
                     return_type_of[raw_ref.receiver_call] = annotated_return
+                receiver_call_bound_locally = file_scope.binds_name_at(
+                    raw_ref.receiver_call.split(separator)[0],
+                    raw_ref.start_byte,
+                )
             resolved = resolve_reference(
                 name=raw_ref.name,
                 qualified_text=raw_ref.qualified_text,
@@ -911,6 +1116,10 @@ def build_reference_relations(
                 declared_type_of=declared_type_of,
                 return_type_of=return_type_of,
                 self_receivers=file_scope.self_receivers,
+                receiver_is_self=raw_ref.receiver_is_self,
+                receiver_rebound=receiver_rebound,
+                receiver_bound_locally=receiver_bound_locally,
+                receiver_call_bound_locally=receiver_call_bound_locally,
             )
         anchor = raw_ref.from_symbol.id if raw_ref.from_symbol is not None else raw_ref.file_path
         target = resolved.to_symbol_id or raw_ref.name

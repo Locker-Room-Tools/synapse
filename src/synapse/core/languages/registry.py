@@ -71,6 +71,20 @@ class ReferenceSyntax:
     opaque_type_types: tuple[str, ...] = ()
     # Ancestors that delimit a binder's scope; the nearest one wins.
     scope_types: tuple[str, ...] = ()
+    # Ancestors that delimit a real variable frame (Python: functions and modules,
+    # not `if` blocks). Empty means the whole file is one frame. Rebinding a name in
+    # a nested scope of the SAME frame voids type proof; a nested frame does not.
+    frame_types: tuple[str, ...] = ()
+    # Parameter-list nodes whose untyped children still bind names locally.
+    parameter_list_types: tuple[str, ...] = ()
+    # Wrapper holding a decorated definition together with its decorators.
+    decorator_wrapper_types: tuple[str, ...] = ()
+    decorator_types: tuple[str, ...] = ()
+    # Decorator names that make a callable static (its first parameter is not an
+    # instance receiver regardless of spelling).
+    static_decorators: tuple[str, ...] = ()
+    # Whether a callable definition binds its own name in the enclosing scope.
+    callable_defs_bind_names: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,6 +146,19 @@ CSHARP_REFERENCE_SYNTAX = ReferenceSyntax(
         "enum_declaration",
         "compilation_unit",
     ),
+    frame_types=(
+        "lambda_expression",
+        "method_declaration",
+        "constructor_declaration",
+        "local_function_statement",
+        "property_declaration",
+        "class_declaration",
+        "struct_declaration",
+        "record_declaration",
+        "interface_declaration",
+        "enum_declaration",
+        "compilation_unit",
+    ),
 )
 
 PYTHON_REFERENCE_SYNTAX = ReferenceSyntax(
@@ -150,6 +177,12 @@ PYTHON_REFERENCE_SYNTAX = ReferenceSyntax(
     generic_types=("generic_type",),
     self_receivers=("self", "cls"),
     scope_types=("module", "block", "function_definition", "class_definition", "lambda"),
+    frame_types=("module", "function_definition", "class_definition", "lambda"),
+    parameter_list_types=("parameters",),
+    decorator_wrapper_types=("decorated_definition",),
+    decorator_types=("decorator",),
+    static_decorators=("staticmethod",),
+    callable_defs_bind_names=True,
 )
 
 
@@ -488,6 +521,7 @@ LANGUAGES: dict[str, LanguageSpec] = {
             "cross-file-factory-returns",
             "dynamic-receivers",
             "import-scope-narrowing",
+            "unindexed-import-shadows",
         ),
         reference_syntax=PYTHON_REFERENCE_SYNTAX,
     ),

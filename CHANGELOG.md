@@ -6,6 +6,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Python receiver resolution is conservative about value-position type proofs:
+  a constructor call or static type-name access resolves `exact` only when no
+  same-name non-type declaration contests the name and no local binding
+  (assignment, untyped parameter, `def`) shadows the chain's root; a rebinding in
+  a conditional or loop block of the same variable frame voids an earlier
+  binding's proof; `self`/`cls` counts only structurally (first parameter of a
+  non-static enclosing callable, not reassigned), and a typed or reassigned
+  `self` follows its binding instead of the enclosing class. Annotation-position
+  proofs (typed parameters/locals, factory return annotations) are unchanged.
+  `REFERENCE_EXTRACTOR_VERSION` is now 4 (also covering the previous
+  constructor-call receiver change), so existing indexes rebuild once. New
+  documented limitation: `unindexed-import-shadows`.
+
 ### Added
 - Python structural reference resolution (`PYTHON_REFERENCE_SYNTAX`): member calls
   now resolve `exact` when receiver evidence proves the containing type — typed

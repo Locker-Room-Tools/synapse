@@ -100,9 +100,20 @@ package's internal decomposition, not separate import targets.
   constructor-call assignments, `self`/`cls` inside the enclosing type, static
   type-name access, and factory calls whose declaration carries an explicit,
   same-file, resolvable return annotation (C# and Python both provide
-  `LanguageSpec.reference_syntax`). Unsupported receiver evidence — inherited
-  members, union or missing annotations, cross-file factory returns, dynamic
-  receivers — leaves the member honestly `ambiguous`.
+  `LanguageSpec.reference_syntax`). Value-position proofs are conservative:
+  a constructor call or static type-name access resolves only when no same-name
+  non-type declaration contests the name and no local binding (assignment,
+  untyped parameter, `def`) shadows the chain's root; annotation positions keep
+  the type-kind gate because the syntax there already proves a type is meant.
+  A rebinding in a conditional or loop block of the same variable frame voids an
+  earlier binding's proof (Python scoping is per-function, not per-block), while
+  a nested `def`/`class`/`lambda` is a separate frame and does not. `self`/`cls`
+  is proof only structurally — the spelling must be the first parameter of a
+  non-static enclosing callable and not reassigned; a typed or reassigned
+  `self` follows its binding instead of the enclosing class. Unsupported
+  receiver evidence — inherited members, union or missing annotations,
+  cross-file factory returns, dynamic receivers, shadows introduced by
+  unindexed imports — leaves the member honestly `ambiguous`.
   Narrowing by namespace, import, or enclosing type is weaker and recorded as `scoped`; a
   workspace-unique name match remains `unique-name` (a heuristic, never proof);
   multi-candidate names are `ambiguous` and unknown names `unresolved`. Each reference edge

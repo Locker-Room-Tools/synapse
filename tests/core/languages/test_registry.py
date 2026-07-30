@@ -255,6 +255,7 @@ def test_reference_extraction_metadata_accessors() -> None:
         "cross-file-factory-returns",
         "dynamic-receivers",
         "import-scope-narrowing",
+        "unindexed-import-shadows",
     )
     python_syntax = reference_syntax("python")
     assert python_syntax is not None

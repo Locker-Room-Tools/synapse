@@ -112,12 +112,31 @@ def _scoped(symbol_id: str) -> ResolvedReference:
 
 
 def _resolve_type_name(type_name: str, facts: ResolutionFacts) -> str | None:
-    """Return the qualified name of the single type declaration called `type_name`."""
+    """Return the qualified name of the single type declaration called `type_name`.
+
+    Lenient: non-type candidates are ignored. Only annotation positions may use this
+    — the syntax there already proves the name means a type.
+    """
     candidates = [
         symbol_id
         for symbol_id in facts.targets_for(type_name)
         if facts.kinds.get(symbol_id) in _TYPE_KINDS
     ]
+    unique_id = _unique(candidates)
+    return facts.qualified_names.get(unique_id) if unique_id is not None else None
+
+
+def _resolve_type_name_strict(type_name: str, facts: ResolutionFacts) -> str | None:
+    """Return the single type declaration for a name no other declaration contests.
+
+    Strict: any same-name non-type declaration (a function, a constant) is a shadow
+    conflict, not something to silently discard. Value positions — constructor calls
+    and static type access — must use this, because there the syntax proves nothing
+    about the name meaning a type.
+    """
+    candidates = list(facts.targets_for(type_name))
+    if any(facts.kinds.get(symbol_id) not in _TYPE_KINDS for symbol_id in candidates):
+        return None
     unique_id = _unique(candidates)
     return facts.qualified_names.get(unique_id) if unique_id is not None else None
 
@@ -166,10 +185,14 @@ def resolve_reference(
     namespace: str | None = None,
     imported_namespaces: Sequence[str] = (),
     aliases: Mapping[str, str] | None = None,
-    declared_type_of: Mapping[str, str] | None = None,
+    declared_type_of: Mapping[str, tuple[str, bool]] | None = None,
     receiver_call: str | None = None,
     return_type_of: Mapping[str, str] | None = None,
     self_receivers: Sequence[str] = (),
+    receiver_is_self: bool = False,
+    receiver_rebound: bool = False,
+    receiver_bound_locally: bool = False,
+    receiver_call_bound_locally: bool = False,
 ) -> ResolvedReference:
     """Bind one reference to a declaration, or report it ambiguous/unresolved.
 
@@ -180,8 +203,10 @@ def resolve_reference(
     alias_map = aliases or {}
     declared_types = declared_type_of or {}
 
-    # 1. The source names a fully-qualified declaration outright.
-    if qualified_text:
+    # 1. The source names a fully-qualified declaration outright. A dotted chain
+    # rooted at a locally bound name is attribute access on a value, never a
+    # qualified declaration name, so it gets no name-shaped proof.
+    if qualified_text and not receiver_bound_locally:
         resolved_alias = alias_map.get(qualified_text.split(separator)[0])
         dotted = qualified_text
         if resolved_alias is not None:
@@ -198,24 +223,43 @@ def resolve_reference(
     # 4. The receiver's type is syntactically known, so the member is determined.
     if receiver_text or receiver_call:
         type_qualified_name: str | None = None
-        if receiver_text is not None and receiver_text in self_receivers:
-            # `self`/`cls` receivers denote the innermost enclosing type.
-            type_qualified_name = _enclosing_type_qualified_name(enclosing_qualified_name, facts)
+        if receiver_text is not None and receiver_text in self_receivers and receiver_is_self:
+            if receiver_rebound:
+                # A reassigned `self`/`cls` holds whatever was assigned; its typed
+                # binding (if any) is handled below, spelling proves nothing here.
+                declared = declared_types.get(receiver_text)
+                if declared is not None:
+                    type_name, annotated = declared
+                    resolve = _resolve_type_name if annotated else _resolve_type_name_strict
+                    type_qualified_name = resolve(type_name, facts)
+            else:
+                # A structurally proven `self`/`cls` denotes the enclosing type.
+                type_qualified_name = _enclosing_type_qualified_name(
+                    enclosing_qualified_name, facts
+                )
         elif receiver_call is not None:
             # A factory-call receiver is typed by an explicit return annotation; a
-            # call that names a type directly is a constructor and types itself.
+            # call that names an unshadowed, uncontested type is a constructor.
             annotated_return = (return_type_of or {}).get(receiver_call)
             if annotated_return is not None:
                 type_qualified_name = _resolve_type_name(annotated_return, facts)
-            if type_qualified_name is None:
-                type_qualified_name = _resolve_type_name(receiver_call.split(separator)[-1], facts)
+            if type_qualified_name is None and not receiver_call_bound_locally:
+                type_qualified_name = _resolve_type_name_strict(
+                    receiver_call.split(separator)[-1], facts
+                )
         elif receiver_text is not None:
-            receiver_type = declared_types.get(receiver_text)
-            if receiver_type is not None:
-                type_qualified_name = _resolve_type_name(receiver_type, facts)
-            if type_qualified_name is None:
-                # A receiver that *is* a type name (static access) resolves the same way.
-                type_qualified_name = _resolve_type_name(receiver_text.split(separator)[-1], facts)
+            declared = declared_types.get(receiver_text)
+            if declared is not None:
+                type_name, annotated = declared
+                # Constructor-derived bindings carry no annotation, so their type
+                # name must survive the strict shadow check.
+                resolve = _resolve_type_name if annotated else _resolve_type_name_strict
+                type_qualified_name = resolve(type_name, facts)
+            if type_qualified_name is None and not receiver_bound_locally:
+                # A receiver that *is* an unshadowed type name (static access).
+                type_qualified_name = _resolve_type_name_strict(
+                    receiver_text.split(separator)[-1], facts
+                )
         if type_qualified_name is not None:
             member_id = _resolve_member_on_type(type_qualified_name, name, facts)
             if member_id is not None:

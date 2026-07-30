@@ -437,3 +437,180 @@ def test_python_factory_call_to_unknown_function_stays_ambiguous(tmp_path: Path)
     relation = _relation_named(relations, "save")
     assert relation.resolution is ResolutionMethod.AMBIGUOUS
     assert relation.to_symbol_id is None
+
+
+def test_python_function_shadowing_a_type_name_blocks_the_constructor_proof(
+    tmp_path: Path,
+) -> None:
+    """A call target contested by a same-name function is never proven a constructor."""
+    relations = _resolve_python_usage(
+        tmp_path,
+        "def Repo():\n    return None\n\ndef use():\n    r = Repo()\n    return r.save(1)\n",
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None
+
+
+def test_python_imported_callable_shadowing_a_class_blocks_the_proof(tmp_path: Path) -> None:
+    from synapse.core.indexing.parser import parse_source
+
+    sources = {
+        "store.py": _PYTHON_STORE,
+        "funcs.py": "def Repo():\n    return None\n",
+        "usage.py": "from funcs import Repo\n\ndef use():\n    r = Repo()\n    return r.save(1)\n",
+    }
+    symbols = []
+    parsed_usage = None
+    for file_name, source in sources.items():
+        parsed = parse_source(tmp_path / file_name, "python", source.encode(), tmp_path)
+        symbols.extend(parsed.symbols)
+        if file_name == "usage.py":
+            parsed_usage = parsed
+    assert parsed_usage is not None
+    facts = build_resolution_facts(
+        kinds={symbol.id: str(symbol.kind) for symbol in symbols},
+        qualified_names={symbol.id: symbol.qualified_name or symbol.name for symbol in symbols},
+    )
+    name_index: dict[str, list[str]] = {}
+    for symbol in symbols:
+        name_index.setdefault(symbol.name, []).append(symbol.id)
+    relations = build_reference_relations(
+        parsed_usage.references, name_index, facts=facts, scope=parsed_usage.scope
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None
+
+
+def test_python_variable_named_like_a_type_is_not_static_access(tmp_path: Path) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "def use():\n    Repo = 5\n    return Repo.save(1)\n",
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None
+
+
+def test_python_untyped_parameter_shadowing_a_type_name_blocks_static_access(
+    tmp_path: Path,
+) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "def use(Repo):\n    return Repo.save(1)\n",
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None
+
+
+def test_python_conditional_rebinding_blocks_the_earlier_constructor_proof(
+    tmp_path: Path,
+) -> None:
+    """A rebinding in a conditional block may have executed; the earlier type is unproven."""
+    relations = _resolve_python_usage(
+        tmp_path,
+        "def use(flag):\n    r = Repo()\n    if flag:\n        r = Cache()\n    return r.save(2)\n",
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None
+
+
+def test_python_conditional_untyped_rebinding_blocks_the_proof(tmp_path: Path) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "def use(flag):\n    r = Repo()\n    if flag:\n        r = flag\n    return r.save(3)\n",
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None
+
+
+def test_python_staticmethod_parameter_named_self_proves_no_instance(tmp_path: Path) -> None:
+    """`self` is a convention, not proof: a static method's `self` is a plain value."""
+    relations = _resolve_python_usage(
+        tmp_path,
+        "class Holder:\n"
+        "    def helper(self):\n"
+        "        return 1\n\n"
+        "    @staticmethod\n"
+        "    def caller(self):\n"
+        "        return self.helper()\n",
+    )
+    relation = _relation_named(relations, "helper")
+    assert relation.resolution is not ResolutionMethod.EXACT
+    assert relation.confidence is not Confidence.HIGH
+
+
+def test_python_reassigned_self_resolves_by_its_binding_not_the_class(tmp_path: Path) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "class Holder:\n"
+        "    def save(self, item):\n"
+        "        return item\n\n"
+        "    def caller(self):\n"
+        "        self = Cache()\n"
+        "        return self.save(9)\n",
+    )
+    relation = next(rel for rel in relations if rel.to_name == "save" and rel.start_line == 7)
+    assert relation.resolution is ResolutionMethod.EXACT
+    assert "Cache.save" in (relation.to_symbol_id or "")
+
+
+def test_python_untyped_reassigned_self_proves_nothing(tmp_path: Path) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "class Holder:\n"
+        "    def helper(self):\n"
+        "        return 1\n\n"
+        "    def caller(self, other):\n"
+        "        self = other\n"
+        "        return self.helper()\n",
+    )
+    relation = _relation_named(relations, "helper")
+    assert relation.resolution is not ResolutionMethod.EXACT
+    assert relation.confidence is not Confidence.HIGH
+
+
+def test_python_rebinding_inside_a_nested_function_does_not_poison_the_outer_use(
+    tmp_path: Path,
+) -> None:
+    """A nested `def` is a separate frame; its locals never rebind the outer name."""
+    relations = _resolve_python_usage(
+        tmp_path,
+        "def use():\n"
+        "    r = Repo()\n\n"
+        "    def inner():\n"
+        "        r = Cache()\n"
+        "        return r\n\n"
+        "    return r.save(4)\n",
+    )
+    relation = next(rel for rel in relations if rel.to_name == "save" and rel.start_line == 8)
+    assert relation.resolution is ResolutionMethod.EXACT
+    assert "Repo.save" in (relation.to_symbol_id or "")
+
+
+def test_python_conditional_rebinding_with_the_same_type_keeps_the_proof(
+    tmp_path: Path,
+) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "def use(flag):\n    r = Repo()\n    if flag:\n        r = Repo()\n    return r.save(5)\n",
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.EXACT
+    assert "Repo.save" in (relation.to_symbol_id or "")
+
+
+def test_python_self_annotated_with_another_type_follows_the_annotation(
+    tmp_path: Path,
+) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "class Elsewhere:\n    def caller(self: Repo):\n        return self.load()\n",
+    )
+    relation = _relation_named(relations, "load")
+    assert relation.resolution is ResolutionMethod.EXACT
+    assert "Repo.load" in (relation.to_symbol_id or "")
