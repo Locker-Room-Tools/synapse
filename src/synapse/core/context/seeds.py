@@ -286,6 +286,10 @@ def _structural_seeds(reads: ReadProjections) -> list[Seed]:
         for symbol in pool.values()
         if str(symbol.kind) in _KIND_RANKS and not is_test_path(symbol.file_path)
     ]
+    public = [symbol for symbol in eligible if not symbol.name.startswith("_")]
+    if len(public) >= MAX_SEEDS:
+        # Private helpers orient nobody; keep them only when publics are scarce.
+        eligible = public
     import_counts = reads.import_name_counts()
     file_scores = _file_import_scores(import_counts, {symbol.file_path for symbol in eligible})
 

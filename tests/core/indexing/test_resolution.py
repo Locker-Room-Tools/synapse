@@ -422,3 +422,18 @@ def test_python_conflicting_rebinding_stays_ambiguous(tmp_path: Path) -> None:
     relation = _relation_named(relations, "save")
     assert relation.resolution is ResolutionMethod.AMBIGUOUS
     assert relation.to_symbol_id is None
+
+
+def test_python_constructor_call_receiver_types_itself(tmp_path: Path) -> None:
+    """`Repo(...).save()` is a constructor receiver; the call names the type."""
+    relations = _resolve_python_usage(tmp_path, "def use(c):\n    return Repo(c).save(7)\n")
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.EXACT
+    assert "Repo.save" in (relation.to_symbol_id or "")
+
+
+def test_python_factory_call_to_unknown_function_stays_ambiguous(tmp_path: Path) -> None:
+    relations = _resolve_python_usage(tmp_path, "def use():\n    return mystery().save(8)\n")
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None

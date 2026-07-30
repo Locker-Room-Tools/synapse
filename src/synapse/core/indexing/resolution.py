@@ -202,10 +202,13 @@ def resolve_reference(
             # `self`/`cls` receivers denote the innermost enclosing type.
             type_qualified_name = _enclosing_type_qualified_name(enclosing_qualified_name, facts)
         elif receiver_call is not None:
-            # A factory-call receiver is typed only by an explicit return annotation.
+            # A factory-call receiver is typed by an explicit return annotation; a
+            # call that names a type directly is a constructor and types itself.
             annotated_return = (return_type_of or {}).get(receiver_call)
             if annotated_return is not None:
                 type_qualified_name = _resolve_type_name(annotated_return, facts)
+            if type_qualified_name is None:
+                type_qualified_name = _resolve_type_name(receiver_call.split(separator)[-1], facts)
         elif receiver_text is not None:
             receiver_type = declared_types.get(receiver_text)
             if receiver_type is not None:
