@@ -1630,3 +1630,59 @@ def test_csharp_references_carry_usage_kinds_and_qualified_text(tmp_path: Path) 
     assert by_name["Save"].receiver_text == "repo"
     # The full dotted path survives extraction so the resolver can match it.
     assert by_name["Server"].qualified_text == "Overlock.Api.Servers.Server"
+
+
+def test_parse_file_indexes_decorated_python_definitions(tmp_path: Path) -> None:
+    """Decorated functions, methods, and async defs are indexed as real declarations."""
+    file_path = tmp_path / "decorated.py"
+    file_path.write_text(
+        "import functools\n\n"
+        "@functools.cache\n"
+        "def decorated_function(x):\n"
+        "    return helper(x)\n\n"
+        "class Holder:\n"
+        "    @property\n"
+        "    def decorated_method(self):\n"
+        "        return other_call()\n\n"
+        "@functools.cache\n"
+        "async def decorated_async():\n"
+        "    return thing()\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "python", workspace_root=tmp_path)
+    by_name = {symbol.name: symbol for symbol in symbols}
+
+    assert by_name["decorated_function"].kind == "function"
+    assert by_name["decorated_function"].start_line == 4
+    assert by_name["decorated_function"].signature == "def decorated_function(x):"
+    assert by_name["decorated_method"].kind == "method"
+    assert by_name["decorated_method"].container_id == by_name["Holder"].id
+    assert by_name["decorated_method"].qualified_name == "Holder.decorated_method"
+    assert by_name["decorated_async"].kind == "function"
+    assert by_name["decorated_async"].start_line == 13
+
+
+def test_decorated_function_bodies_anchor_references_to_the_function(tmp_path: Path) -> None:
+    """Body references of decorated defs anchor to the def, not None or the class."""
+    file_path = tmp_path / "decorated_refs.py"
+    file_path.write_text(
+        "@wrapper\n"
+        "def outer():\n"
+        "    return helper()\n\n"
+        "class Holder:\n"
+        "    @wrapper\n"
+        "    def inner(self):\n"
+        "        return other_call()\n",
+        encoding="utf-8",
+    )
+
+    symbols = parse_file(file_path, "python", workspace_root=tmp_path)
+    references = extract_references(file_path, "python", symbols, workspace_root=tmp_path)
+    anchors = {
+        reference.name: reference.from_symbol.name if reference.from_symbol else None
+        for reference in references
+    }
+
+    assert anchors["helper"] == "outer"
+    assert anchors["other_call"] == "inner"
