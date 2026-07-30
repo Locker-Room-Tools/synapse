@@ -47,6 +47,7 @@ MIN_ALTERNATES_SHOWN = 3
 MAX_QUESTION_ECHO = 240
 MAX_ID_ECHO = 120
 MAX_IDS_ECHOED = 10
+MAX_EXTRA_EDGES = 30
 
 
 def _bounded_text(value: str, cap: int) -> str:
@@ -130,6 +131,41 @@ def _node_payload(node: TraversedNode, edge: TraversedEdge | None) -> dict[str, 
 def _parent_id(edge: TraversedEdge) -> str | None:
     relation = edge.relation
     return relation.from_symbol_id if edge.direction == "out" else relation.to_symbol_id
+
+
+def _extra_edge_payload(edge: TraversedEdge) -> dict[str, object]:
+    """Compact projection of a discovered non-tree edge (cross-link or cycle)."""
+    relation = edge.relation
+    payload: dict[str, object] = {
+        "from": relation.from_symbol_id,
+        "to": relation.to_symbol_id,
+        "edge": str(relation.kind),
+    }
+    if relation.resolution is not None:
+        payload["res"] = str(relation.resolution)
+    payload["conf"] = str(relation.confidence)
+    if relation.start_line is not None:
+        payload["at"] = f"{relation.from_file_path}:{relation.start_line}"
+    return payload
+
+
+def _ranked_extra_edges(outcome: TraversalOutcome) -> list[TraversedEdge]:
+    """Non-tree edges (not any node's discovery edge), best evidence first."""
+    parent_edge_ids = {
+        node.parent_edge_id for node in outcome.nodes.values() if node.parent_edge_id is not None
+    }
+
+    def edge_rank(edge: TraversedEdge) -> tuple[int, int, int, str]:
+        relation = edge.relation
+        return (
+            0 if relation.kind is RelationKind.CONTAINS else resolution_rank(relation.resolution),
+            confidence_rank(relation.confidence),
+            edge.depth,
+            relation.id,
+        )
+
+    extras = [edge for edge in outcome.edges if edge.relation.id not in parent_edge_ids]
+    return sorted(extras, key=edge_rank)
 
 
 _TRUST_ORDER = ("exact", "scoped", "heuristic")
@@ -337,6 +373,18 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
     node_set = set(node_ids)
     flow_state = list(flows)
     alternates = list(discovery.alternates)
+    ranked_extras = _ranked_extra_edges(outcome)
+    extra_edges_state = ranked_extras[:MAX_EXTRA_EDGES]
+    extra_edges_capped = len(ranked_extras) - len(extra_edges_state)
+
+    def projected_extra_edges() -> list[TraversedEdge]:
+        projected = seed_ids | node_set
+        return [
+            edge
+            for edge in extra_edges_state
+            if edge.relation.from_symbol_id in projected and edge.relation.to_symbol_id in projected
+        ]
+
     imports_state: dict[str, dict[str, object]] = {}
     for file_path in node_files[:MAX_IMPORT_FILES]:
         names = imports_by_file.get(file_path, [])
@@ -397,6 +445,8 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
             traversal_coverage["unresolved_edges"] = outcome.unresolved_edges
         if outcome.dangling_targets:
             traversal_coverage["dangling_targets"] = outcome.dangling_targets
+        if outcome.heuristic_leaf_edges:
+            traversal_coverage["not_expanded_heuristic"] = outcome.heuristic_leaf_edges
         resolution_counts: dict[str, int] = {}
         for edge in outcome.edges:
             if edge.relation.kind is RelationKind.REFERENCES:
@@ -406,10 +456,22 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
                     else "unclassified"
                 )
                 resolution_counts[label] = resolution_counts.get(label, 0) + 1
+        tree_projected = sum(
+            1 for node_id in node_set if outcome.nodes[node_id].parent_edge_id is not None
+        )
+        extra_projected = len(projected_extra_edges())
         projection: dict[str, object] = {
             "flows_are_projections_over_stored_edges": True,
             "nodes_projected": len(node_set) + len(seed_ids & set(outcome.nodes)),
+            "edges": {
+                "discovered": len(outcome.edges),
+                "tree_projected": tree_projected,
+                "extra_projected": extra_projected,
+                "omitted": len(outcome.edges) - tree_projected - extra_projected,
+            },
         }
+        if extra_edges_capped:
+            projection["extra_edges_capped"] = extra_edges_capped
         if query.include_source:
             projection["source_note"] = (
                 "snippets read from current disk state; indexed line ranges may drift"
@@ -457,6 +519,9 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
             ]
         if flow_state:
             payload["flows"] = [{"ids": list(flow.ids), "trust": flow.trust} for flow in flow_state]
+        projected_extras = projected_extra_edges()
+        if projected_extras:
+            payload["edges"] = [_extra_edge_payload(edge) for edge in projected_extras]
         if imports_state:
             payload["imports"] = dict(imports_state)
         if snippets:
@@ -521,6 +586,8 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
         steps.append(drop_node(node_id))
     for file_path in reversed(list(imports_state)):
         steps.append(drop_import(file_path))
+    for _ in range(len(extra_edges_state)):
+        steps.append(drop_last("edges", extra_edges_state))
     for _ in range(min(len(alternates), MIN_ALTERNATES_SHOWN)):
         steps.append(drop_last("alternates", alternates))
     for node_id in _node_drop_order(outcome, protected, min_depth=1, max_depth=1):

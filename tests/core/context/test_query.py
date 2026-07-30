@@ -460,3 +460,97 @@ def test_only_test_matches_are_flagged(tmp_path: Path, monkeypatch: pytest.Monke
     assert payload["coverage"]["seeds"]["origin"] == "question-match"
     assert payload["coverage"]["seeds"]["only_test_matches"] is True
     assert payload["seeds"][0]["test_path"] is True
+
+
+def _build_cross_link_graph(index: SymbolIndex) -> None:
+    """A -> B, A -> C tree edges plus B -> C cross-link and C -> A cycle edge."""
+    _add_file(
+        index,
+        "src/a.py",
+        [_symbol("sym-a", "alpha", "src/a.py")],
+        [
+            _reference("ref-ab", "sym-a", "sym-b", file_path="src/a.py"),
+            _reference("ref-ac", "sym-a", "sym-c", file_path="src/a.py"),
+        ],
+    )
+    _add_file(
+        index,
+        "src/b.py",
+        [_symbol("sym-b", "beta", "src/b.py")],
+        [_reference("ref-bc", "sym-b", "sym-c", file_path="src/b.py")],
+    )
+    _add_file(
+        index,
+        "src/c.py",
+        [_symbol("sym-c", "gamma", "src/c.py")],
+        [_reference("ref-ca", "sym-c", "sym-a", file_path="src/c.py")],
+    )
+
+
+def test_non_tree_edges_are_projected_with_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _build_cross_link_graph(index)
+    result = query_context(
+        index,
+        ContextQuery(question="trace `alpha`", direction=Direction.OUT),
+        workspace_root=workspace_root,
+    )
+    payload = json.loads(result)
+    edges = payload["edges"]
+    edge_pairs = {(edge["from"], edge["to"]) for edge in edges}
+    assert ("sym-b", "sym-c") in edge_pairs
+    assert ("sym-c", "sym-a") in edge_pairs
+    cross = next(edge for edge in edges if edge["from"] == "sym-b")
+    assert cross["edge"] == "references"
+    assert cross["res"] == "exact"
+    assert cross["conf"] == "high"
+    assert cross["at"] == "src/b.py:2"
+    edge_coverage = payload["coverage"]["projection"]["edges"]
+    assert edge_coverage["discovered"] == 4
+    assert edge_coverage["tree_projected"] == 2
+    assert edge_coverage["extra_projected"] == 2
+    assert edge_coverage["omitted"] == 0
+
+
+def test_edge_projection_counts_stay_consistent_under_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    symbols = [_symbol("sym-hub", "hub", "src/hub.py")]
+    relations = []
+    for i in range(40):
+        symbols.append(
+            _symbol(f"sym-n{i:02d}", f"member{i:02d}", "src/hub.py", start_line=i * 7 + 10)
+        )
+        relations.append(
+            _reference(f"ref-t{i:02d}", "sym-hub", f"sym-n{i:02d}", file_path="src/hub.py")
+        )
+    for i in range(20):
+        relations.append(
+            _reference(
+                f"ref-x{i:02d}",
+                f"sym-n{i:02d}",
+                f"sym-n{(i + 1) % 20:02d}",
+                file_path="src/hub.py",
+            )
+        )
+    _add_file(index, "src/hub.py", symbols, relations)
+    result = query_context(
+        index,
+        ContextQuery(
+            question="explain `hub`", direction=Direction.OUT, token_budget=MIN_TOKEN_BUDGET
+        ),
+        workspace_root=workspace_root,
+    )
+    assert len(result) <= MIN_TOKEN_BUDGET * CHARS_PER_TOKEN
+    payload = json.loads(result)
+    edge_coverage = payload["coverage"]["projection"]["edges"]
+    assert (
+        edge_coverage["discovered"]
+        == edge_coverage["tree_projected"]
+        + edge_coverage["extra_projected"]
+        + edge_coverage["omitted"]
+    )
+    assert edge_coverage["omitted"] > 0
