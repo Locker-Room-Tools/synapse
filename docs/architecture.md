@@ -62,13 +62,20 @@ package's internal decomposition, not separate import targets.
   `ignores` is the shared directory ignore matcher used by both the crawler and the watch layer,
   so crawl and watch filter identically.
 - **`core.context`**: the high-level retrieval pipeline behind `synapse_query_context`:
-  deterministic keyword extraction (`keywords`), seed discovery and ranking (`seeds`),
-  bounded breadth-first traversal over stored relations with cycle prevention and
-  hub-fan-out suppression (`traversal`), a deterministic output budget with explicit
-  truncation metadata (`budget`), and orchestration plus coverage assembly (`query`).
+  Unicode-aware deterministic keyword extraction (`keywords`), seed discovery with a
+  structural fallback tier for identifier-free questions (`seeds`), bounded
+  breadth-first traversal over stored relations with cycle prevention and hub-fan-out
+  suppression (`traversal`), a deterministic output budget with explicit truncation
+  metadata (`budget`), and orchestration plus coverage assembly (`query`).
   The whole read runs on one consistent SQLite snapshot via `SymbolIndex.read_session()`.
-  Ranking may reorder stored facts (for example demoting test paths) but never upgrades
-  stored confidence, and projected flows are marked as projections over stored edges.
+  Traversal trust policy: containment and exact/scoped references are transit edges;
+  heuristic (unique-name) references stay leaf evidence and are never expanded, and
+  flows are ranked by aggregate path trust before depth. The advertised token budget
+  is an estimate at 4 chars/token; the hard guarantee is a character cap of
+  `token_budget * 4` on the exact serialized result. Ranking may reorder stored facts
+  (for example demoting test paths) but never upgrades stored confidence, and
+  projected flows are marked as projections over stored edges; non-tree edges are
+  projected separately with discovered/projected/omitted accounting.
 - **`mcp.server` / `mcp.tools` / `mcp.profiles`**: expose deterministic, token-frugal
   tools to agents through profile-tiered registration (`synapse serve --profile
   default|full`). The default profile is the minimal coding-agent surface

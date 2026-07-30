@@ -23,24 +23,46 @@ relations, ranking, deduplication, and projection server-side.
 - Parameters: `question`, `symbol_ids=None`, `direction="both"` (`in`/`out`/`both`),
   `max_depth=3` (clamped 1–5), `token_budget=4000` (clamped 500–20000),
   `include_source=False`, `workspace_path="."`
+- Traversal trust policy: only containment and `exact`/`scoped` references are
+  **transit** edges. Heuristic references (`unique-name` or unclassified) are recorded
+  as **leaf evidence** — the edge and its far symbol appear with full resolution and
+  confidence metadata, but traversal never continues past them, so unrelated symbols
+  cannot be chained through a shared name. Suppressed heuristic expansion is counted
+  in `coverage.traversal.not_expanded_heuristic`.
+- Seed origin: seeds come from explicit `symbol_ids` (`explicit-symbol`), question
+  matching (`question-match`), or — when the question matches no symbol at all — a
+  bounded, deterministic **structural fallback** (`structural-fallback`): highly
+  referenced and prominent production declarations, diversified across directories,
+  excluding test paths. `coverage.seeds` reports the origin, the `fallback_reason`,
+  and `only_test_matches: true` when every seed lives in test code.
 - Returns: one compact JSON **string** (a single wire representation; no duplicated
   structured payload) with:
   - `seeds` — ranked seed symbols with match provenance (`explicit`/`exact-name`/
-    `prefix`/`term`) and a `test_path` marker when a seed lives in test code;
+    `prefix`/`term`/`structural`) and a `test_path` marker for test code;
   - `alternates` — ambiguity is explicit: further candidates with the total count;
   - `nodes` — discovered symbols with `depth` and a `via` edge (stored kind,
     direction, resolution, confidence, `file:line` site, usage kind) — stored facts,
     verbatim;
-  - `flows` — ordered root-to-leaf chains projected over the BFS discovery tree
-    (marked as projections, never presented as stored edges);
+  - `flows` — `{ids, trust}` root-to-leaf chains projected over the BFS discovery
+    tree; `trust` is the weakest edge on the path (`exact`/`scoped`/`heuristic`), and
+    flows are ranked by aggregate path trust before depth, so a long weak path never
+    outranks a shorter trustworthy one;
+  - `edges` — a bounded, ranked projection of discovered **non-tree** edges
+    (cross-links and cycles) with the same evidence fields;
   - `imports` — file-level import facts for discovered files;
-  - `coverage` — index freshness/staleness, per-language extraction completeness and
-    limitations, traversal guards (depth/nodes/edges/fan-out suppression, remaining
-    frontier), resolution-method counts, and `zero_result` reasons;
+  - `coverage` — index freshness/staleness, seed origin, per-language extraction
+    completeness and limitations, traversal guards (depth/nodes/edges/fan-out
+    suppression, remaining frontier, suppressed heuristic expansion), resolution
+    counts, and `projection.edges` accounting (`discovered` / `tree_projected` /
+    `extra_projected` / `omitted`) so returned edges are never mistaken for all
+    discovered edges;
   - `truncation` — the applied budget, estimated tokens, and exactly what was dropped.
-- The token budget is enforced on the exact returned string using a deterministic
-  estimate of 4 characters per token; seeds, the primary flow, and coverage survive
-  truncation. Empty or truncated results are never proof of absence — read `coverage`.
+- Output-size guarantee: `token_budget` is an **estimate** at a fixed 4 characters per
+  token; the hard, tested guarantee is that the returned string never exceeds
+  `token_budget * 4` **characters** and is always valid JSON. Budget pressure drops
+  low-priority content first; under extreme pressure the result shrinks to a minimal
+  envelope (which may trim seeds) and, as a last resort, a fixed truncation-only
+  envelope. Empty or truncated results are never proof of absence — read `coverage`.
 
 The intended workflow is `synapse_ensure_workspace` → one `synapse_query_context` → at
 most a few targeted `synapse_get_definition` / `synapse_find_references` /

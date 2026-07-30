@@ -6,6 +6,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Decorated Python definitions (`@decorator def …`, decorated methods, decorated
+  async defs) are now indexed as their actual function declarations; previously the
+  anchored tree-sitter patterns missed `decorated_definition` wrappers, which made
+  every FastMCP-decorated tool invisible to search and mis-anchored the references in
+  their bodies. The reference-extraction fingerprint changes, so existing indexes
+  rebuild automatically.
+- `synapse_query_context` traversal no longer expands heuristic (`unique-name`)
+  references: they are returned as leaf evidence with full resolution/confidence
+  metadata, so unrelated symbols sharing a generic name (`add`, `get`, `run`) can no
+  longer be chained into a false multi-hop flow. Flows now carry an aggregate
+  `trust` label (`exact`/`scoped`/`heuristic`, the weakest edge on the path) and are
+  ranked by trust before depth.
+- The context-query output bound is now a hard, tested guarantee: the returned
+  string never exceeds `token_budget * 4` characters (the token figure itself is an
+  estimate), user-controlled echoes (question, symbol id lists) are bounded, and the
+  fallback envelopes are themselves bounded. Previously a large question could push
+  the minimal envelope past the cap.
+- Non-tree graph edges (cross-links, cycles) are no longer silently dropped from the
+  projection: a bounded ranked `edges` section returns them with evidence, and
+  `coverage.projection.edges` accounts for discovered vs tree-projected vs
+  extra-projected vs omitted edges.
+- Questions with no ASCII identifiers (including non-English questions) no longer
+  dead-end in `no-seed-match`: tokenization is Unicode-aware, and a deterministic
+  structural fallback seeds the query from connected production declarations across
+  repository areas, reported via `coverage.seeds.origin`/`fallback_reason`.
+  Question-matched seed sets consisting only of test code are flagged with
+  `coverage.seeds.only_test_matches`.
+- MCP and context tests no longer touch the user-global Synapse data directory:
+  autouse fixtures isolate `SYNAPSE_DATA_DIR` per test.
+
 ### Added
 - `synapse_query_context`: a high-level, deterministic, token-budgeted context query.
   One bounded MCP call performs seed discovery, multi-hop traversal over stored

@@ -144,11 +144,14 @@ def synapse_query_context(
 ) -> str:
     """First call for architecture, lifecycle, impact, and multi-file flow questions.
 
-    One bounded query: finds seed symbols for the question (or explicit symbol_ids),
-    traverses stored relations up to max_depth (direction: in|out|both), and returns
-    one JSON evidence bundle within token_budget (~4 chars/token): ranked seeds,
-    nodes with file:line + resolution + confidence evidence, ordered flows, and
-    explicit coverage/truncation. Empty or truncated results are never proof of
+    One bounded query: finds seeds (explicit symbol_ids, question matches, or a
+    structural fallback when nothing matches), traverses stored relations up to
+    max_depth (direction: in|out|both; only exact/scoped edges are transit —
+    heuristic references stay leaf evidence), and returns one JSON bundle: ranked
+    seeds, nodes and extra edges with file:line + resolution + confidence, flows
+    ranked by aggregate path trust, and explicit coverage/truncation. token_budget
+    is an estimate at 4 chars/token; the returned string never exceeds
+    token_budget*4 characters. Empty or truncated results are never proof of
     absence — check coverage. Follow up with at most a few targeted
     synapse_get_definition / synapse_find_references / synapse_get_symbol_context
     calls; do not re-run the same investigation through shell search.
