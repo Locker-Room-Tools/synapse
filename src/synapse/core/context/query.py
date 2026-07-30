@@ -366,10 +366,14 @@ def _zero_result_reason(
 def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Path) -> str:
     """Answer one context question with a ranked, budgeted evidence bundle.
 
-    Deterministic for one index state and parameter set. The result is a compact
-    JSON string bounded by the clamped token budget; seeds, the primary flow, and
-    coverage survive truncation, and truncation or missing coverage is always
-    reported explicitly so an empty answer never reads as proof of absence.
+    Deterministic for one index state and parameter set. The hard guarantee is on
+    size: the returned string never exceeds the CLAMPED token budget times 4
+    characters and is always valid JSON (`token_budget` itself is an estimate, not
+    an exact model-token count). Normal budget reduction preserves high-priority
+    evidence — seeds, the primary flow, coverage — as long as it fits; under extreme
+    pressure the result shrinks to a minimal envelope that may trim seeds, and as a
+    last resort to a truncation-only envelope that always carries `complete: false`,
+    so a truncated result can never look complete or read as proof of absence.
     """
     question = query.question.strip()
     explicit = tuple(dict.fromkeys(query.symbol_ids))

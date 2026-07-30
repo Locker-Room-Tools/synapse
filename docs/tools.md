@@ -31,10 +31,29 @@ relations, ranking, deduplication, and projection server-side.
   in `coverage.traversal.not_expanded_heuristic`.
 - Seed origin: seeds come from explicit `symbol_ids` (`explicit-symbol`), question
   matching (`question-match`), or — when the question matches no symbol at all — a
-  bounded, deterministic **structural fallback** (`structural-fallback`): highly
-  referenced and prominent production declarations, diversified across directories,
-  excluding test paths. `coverage.seeds` reports the origin, the `fallback_reason`,
-  and `only_test_matches: true` when every seed lives in test code.
+  bounded, deterministic **structural fallback** (`structural-fallback`).
+  `coverage.seeds` reports the origin, the `fallback_reason`, and
+  `only_test_matches: true` when every seed lives in test code.
+- Seed tiering: an exact production declaration for a token dominates — prefix and
+  term matches for that token stay visible as alternates but never become peer
+  active seeds. Multiple exact declarations (overloads, genuine ambiguity) all stay
+  active; exact test-only matches stay active but flagged. Long unmatched terms
+  (≥7 chars) retry once with a 6-char prefix, so morphological variants
+  ("registration") still reach declarations ("register_...").
+- Structural fallback ranking (documented trust semantics): a deterministic integer
+  score over 3× incoming **exact/scoped** references (heuristic unique-name
+  popularity never counts), 2× containment children, 4× file import reach (distinct
+  files whose declared import names the symbol's module), +2 public name (no
+  leading underscore), +2 shallow production path — then kind relevance and path
+  depth; alphabetical order is only the final tiebreak. Test paths are excluded and
+  a per-directory cap spreads seeds across repository areas.
+- Projection policy (`coverage.projection.policy`): queries whose seeds include
+  test code run `test-relevant` (full test evidence). Everything else runs
+  `production-focus`: projected test nodes are capped at 5, excess is demoted (and
+  counted in `coverage.projection.tests = {discovered, projected, demoted}`), and
+  budget drops remove test evidence before comparable production evidence. Test
+  evidence is never globally removed — impact queries still surface tests within
+  the cap.
 - Returns: one compact JSON **string** (a single wire representation; no duplicated
   structured payload) with:
   - `seeds` — ranked seed symbols with match provenance (`explicit`/`exact-name`/
@@ -61,11 +80,15 @@ relations, ranking, deduplication, and projection server-side.
     discovered edges;
   - `truncation` — the applied budget, estimated tokens, and exactly what was dropped.
 - Output-size guarantee: `token_budget` is an **estimate** at a fixed 4 characters per
-  token; the hard, tested guarantee is that the returned string never exceeds
-  `token_budget * 4` **characters** and is always valid JSON. Budget pressure drops
-  low-priority content first; under extreme pressure the result shrinks to a minimal
-  envelope (which may trim seeds) and, as a last resort, a fixed truncation-only
-  envelope. Empty or truncated results are never proof of absence — read `coverage`.
+  token; the hard, tested guarantee is that the returned string never exceeds the
+  **clamped** budget (500–20000) times 4 **characters** and is always valid JSON —
+  `query.token_budget` echoes the clamped value the cap applies to. Normal budget
+  pressure drops low-priority content first and preserves seeds, the primary flow,
+  and coverage while they fit; under extreme pressure the result shrinks to a
+  minimal envelope (which may trim seeds) and, as a last resort, a fixed
+  truncation-only envelope that always carries `complete: false`, so truncation can
+  never look like a complete result. Empty or truncated results are never proof of
+  absence — read `coverage`.
 
 The intended workflow is `synapse_ensure_workspace` → one `synapse_query_context` → at
 most a few targeted `synapse_get_definition` / `synapse_find_references` /

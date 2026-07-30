@@ -113,3 +113,19 @@ def test_enforce_budget_is_deterministic() -> None:
         make_assemble(second_items), second_steps, minimal, token_budget=MIN_TOKEN_BUDGET
     )
     assert first == second
+
+
+def test_truncation_only_envelope_never_looks_complete() -> None:
+    """When even the minimal envelope cannot fit, the fallback admits incompleteness."""
+    filler = "z" * (MIN_TOKEN_BUDGET * CHARS_PER_TOKEN * 3)
+
+    def assemble(truncation: dict[str, object]) -> dict[str, object]:
+        return {"filler": filler, "truncation": truncation}
+
+    def minimal(truncation: dict[str, object]) -> dict[str, object]:
+        return {"filler": filler, "seeds": [], "truncation": truncation}
+
+    text = enforce_budget(assemble, [], minimal, token_budget=MIN_TOKEN_BUDGET)
+    assert len(text) <= MIN_TOKEN_BUDGET * CHARS_PER_TOKEN
+    assert '"complete":false' in text
+    assert '"reason":"hard-cap"' in text

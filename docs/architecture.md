@@ -96,6 +96,13 @@ package's internal decomposition, not separate import targets.
   `core.indexing.resolution` binds a reference as `exact` only when the source syntax plus
   the indexed declarations prove one target — a fully-qualified name, an unambiguous dotted
   suffix, or a member reached through a receiver whose type is declared in the source.
+  Receiver evidence includes explicitly typed locals and parameters, direct
+  constructor-call assignments, `self`/`cls` inside the enclosing type, static
+  type-name access, and factory calls whose declaration carries an explicit,
+  same-file, resolvable return annotation (C# and Python both provide
+  `LanguageSpec.reference_syntax`). Unsupported receiver evidence — inherited
+  members, union or missing annotations, cross-file factory returns, dynamic
+  receivers — leaves the member honestly `ambiguous`.
   Narrowing by namespace, import, or enclosing type is weaker and recorded as `scoped`; a
   workspace-unique name match remains `unique-name` (a heuristic, never proof);
   multi-candidate names are `ambiguous` and unknown names `unresolved`. Each reference edge

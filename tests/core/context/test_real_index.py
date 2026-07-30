@@ -18,7 +18,9 @@ from synapse.core.models import RelationKind, ResolutionMethod
 from synapse.core.workspace import db_path
 
 _FILES = {
-    "app/__init__.py": ("from app.store import Repository\nfrom app.factory import open_repository\n"),
+    "app/__init__.py": (
+        "from app.store import Repository\nfrom app.factory import open_repository\n"
+    ),
     "app/store.py": (
         "class Repository:\n"
         "    def save(self, record):\n"

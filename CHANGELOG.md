@@ -6,6 +6,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Python structural reference resolution (`PYTHON_REFERENCE_SYNTAX`): member calls
+  now resolve `exact` when receiver evidence proves the containing type — typed
+  parameters and locals, direct constructor assignments (`x = Repo()`), `self`/`cls`
+  inside the enclosing class, static type-name access, and factory calls with an
+  explicit same-file return annotation (`open_repository().save()`); everything
+  weaker stays honestly `ambiguous`. The extractor version bump forces existing
+  indexes to rebuild once. Unsupported and documented: inherited members,
+  union/missing annotations, cross-file factory returns, dynamic receivers,
+  Python import-scope narrowing.
+- Exact-seed tiering in `synapse_query_context`: an exact production declaration
+  dominates a token's prefix/term matches (they remain visible as alternates);
+  test declarations never become active peers of an exact production match; long
+  unmatched terms relax once to a 6-char prefix.
+- Trusted structural fallback ranking: centrality comes only from exact/scoped
+  references, containment structure, and declared import reach, with public-name
+  and shallow-path bonuses — heuristic unique-name popularity no longer selects
+  fallback seeds.
+- Production-orientation projection policy (`coverage.projection.policy`):
+  non-test queries cap projected test nodes at 5, demote the excess with explicit
+  `{discovered, projected, demoted}` accounting, and drop test evidence before
+  comparable production evidence under budget pressure; queries about test symbols
+  keep full test context.
+
 ### Fixed
 - Decorated Python definitions (`@decorator def …`, decorated methods, decorated
   async defs) are now indexed as their actual function declarations; previously the
@@ -49,8 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a single compact JSON string with ranked seeds, `file:line` evidence carrying stored
   resolution/confidence verbatim, ordered flows (marked as projections over stored
   edges), file-level imports, an explicit five-part coverage model (index, extraction,
-  traversal, resolution, projection), and truncation metadata; seeds, the primary flow,
-  and coverage always survive the budget.
+  traversal, resolution, projection), and truncation metadata; normal budget
+  reduction preserves seeds, the primary flow, and coverage while they fit, and the
+  extreme hard-cap fallback shrinks to a truncation-only envelope that always
+  carries `complete: false`.
 - Profile-tiered MCP tool surface: `synapse serve --profile default|full`. The default
   profile exposes the minimal coding-agent set (`synapse_ensure_workspace`,
   `synapse_query_context`, `synapse_get_definition`, `synapse_get_symbol_context`,
