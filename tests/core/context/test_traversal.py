@@ -316,3 +316,69 @@ def test_empty_seed_list_yields_empty_outcome(tmp_path: Path) -> None:
     assert outcome.nodes == {}
     assert outcome.edges == ()
     assert not any(outcome.guards.values())
+
+
+def test_heuristic_references_are_leaf_evidence_not_transit(tmp_path: Path) -> None:
+    """A unique-name chain of generic names must not become a multi-hop path."""
+    index = SymbolIndex(tmp_path / "heuristic.sqlite")
+    files = {
+        "seed.py": (
+            [_symbol("sym-seed", "register", "seed.py")],
+            [
+                _reference(
+                    "ref-h1",
+                    "sym-seed",
+                    "sym-add-1",
+                    file_path="seed.py",
+                    resolution=ResolutionMethod.UNIQUE_NAME,
+                    confidence=Confidence.MEDIUM,
+                )
+            ],
+        ),
+        "buffer.py": (
+            [_symbol("sym-add-1", "add", "buffer.py")],
+            [
+                _reference(
+                    "ref-h2",
+                    "sym-add-1",
+                    "sym-add-2",
+                    file_path="buffer.py",
+                    resolution=ResolutionMethod.UNIQUE_NAME,
+                    confidence=Confidence.MEDIUM,
+                )
+            ],
+        ),
+        "cli.py": ([_symbol("sym-add-2", "add", "cli.py")], []),
+    }
+    for file_path, (symbols, relations) in files.items():
+        index.upsert_file(
+            SourceFile(
+                id=file_path,
+                path=file_path,
+                language="python",
+                project_root=None,
+                content_hash=f"hash-{file_path}",
+                indexed_at="2026-07-30T00:00:00+00:00",
+            )
+        )
+        index.replace_symbols_for_file(file_path, symbols, relations)
+
+    seed = _seed(index, "sym-seed")
+    with index.read_session() as reads:
+        outcome = traverse(reads, [seed], Direction.OUT, TraversalLimits(max_depth=5))
+
+    assert sorted(outcome.nodes) == ["sym-add-1", "sym-seed"]
+    assert "sym-add-2" not in outcome.nodes
+    assert outcome.heuristic_leaf_edges == 1
+    leaf = outcome.nodes["sym-add-1"]
+    assert leaf.parent_edge_id == "ref-h1"
+    assert outcome.edges[0].relation.resolution is ResolutionMethod.UNIQUE_NAME
+
+
+def test_exact_and_scoped_references_remain_transit(tmp_path: Path) -> None:
+    index = _build_graph(tmp_path)
+    seed = _seed(index, "sym-a")
+    with index.read_session() as reads:
+        outcome = traverse(reads, [seed], Direction.OUT, TraversalLimits(max_depth=3))
+    assert sorted(outcome.nodes) == ["sym-a", "sym-b", "sym-c"]
+    assert outcome.heuristic_leaf_edges == 0

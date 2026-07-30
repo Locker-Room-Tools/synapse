@@ -25,6 +25,7 @@ from synapse.core.context.traversal import (
     TraversedEdge,
     TraversedNode,
     confidence_rank,
+    edge_trust,
     resolution_rank,
     traverse,
 )
@@ -118,52 +119,79 @@ def _parent_id(edge: TraversedEdge) -> str | None:
     return relation.from_symbol_id if edge.direction == "out" else relation.to_symbol_id
 
 
-def _build_flows(outcome: TraversalOutcome) -> list[list[str]]:
+_TRUST_ORDER = ("exact", "scoped", "heuristic")
+
+
+@dataclass(frozen=True, slots=True)
+class Flow:
+    """One root-to-leaf chain with its aggregate path trust."""
+
+    ids: tuple[str, ...]
+    trust: str
+
+
+def _build_flows(outcome: TraversalOutcome) -> list[Flow]:
     """Project root-to-leaf chains over the BFS discovery tree, best evidence first.
 
-    Chains routed through test code rank below production chains of the same depth —
-    a ranking choice only; stored facts are unchanged.
+    Ranking uses aggregate path trust before depth: a chain's trust is its weakest
+    edge, so one heuristic hop marks the whole flow heuristic and a long weak path
+    never outranks a shorter exact/scoped path. Chains routed through test code rank
+    below production chains at equal trust — ranking choices only; stored facts are
+    unchanged.
     """
     edges_by_id = {edge.relation.id: edge for edge in outcome.edges}
 
-    def chain_for(node: TraversedNode) -> list[str]:
+    def path_edges(node: TraversedNode) -> tuple[list[str], list[TraversedEdge]]:
         chain: list[str] = []
+        edges: list[TraversedEdge] = []
         current: TraversedNode | None = node
         while current is not None:
             chain.append(current.symbol.id)
             parent_edge = (
                 edges_by_id[current.parent_edge_id] if current.parent_edge_id is not None else None
             )
+            if parent_edge is not None:
+                edges.append(parent_edge)
             parent = _parent_id(parent_edge) if parent_edge is not None else None
             current = outcome.nodes.get(parent) if parent is not None else None
         chain.reverse()
-        return chain
+        return chain, edges
 
-    ranked_chains: list[tuple[tuple[int, int, int, int, str], list[str]]] = []
+    ranked_chains: list[tuple[tuple[int, int, int, int, int, str], Flow]] = []
     for node in outcome.nodes.values():
         if node.parent_edge_id is None:
             continue
-        relation = edges_by_id[node.parent_edge_id].relation
-        chain = chain_for(node)
+        chain, chain_edges = path_edges(node)
+        trusts = [edge_trust(edge.relation) for edge in chain_edges]
+        heuristic_hops = sum(1 for trust in trusts if trust == "heuristic")
+        worst_resolution = max(
+            resolution_rank(edge.relation.resolution)
+            if edge.relation.kind is not RelationKind.CONTAINS
+            else 0
+            for edge in chain_edges
+        )
+        worst_confidence = max(confidence_rank(edge.relation.confidence) for edge in chain_edges)
         test_penalty = sum(
             1 for node_id in chain if is_test_path(outcome.nodes[node_id].symbol.file_path)
         )
         rank = (
+            heuristic_hops,
+            worst_resolution,
             test_penalty,
             -node.depth,
-            resolution_rank(relation.resolution),
-            confidence_rank(relation.confidence),
+            worst_confidence,
             node.symbol.id,
         )
-        ranked_chains.append((rank, chain))
+        trust_label = max(trusts, key=_TRUST_ORDER.index)
+        ranked_chains.append((rank, Flow(ids=tuple(chain), trust=trust_label)))
 
-    flows: list[list[str]] = []
+    flows: list[Flow] = []
     covered: set[str] = set()
-    for _, chain in sorted(ranked_chains, key=lambda entry: entry[0]):
-        if chain[-1] in covered:
+    for _, flow in sorted(ranked_chains, key=lambda entry: entry[0]):
+        if flow.ids[-1] in covered:
             continue
-        flows.append(chain)
-        covered.update(chain)
+        flows.append(flow)
+        covered.update(flow.ids)
         if len(flows) >= MAX_FLOWS:
             break
     return flows
@@ -289,7 +317,7 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
     symbol_count = int(stats["symbols"]) if isinstance(stats["symbols"], int) else 0
     seed_ids = {seed.symbol.id for seed in discovery.seeds}
     flows = _build_flows(outcome)
-    protected = set(flows[0]) | seed_ids if flows else set(seed_ids)
+    protected = set(flows[0].ids) | seed_ids if flows else set(seed_ids)
 
     # Mutable projection state consumed by assemble() and the drop steps.
     node_ids = [node_id for node_id in outcome.nodes if node_id not in seed_ids]
@@ -402,7 +430,7 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
                 if node_id in node_set
             ]
         if flow_state:
-            payload["flows"] = [list(chain) for chain in flow_state]
+            payload["flows"] = [{"ids": list(flow.ids), "trust": flow.trust} for flow in flow_state]
         if imports_state:
             payload["imports"] = dict(imports_state)
         if snippets:

@@ -146,7 +146,10 @@ def test_query_context_returns_ordered_flow_with_coverage(
     assert beta["via"]["res"] == "exact"
     assert beta["via"]["conf"] == "high"
     assert beta["via"]["at"] == "src/a.py:2"
-    assert payload["flows"] == [["sym-a", "sym-b", "sym-c"]]
+    assert payload["flows"] == [
+        {"ids": ["sym-a", "sym-b"], "trust": "exact"},
+        {"ids": ["sym-a", "sym-b", "sym-c"], "trust": "scoped"},
+    ]
     coverage = payload["coverage"]
     assert coverage["index"]["stale"] is False
     assert coverage["traversal"]["depth_reached"] == 2
@@ -298,4 +301,59 @@ def test_flows_prefer_production_chains_over_test_chains(
         index, ContextQuery(question="who uses `hub`?"), workspace_root=workspace_root
     )
     payload = json.loads(result)
-    assert payload["flows"][0] == ["sym-hub", "sym-caller"]
+    assert payload["flows"][0] == {"ids": ["sym-hub", "sym-caller"], "trust": "exact"}
+
+
+def test_exact_flow_outranks_longer_heuristic_flow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Aggregate path trust ranks flows; depth never outranks confidence."""
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _add_file(
+        index,
+        "src/root.py",
+        [_symbol("sym-root", "root", "src/root.py")],
+        [
+            _reference("ref-e1", "sym-root", "sym-mid", file_path="src/root.py"),
+            _reference(
+                "ref-w1",
+                "sym-root",
+                "sym-weak",
+                file_path="src/root.py",
+                resolution=ResolutionMethod.UNIQUE_NAME,
+            ),
+        ],
+    )
+    _add_file(
+        index,
+        "src/mid.py",
+        [_symbol("sym-mid", "middle", "src/mid.py")],
+        [
+            _reference(
+                "ref-w2",
+                "sym-mid",
+                "sym-deep",
+                file_path="src/mid.py",
+                resolution=ResolutionMethod.UNIQUE_NAME,
+            )
+        ],
+    )
+    _add_file(index, "src/weak.py", [_symbol("sym-weak", "weak_leaf", "src/weak.py")], [])
+    _add_file(index, "src/deep.py", [_symbol("sym-deep", "deep_leaf", "src/deep.py")], [])
+
+    result = query_context(
+        index,
+        ContextQuery(question="trace `root`", direction=Direction.OUT, max_depth=4),
+        workspace_root=workspace_root,
+    )
+    payload = json.loads(result)
+    flows = payload["flows"]
+    # The two-hop chain ending in a heuristic edge is visibly heuristic and ranks
+    # below the shorter all-exact chain.
+    assert flows[0]["trust"] == "exact"
+    assert flows[0]["ids"] == ["sym-root", "sym-mid"]
+    heuristic_flows = [flow for flow in flows[1:] if flow["trust"] == "heuristic"]
+    assert heuristic_flows
+    assert all(len(flow["ids"]) >= 2 for flow in heuristic_flows)
+    node_resolutions = {node["id"]: node["via"].get("res") for node in payload["nodes"]}
+    assert node_resolutions["sym-weak"] == "unique-name"

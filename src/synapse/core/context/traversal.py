@@ -69,6 +69,7 @@ class TraversalOutcome:
     dangling_targets: int
     depth_reached: int
     frontier_remaining: int
+    heuristic_leaf_edges: int
 
 
 _KIND_RANKS: dict[RelationKind, int] = {
@@ -102,6 +103,31 @@ def confidence_rank(confidence: Confidence) -> int:
     return _CONFIDENCE_RANKS[confidence]
 
 
+def edge_trust(relation: Relation) -> str:
+    """Classify a stored edge for traversal policy: exact, scoped, or heuristic.
+
+    Containment is a parser-proven structural fact and counts as exact. Reference
+    edges keep their stored resolution: exact and scoped are trustworthy transit;
+    everything weaker (unique-name and unclassified) is heuristic.
+    """
+    if relation.kind is RelationKind.CONTAINS:
+        return "exact"
+    if relation.resolution is ResolutionMethod.EXACT:
+        return "exact"
+    if relation.resolution is ResolutionMethod.SCOPED:
+        return "scoped"
+    return "heuristic"
+
+
+def is_transit_edge(relation: Relation) -> bool:
+    """Whether traversal may continue past this edge (trust policy).
+
+    Heuristic edges are recorded as leaf evidence but never used as transit, so
+    symbols cannot be chained merely because they share a common name.
+    """
+    return edge_trust(relation) != "heuristic"
+
+
 def _edge_sort_key(relation: Relation) -> tuple[int, int, int, int, str]:
     return (
         _KIND_RANKS[relation.kind],
@@ -122,6 +148,7 @@ class _TraversalState:
     unresolved_edges: int = 0
     dangling_targets: int = 0
     depth_reached: int = 0
+    heuristic_leaf_edges: int = 0
 
 
 def _group_by_endpoint(relations: list[Relation], *, endpoint: str) -> dict[str, list[Relation]]:
@@ -140,9 +167,9 @@ def _expand_level(
     incoming: dict[str, list[Relation]],
     depth: int,
     limits: TraversalLimits,
-) -> list[tuple[str, TraversedEdge]]:
-    """Cross one BFS level; returns (far endpoint id, discovering edge) pairs in order."""
-    discovered: list[tuple[str, TraversedEdge]] = []
+) -> list[tuple[str, TraversedEdge, bool]]:
+    """Cross one BFS level; returns (far id, discovering edge, transit) in order."""
+    discovered: list[tuple[str, TraversedEdge, bool]] = []
     for node_id in frontier:
         for direction_label, relations in (
             ("out", outgoing.get(node_id, [])),
@@ -169,8 +196,11 @@ def _expand_level(
                 state.edges.append(edge)
                 state.depth_reached = depth
                 kept += 1
+                transit = is_transit_edge(relation)
+                if not transit:
+                    state.heuristic_leaf_edges += 1
                 if far_id not in state.nodes:
-                    discovered.append((far_id, edge))
+                    discovered.append((far_id, edge, transit))
     return discovered
 
 
@@ -182,10 +212,14 @@ def traverse(
 ) -> TraversalOutcome:
     """Traverse stored contains/references edges breadth-first from the seeds.
 
-    Deterministic for one index state: frontier order follows seed rank and discovery
-    order, per-node edges are expanded best-evidence-first, cycles terminate through
-    the visited set, and every guard that stopped expansion is reported. Stored
-    resolution and confidence are carried verbatim; suppressed fan-out and unresolved
+    Trust policy: only exact/scoped references and containment are transit edges;
+    heuristic (unique-name or unclassified) references are recorded as leaf evidence
+    with their far node but are never expanded, so unrelated symbols cannot be
+    chained through a shared name. Deterministic for one index state: frontier order
+    follows seed rank and discovery order, per-node edges are expanded
+    best-evidence-first, cycles terminate through the visited set, and every guard
+    that stopped expansion is reported. Stored resolution and confidence are carried
+    verbatim; suppressed fan-out, suppressed heuristic expansion, and unresolved
     endpoints are counted, never silently dropped.
     """
     limits = limits.clamped()
@@ -217,11 +251,11 @@ def traverse(
         discovered = _expand_level(state, frontier, outgoing, incoming, depth, limits)
 
         new_ids: list[str] = []
-        parent_edges: dict[str, TraversedEdge] = {}
-        for far_id, edge in discovered:
+        parent_edges: dict[str, tuple[TraversedEdge, bool]] = {}
+        for far_id, edge, transit in discovered:
             if far_id in state.nodes or far_id in parent_edges:
                 continue
-            parent_edges[far_id] = edge
+            parent_edges[far_id] = (edge, transit)
             new_ids.append(far_id)
         capacity = limits.max_nodes - len(state.nodes)
         if len(new_ids) > capacity:
@@ -234,10 +268,12 @@ def traverse(
             if symbol is None:
                 state.dangling_targets += 1
                 continue
+            edge, transit = parent_edges[far_id]
             state.nodes[far_id] = TraversedNode(
-                symbol=symbol, depth=depth, parent_edge_id=parent_edges[far_id].relation.id
+                symbol=symbol, depth=depth, parent_edge_id=edge.relation.id
             )
-            next_frontier.append(far_id)
+            if transit:
+                next_frontier.append(far_id)
         frontier = next_frontier
         if state.guards["max_total_edges"] or state.guards["max_nodes"]:
             break
@@ -254,4 +290,5 @@ def traverse(
         dangling_targets=state.dangling_targets,
         depth_reached=state.depth_reached,
         frontier_remaining=len(frontier),
+        heuristic_leaf_edges=state.heuristic_leaf_edges,
     )
