@@ -1,4 +1,10 @@
-"""Deterministic output-budget estimation and enforcement for context results."""
+"""Deterministic output-budget estimation and enforcement for context results.
+
+Contract: ``token_budget`` is an ESTIMATED token budget at a fixed 4 characters per
+token. The hard, tested guarantee is on characters: the final serialized result never
+exceeds ``token_budget * CHARS_PER_TOKEN`` characters. ``estimated_tokens`` in the
+result is an approximation, never an exact model-token count.
+"""
 
 import json
 from collections.abc import Callable, Sequence
@@ -8,7 +14,6 @@ CHARS_PER_TOKEN = 4
 MIN_TOKEN_BUDGET = 500
 DEFAULT_TOKEN_BUDGET = 4000
 MAX_TOKEN_BUDGET = 20000
-_ESTIMATE_FIELD_RESERVE = 16
 
 
 def clamp_token_budget(requested: int) -> int:
@@ -17,7 +22,7 @@ def clamp_token_budget(requested: int) -> int:
 
 
 def estimate_tokens(text: str) -> int:
-    """Conservative deterministic token estimate: ceil(chars / 4)."""
+    """Conservative deterministic token estimate: ceil(chars / 4). An estimate only."""
     return (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN
 
 
@@ -28,7 +33,7 @@ def serialize(payload: dict[str, object]) -> str:
 
 @dataclass(frozen=True, slots=True)
 class DropStep:
-    """One reversible-in-metadata drop: removes a single item from the payload state."""
+    """One deterministic drop: removes a single item from the payload state."""
 
     category: str
     apply: Callable[[], bool]
@@ -41,13 +46,15 @@ def enforce_budget(
     *,
     token_budget: int,
 ) -> str:
-    """Serialize under the hard character budget, dropping low-priority items first.
+    """Serialize under the hard character cap, dropping low-priority items first.
 
-    ``assemble`` rebuilds the payload from mutable state after each drop and embeds
-    the supplied truncation metadata. When every droppable item is gone and the
-    payload still exceeds the budget, ``minimal`` provides the smallest honest
-    envelope (seeds and coverage summary). The budget is a hard cap on the exact
-    returned string, estimated as chars/4 tokens.
+    The cap ``token_budget * CHARS_PER_TOKEN`` is checked against the exact string
+    that is returned, at every stage. ``assemble`` rebuilds the payload from mutable
+    state after each drop and must embed the supplied truncation mapping by
+    reference. When every droppable item is gone, deterministic shrink stages apply:
+    the ``minimal`` envelope, then that envelope with trailing seed entries removed
+    one by one, then a fixed tiny envelope that always fits. The result is always
+    valid JSON.
     """
     char_budget = token_budget * CHARS_PER_TOKEN
     dropped: dict[str, int] = {}
@@ -69,15 +76,35 @@ def enforce_budget(
 
     while True:
         meta = truncation()
-        payload = assemble(meta)
-        if len(serialize(payload)) + _ESTIMATE_FIELD_RESERVE <= char_budget:
-            return finalize(payload, meta)
-        while queue:
+        final = finalize(assemble(meta), meta)
+        if len(final) <= char_budget:
+            return final
+        for _ in range(len(queue)):
             step = queue.pop(0)
             if step.apply():
                 dropped[step.category] = dropped.get(step.category, 0) + 1
                 break
         else:
-            meta = truncation()
-            meta["reason"] = "hard-cap"
-            return finalize(minimal(meta), meta)
+            break
+
+    meta = truncation()
+    meta["reason"] = "hard-cap"
+    payload = minimal(meta)
+    final = finalize(payload, meta)
+    if len(final) <= char_budget:
+        return final
+    seeds = payload.get("seeds")
+    while isinstance(seeds, list) and seeds:
+        seeds.pop()
+        final = finalize(payload, meta)
+        if len(final) <= char_budget:
+            return final
+
+    ultimate: dict[str, object] = {
+        "truncation": {
+            "budget_tokens": token_budget,
+            "complete": False,
+            "reason": "hard-cap",
+        }
+    }
+    return serialize(ultimate)

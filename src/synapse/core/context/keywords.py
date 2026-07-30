@@ -25,6 +25,8 @@ STOPWORDS: frozenset[str] = frozenset(
     }
 )  # fmt: skip
 
+MAX_TOKEN_LENGTH = 128
+
 _QUOTED_PATTERN = re.compile(r"[`'\"]([^`'\"]+)[`'\"]")
 _TOKEN_PATTERN = re.compile(r"[\w.]+")
 _CASE_TRANSITION_PATTERN = re.compile(r"[a-z][A-Z]")
@@ -84,7 +86,9 @@ def extract_keywords(question: str) -> QueryKeywords:
     terms: list[str] = []
     for match in _TOKEN_PATTERN.finditer(question):
         token = match.group(0).strip("._")
-        if not token:
+        if not token or len(token) > MAX_TOKEN_LENGTH:
+            # No real identifier is this long; over-long tokens would only feed
+            # pathological search patterns downstream.
             continue
         if _is_identifier_like(token, quoted):
             _add_unique(identifiers, token)

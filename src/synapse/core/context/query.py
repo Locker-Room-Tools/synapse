@@ -1,5 +1,6 @@
 """Orchestration of one bounded, budgeted, deterministic context query."""
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
@@ -43,6 +44,18 @@ MAX_IMPORT_NAMES = 15
 MAX_SOURCE_SEEDS = 3
 MAX_SOURCE_LINES = 20
 MIN_ALTERNATES_SHOWN = 3
+MAX_QUESTION_ECHO = 240
+MAX_ID_ECHO = 120
+MAX_IDS_ECHOED = 10
+
+
+def _bounded_text(value: str, cap: int) -> str:
+    """Deterministically truncate one user-controlled string for echoing."""
+    return value if len(value) <= cap else value[: cap - 1] + "…"
+
+
+def _bounded_id_echo(ids: Sequence[str]) -> list[str]:
+    return [_bounded_text(value, MAX_ID_ECHO) for value in ids[:MAX_IDS_ECHOED]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -334,14 +347,19 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
             }
     snippets = _seed_snippets(discovery.seeds, workspace_root) if query.include_source else []
 
+    question_echo = _bounded_text(question, MAX_QUESTION_ECHO)
     query_section: dict[str, object] = {
-        "question": question,
+        "question": question_echo,
         "direction": str(query.direction),
         "max_depth": limits.max_depth,
         "token_budget": token_budget,
     }
+    if question_echo != question:
+        query_section["question_truncated"] = True
     if explicit:
-        query_section["symbol_ids"] = list(explicit)
+        query_section["symbol_ids"] = _bounded_id_echo(explicit)
+        if len(explicit) > MAX_IDS_ECHOED:
+            query_section["symbol_ids_total"] = len(explicit)
 
     zero_result = _zero_result_reason(symbol_count, discovery, explicit)
     languages: list[str] = []
@@ -411,7 +429,9 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
             coverage["resolution"] = resolution_counts
         coverage["projection"] = projection
         if discovery.unknown_symbol_ids:
-            coverage["unknown_symbol_ids"] = list(discovery.unknown_symbol_ids)
+            coverage["unknown_symbol_ids"] = _bounded_id_echo(discovery.unknown_symbol_ids)
+            if len(discovery.unknown_symbol_ids) > MAX_IDS_ECHOED:
+                coverage["unknown_symbol_ids_total"] = len(discovery.unknown_symbol_ids)
         if zero_result is not None:
             coverage["zero_result"] = zero_result
         return coverage
