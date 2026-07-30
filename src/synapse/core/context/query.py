@@ -250,18 +250,20 @@ def _build_flows(
     *,
     relevant_ids: set[str],
     token_matches: dict[str, frozenset[str]],
-) -> tuple[list[Flow], bool]:
+) -> tuple[list[Flow], str | None]:
     """Project root-to-leaf chains over the BFS discovery tree, best evidence first.
 
-    Ranking uses aggregate path trust before depth: a chain's trust is its weakest
-    edge, so one heuristic hop marks the whole flow heuristic and a long weak path
-    never outranks a shorter exact/scoped path. Among equally trusted chains, the
-    one covering more distinct question tokens wins. A chain must be substantive —
-    carry at least one reference edge or end at a question-relevant symbol; pure
-    containment descent into unmatched members is structure, not an answer, and
-    projects as nodes only. Returns the flows and whether chains existed but none
-    was substantive. Chains routed through test code rank below production chains
-    at equal trust — ranking choices only; stored facts are unchanged.
+    Flows are verified evidence: only chains whose every hop is exact or scoped
+    project as flows. A heuristic (unique-name) relation is a hypothesis, not a
+    verified execution step — it stays visible as leaf nodes, extra edges, and
+    coverage, never as a flow. A chain must also be substantive — carry at least
+    one reference edge or end at a question-relevant symbol; pure containment
+    descent into unmatched members is structure, not an answer. Among qualifying
+    chains, trust ranks before question relevance, then depth. Returns the flows
+    and, when empty, an explicit reason: "no-trusted-flow" when substantive
+    chains existed but all were heuristic, "no-relevant-flow" when none was
+    substantive. Chains routed through test code rank below production chains at
+    equal trust — ranking choices only; stored facts are unchanged.
     """
     edges_by_id = {edge.relation.id: edge for edge in outcome.edges}
 
@@ -282,7 +284,8 @@ def _build_flows(
         return chain, edges
 
     chains_existed = False
-    ranked_chains: list[tuple[tuple[int, int, int, int, int, int, int, str], Flow]] = []
+    substantive_chains = 0
+    ranked_chains: list[tuple[tuple[int, int, int, int, int, int, str], Flow]] = []
     for node in outcome.nodes.values():
         if node.parent_edge_id is None:
             continue
@@ -294,8 +297,10 @@ def _build_flows(
         )
         if not substantive:
             continue
+        substantive_chains += 1
         trusts = [edge_trust(edge.relation) for edge in chain_edges]
-        heuristic_hops = sum(1 for trust in trusts if trust == "heuristic")
+        if "heuristic" in trusts:
+            continue
         worst_resolution = max(
             resolution_rank(edge.relation.resolution)
             if edge.relation.kind is not RelationKind.CONTAINS
@@ -313,7 +318,6 @@ def _build_flows(
         for node_id in chain:
             covered_tokens.update(token_matches.get(node_id, frozenset()))
         rank = (
-            heuristic_hops,
             worst_resolution,
             test_penalty,
             -relevant_nodes,
@@ -334,7 +338,11 @@ def _build_flows(
         covered.update(flow.ids)
         if len(flows) >= MAX_FLOWS:
             break
-    return flows, chains_existed and not flows
+    if flows:
+        return flows, None
+    if substantive_chains:
+        return flows, "no-trusted-flow"
+    return flows, "no-relevant-flow" if chains_existed else None
 
 
 def _node_drop_order(
@@ -512,7 +520,7 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
     seed_ids = {seed.symbol.id for seed in discovery.seeds}
     token_matches = _node_token_matches(outcome, keywords)
     relevant_ids = seed_ids | set(token_matches)
-    flows, flows_omitted_for_relevance = _build_flows(
+    flows, flows_omitted_reason = _build_flows(
         outcome, relevant_ids=relevant_ids, token_matches=token_matches
     )
     protected = set(flows[0].ids) | seed_ids if flows else set(seed_ids)
@@ -688,8 +696,8 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
             projection["nodes_demoted_low_relevance"] = len(low_relevance_demoted)
         if extra_edges_deduped:
             projection["extra_edges_deduped"] = extra_edges_deduped
-        if flows_omitted_for_relevance:
-            projection["flows_omitted"] = "no-relevant-flow"
+        if flows_omitted_reason is not None:
+            projection["flows_omitted"] = flows_omitted_reason
         if extra_edges_capped:
             projection["extra_edges_capped"] = extra_edges_capped
         if query.include_source:

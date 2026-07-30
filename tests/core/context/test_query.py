@@ -308,10 +308,10 @@ def test_flows_prefer_production_chains_over_test_chains(
     assert payload["flows"][0] == {"ids": ["sym-hub", "sym-caller"], "trust": "exact"}
 
 
-def test_exact_flow_outranks_longer_heuristic_flow(
+def test_heuristic_chains_never_project_as_flows_but_stay_visible_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Aggregate path trust ranks flows; depth never outranks confidence."""
+    """A unique-name hop is a hypothesis, not a verified execution step."""
     workspace_root, index = _workspace_index(tmp_path, monkeypatch)
     _add_file(
         index,
@@ -351,14 +351,9 @@ def test_exact_flow_outranks_longer_heuristic_flow(
         workspace_root=workspace_root,
     )
     payload = json.loads(result)
-    flows = payload["flows"]
-    # The two-hop chain ending in a heuristic edge is visibly heuristic and ranks
-    # below the shorter all-exact chain.
-    assert flows[0]["trust"] == "exact"
-    assert flows[0]["ids"] == ["sym-root", "sym-mid"]
-    heuristic_flows = [flow for flow in flows[1:] if flow["trust"] == "heuristic"]
-    assert heuristic_flows
-    assert all(len(flow["ids"]) >= 2 for flow in heuristic_flows)
+    # Only the all-exact chain projects as a flow; chains with a heuristic hop
+    # are excluded entirely, while their evidence stays visible on the nodes.
+    assert payload["flows"] == [{"ids": ["sym-root", "sym-mid"], "trust": "exact"}]
     node_resolutions = {node["id"]: node["via"].get("res") for node in payload["nodes"]}
     assert node_resolutions["sym-weak"] == "unique-name"
 
@@ -877,3 +872,35 @@ def test_deep_heuristic_leaves_without_question_relevance_are_demoted_upfront(
     assert payload["coverage"]["projection"]["nodes_demoted_low_relevance"] == 1
     assert payload["flows"] == [{"ids": ["sym-a", "sym-b"], "trust": "exact"}]
     assert payload["truncation"]["complete"] is True
+
+
+def test_all_heuristic_chains_omit_flows_with_no_trusted_flow_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No verified flow is better than a misleading one; the omission is explicit."""
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _add_file(
+        index,
+        "src/a.py",
+        [_symbol("sym-a", "alpha", "src/a.py")],
+        [
+            _reference(
+                "ref-ab",
+                "sym-a",
+                "sym-b",
+                file_path="src/a.py",
+                resolution=ResolutionMethod.UNIQUE_NAME,
+            )
+        ],
+    )
+    _add_file(index, "src/b.py", [_symbol("sym-b", "unrelated_helper", "src/b.py")], [])
+    result = query_context(
+        index,
+        ContextQuery(question="How does alpha work?"),
+        workspace_root=workspace_root,
+    )
+    payload = json.loads(result)
+    assert "flows" not in payload
+    assert payload["coverage"]["projection"]["flows_omitted"] == "no-trusted-flow"
+    node_resolutions = {node["id"]: node["via"].get("res") for node in payload["nodes"]}
+    assert node_resolutions["sym-b"] == "unique-name"

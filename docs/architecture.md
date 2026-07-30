@@ -69,12 +69,17 @@ package's internal decomposition, not separate import targets.
   metadata (`budget`), and orchestration plus coverage assembly (`query`).
   The whole read runs on one consistent SQLite snapshot via `SymbolIndex.read_session()`.
   Traversal trust policy: containment and exact/scoped references are transit edges;
-  heuristic (unique-name) references stay leaf evidence and are never expanded, and
-  flows are ranked by aggregate path trust, then question relevance, then depth.
-  A flow must be substantive — carry at least one reference edge or end at a
+  heuristic (unique-name) references stay leaf evidence and are never expanded.
+  Flows are verified evidence: only chains whose every hop is exact or scoped
+  project as flows (a heuristic relation is a hypothesis and stays visible as
+  nodes, extra edges, and coverage — never a flow), ranked by aggregate path
+  trust, then question relevance, then depth.
+  A flow must also be substantive — carry at least one reference edge or end at a
   question-relevant symbol; pure containment descent into unmatched members projects
-  as nodes only, and when no substantive chain exists the flows section is omitted
-  with `coverage.projection.flows_omitted` instead of fronting an irrelevant chain.
+  as nodes only. When no chain qualifies the flows section is omitted with
+  `coverage.projection.flows_omitted` (`no-trusted-flow` when substantive chains
+  existed but all were heuristic, `no-relevant-flow` when none was substantive)
+  instead of fronting a misleading chain.
   The token budget is a maximum, not a target: low-relevance evidence (data-member
   swarms beyond a per-container cap, deep heuristic leaves, extra edges repeating an
   already-projected link) is demoted upfront as policy with explicit

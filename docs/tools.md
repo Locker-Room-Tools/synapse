@@ -63,9 +63,13 @@ relations, ranking, deduplication, and projection server-side.
     direction, resolution, confidence, `file:line` site, usage kind) — stored facts,
     verbatim;
   - `flows` — `{ids, trust}` root-to-leaf chains projected over the BFS discovery
-    tree; `trust` is the weakest edge on the path (`exact`/`scoped`/`heuristic`), and
-    flows are ranked by aggregate path trust before depth, so a long weak path never
-    outranks a shorter trustworthy one;
+    tree; only verified chains project: every hop is exact or scoped, so `trust` is
+    `exact` or `scoped` (a heuristic unique-name relation is a hypothesis and stays
+    node/edge evidence, never a flow). Flows are ranked by aggregate path trust,
+    then question relevance, then depth. When no chain qualifies the section is
+    omitted and `coverage.projection.flows_omitted` says why: `no-trusted-flow`
+    (substantive chains existed but all were heuristic) or `no-relevant-flow`
+    (no chain carried a reference edge or question-relevant leaf);
   - `edges` — a bounded, ranked projection of discovered **non-tree** edges
     (cross-links and cycles) with the same evidence fields;
   - `unresolved` — seed-level references the index could not bind to one target

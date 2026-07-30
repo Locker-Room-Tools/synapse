@@ -152,8 +152,12 @@ def test_registration_question_primary_flow_is_relevant_or_absent(
     payload = json.loads(result)
     flows = payload.get("flows")
     if flows is None:
-        assert payload["coverage"]["projection"]["flows_omitted"] == "no-relevant-flow"
+        assert payload["coverage"]["projection"]["flows_omitted"] in {
+            "no-relevant-flow",
+            "no-trusted-flow",
+        }
     else:
+        assert all(flow["trust"] in {"exact", "scoped"} for flow in flows)
         names_by_id = {node["id"]: node["name"] for node in payload.get("nodes", [])}
         names_by_id.update({seed["id"]: seed["name"] for seed in payload["seeds"]})
         primary_names = [names_by_id.get(node_id, node_id) for node_id in flows[0]["ids"]]

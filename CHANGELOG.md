@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- `synapse_query_context` flows are verified evidence only: chains with any
+  heuristic (unique-name) hop never project as flows — they remain visible as
+  nodes, extra edges, and coverage. When substantive chains exist but none is
+  trusted, the flows section is omitted with
+  `coverage.projection.flows_omitted: "no-trusted-flow"`.
 - Python shadow coverage widened: lambda parameters, import aliases
   (`import x as y`, `from m import x as y`), loop and comprehension targets,
   `with`/`except ... as` targets, and walrus bindings now shadow type names, so
