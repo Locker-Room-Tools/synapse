@@ -32,6 +32,9 @@ class ReferenceSyntax:
     # Member access: `(member_access_expression expression: <receiver> name: <member>)`.
     member_access_types: tuple[str, ...] = ()
     receiver_field: str = "expression"
+    # Member-name field on member-access nodes when it differs from name_field
+    # (Python's `attribute` node uses `attribute`, not `name`).
+    member_name_field: str = ""
     # Declarations that establish the enclosing namespace for a byte range.
     namespace_types: tuple[str, ...] = ()
     # Import/using directives contributing in-scope namespaces and aliases.
@@ -44,6 +47,22 @@ class ReferenceSyntax:
     type_field: str = "type"
     # Tried in order; `foreach` binds its variable under `left`, most nodes under `name`.
     binder_name_fields: tuple[str, ...] = ("name",)
+    # Fallback when a binder's name is an unnamed child (Python `typed_parameter`):
+    # the first child of one of these literal node types names the binding.
+    binder_name_child_types: tuple[str, ...] = ()
+    # Value fields inspected when a binder carries no type annotation: a direct
+    # constructor-style call (`x = Foo(...)`) binds x to Foo, subject to the
+    # resolver's unique-type gate.
+    binder_value_fields: tuple[str, ...] = ()
+    call_types: tuple[str, ...] = ()
+    call_function_field: str = "function"
+    # Callables whose explicit return annotation types a factory-call receiver.
+    callable_types: tuple[str, ...] = ()
+    return_type_field: str = "return_type"
+    # Dotted type expressions readable as one type name (Python `attribute`).
+    dotted_type_types: tuple[str, ...] = ()
+    # Receiver spellings that denote the enclosing type instance (`self`, `cls`).
+    self_receivers: tuple[str, ...] = ()
     # Type wrappers to unwrap when reading a declared type (nullable, array, generic).
     type_wrapper_types: tuple[str, ...] = ()
     # Generic type applications whose first child names the constructed type.
@@ -113,6 +132,24 @@ CSHARP_REFERENCE_SYNTAX = ReferenceSyntax(
         "enum_declaration",
         "compilation_unit",
     ),
+)
+
+PYTHON_REFERENCE_SYNTAX = ReferenceSyntax(
+    member_access_types=("attribute",),
+    receiver_field="object",
+    member_name_field="attribute",
+    binder_types=("assignment", "typed_parameter", "typed_default_parameter"),
+    binder_name_fields=("name", "left"),
+    binder_name_child_types=("identifier",),
+    binder_value_fields=("right",),
+    call_types=("call",),
+    callable_types=("function_definition",),
+    dotted_type_types=("attribute", "dotted_name"),
+    type_field="type",
+    type_wrapper_types=("type",),
+    generic_types=("generic_type",),
+    self_receivers=("self", "cls"),
+    scope_types=("module", "block", "function_definition", "class_definition", "lambda"),
 )
 
 
@@ -445,6 +482,14 @@ LANGUAGES: dict[str, LanguageSpec] = {
         tree_sitter_name="python",
         extensions=(".py",),
         query_dir="python",
+        reference_limitations=(
+            "inherited-members",
+            "union-return-types",
+            "cross-file-factory-returns",
+            "dynamic-receivers",
+            "import-scope-narrowing",
+        ),
+        reference_syntax=PYTHON_REFERENCE_SYNTAX,
     ),
     "r": LanguageSpec(
         id="r",

@@ -131,6 +131,22 @@ def _resolve_member_on_type(
     return _unique(facts.exact_targets_for(f"{type_qualified_name}{facts.separator}{member}"))
 
 
+def _enclosing_type_qualified_name(
+    enclosing_qualified_name: str | None,
+    facts: ResolutionFacts,
+) -> str | None:
+    """Return the innermost enclosing declaration that is a type (for self receivers)."""
+    if not enclosing_qualified_name:
+        return None
+    segments = enclosing_qualified_name.split(facts.separator)
+    for end in reversed(range(1, len(segments) + 1)):
+        prefix = facts.separator.join(segments[:end])
+        for symbol_id in facts.exact_targets_for(prefix):
+            if facts.kinds.get(symbol_id) in _TYPE_KINDS:
+                return prefix
+    return None
+
+
 def _namespace_prefixes(namespace: str | None, separator: str) -> list[str]:
     """Return a namespace and every ancestor namespace, innermost first."""
     if not namespace:
@@ -151,6 +167,9 @@ def resolve_reference(
     imported_namespaces: Sequence[str] = (),
     aliases: Mapping[str, str] | None = None,
     declared_type_of: Mapping[str, str] | None = None,
+    receiver_call: str | None = None,
+    return_type_of: Mapping[str, str] | None = None,
+    self_receivers: Sequence[str] = (),
 ) -> ResolvedReference:
     """Bind one reference to a declaration, or report it ambiguous/unresolved.
 
@@ -177,14 +196,23 @@ def resolve_reference(
             return _exact(suffix_id)
 
     # 4. The receiver's type is syntactically known, so the member is determined.
-    if receiver_text:
-        receiver_type = declared_types.get(receiver_text)
-        type_qualified_name = (
-            _resolve_type_name(receiver_type, facts) if receiver_type is not None else None
-        )
-        if type_qualified_name is None:
-            # A receiver that *is* a type name (static access) resolves the same way.
-            type_qualified_name = _resolve_type_name(receiver_text.split(separator)[-1], facts)
+    if receiver_text or receiver_call:
+        type_qualified_name: str | None = None
+        if receiver_text is not None and receiver_text in self_receivers:
+            # `self`/`cls` receivers denote the innermost enclosing type.
+            type_qualified_name = _enclosing_type_qualified_name(enclosing_qualified_name, facts)
+        elif receiver_call is not None:
+            # A factory-call receiver is typed only by an explicit return annotation.
+            annotated_return = (return_type_of or {}).get(receiver_call)
+            if annotated_return is not None:
+                type_qualified_name = _resolve_type_name(annotated_return, facts)
+        elif receiver_text is not None:
+            receiver_type = declared_types.get(receiver_text)
+            if receiver_type is not None:
+                type_qualified_name = _resolve_type_name(receiver_type, facts)
+            if type_qualified_name is None:
+                # A receiver that *is* a type name (static access) resolves the same way.
+                type_qualified_name = _resolve_type_name(receiver_text.split(separator)[-1], facts)
         if type_qualified_name is not None:
             member_id = _resolve_member_on_type(type_qualified_name, name, facts)
             if member_id is not None:

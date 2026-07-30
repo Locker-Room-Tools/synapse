@@ -35,7 +35,7 @@ from synapse.core.models import (
 
 # Bump whenever Python-side reference-extraction or resolution semantics change;
 # feeds the index-content fingerprint that invalidates stale relation rows.
-REFERENCE_EXTRACTOR_VERSION = 2
+REFERENCE_EXTRACTOR_VERSION = 3
 
 
 @dataclass(slots=True)
@@ -77,6 +77,19 @@ class FileScope:
     imported_namespaces: tuple[str, ...] = ()
     aliases: tuple[tuple[str, str], ...] = ()
     bindings: tuple[TypeBinding, ...] = ()
+    # Same-file callables with an explicit, resolvable return annotation, so a
+    # factory-call receiver can be typed. Conflicting duplicate names are dropped.
+    return_types: tuple[tuple[str, str], ...] = ()
+    # Receiver spellings denoting the enclosing type (from the language syntax);
+    # carried per file so the reconcile path needs no extra wiring.
+    self_receivers: tuple[str, ...] = ()
+
+    def return_type_of(self, callable_name: str) -> str | None:
+        """Return the explicit annotated return type of a same-file callable."""
+        for name, type_name in self.return_types:
+            if name == callable_name:
+                return type_name
+        return None
 
     def namespace_at(self, start_byte: int) -> str | None:
         """Return the innermost namespace covering a byte offset."""
@@ -129,6 +142,9 @@ class RawReference:
     qualified_text: str | None = None
     # Receiver of a member access, e.g. `dbContext` in `dbContext.Servers`.
     receiver_text: str | None = None
+    # When the receiver is itself a call, the called function's dotted name
+    # (`factory` in `factory(...).method()`); receiver_text stays None then.
+    receiver_call: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -437,7 +453,7 @@ def _qualified_text(source_bytes: bytes, node: Node, syntax: ReferenceSyntax) ->
     # qualified names. Only a pure `a.b.C` path counts; anything with a call, index,
     # or literal in the chain proves nothing about a declaration's qualified name.
     if parent is not None and parent.type in syntax.member_access_types:
-        if not _is_same_node(_field_child(parent, syntax.name_field), node):
+        if not _is_same_node(_field_child(parent, _member_name_field(syntax)), node):
             return None
         chain = _node_text(source_bytes, parent)
         if _DOTTED_PATH.match(chain):
@@ -445,17 +461,36 @@ def _qualified_text(source_bytes: bytes, node: Node, syntax: ReferenceSyntax) ->
     return None
 
 
-def _receiver_text(source_bytes: bytes, node: Node, syntax: ReferenceSyntax) -> str | None:
-    """Return the receiver expression of a member access ending at this identifier."""
+def _member_name_field(syntax: ReferenceSyntax) -> str:
+    return syntax.member_name_field or syntax.name_field
+
+
+def _receiver_parts(
+    source_bytes: bytes, node: Node, syntax: ReferenceSyntax
+) -> tuple[str | None, str | None]:
+    """Return (receiver text, receiver-call name) for a member access at this identifier.
+
+    A plain receiver expression yields its source text. A call receiver
+    (`factory(...).method()`) yields the called function's dotted name instead —
+    arguments prove nothing and are never part of receiver evidence.
+    """
     parent = node.parent
     if parent is None or parent.type not in syntax.member_access_types:
-        return None
-    if not _is_same_node(_field_child(parent, syntax.name_field), node):
-        return None
+        return None, None
+    if not _is_same_node(_field_child(parent, _member_name_field(syntax)), node):
+        return None, None
     receiver = _field_child(parent, syntax.receiver_field)
     if receiver is None:
-        return None
-    return _node_text(source_bytes, receiver)
+        return None, None
+    if receiver.type in syntax.call_types:
+        function_node = _field_child(receiver, syntax.call_function_field)
+        if function_node is None:
+            return None, None
+        function_text = _node_text(source_bytes, function_node)
+        if _DOTTED_PATH.match(function_text):
+            return None, function_text
+        return None, None
+    return _node_text(source_bytes, receiver), None
 
 
 def _base_type_name(source_bytes: bytes, node: Node, syntax: ReferenceSyntax) -> str | None:
@@ -464,17 +499,45 @@ def _base_type_name(source_bytes: bytes, node: Node, syntax: ReferenceSyntax) ->
         return None
     if node.type in syntax.type_wrapper_types:
         inner = _field_child(node, syntax.type_field)
+        if inner is None:
+            # Python's `type` wrapper holds its annotation as an unnamed child.
+            inner = next(iter(node.named_children), None)
         return _base_type_name(source_bytes, inner, syntax) if inner is not None else None
     if node.type in syntax.generic_types:
         for child in node.children:
             if child.type == "identifier":
                 return _node_text(source_bytes, child)
         return None
+    if node.type in syntax.dotted_type_types:
+        text = _node_text(source_bytes, node)
+        if _DOTTED_PATH.match(text):
+            return text.split(".")[-1]
+        return None
     if node.type in syntax.qualified_types or node.type in syntax.alias_qualified_types:
         name_node = _field_child(node, syntax.name_field)
         return _node_text(source_bytes, name_node) if name_node is not None else None
     if node.type == "identifier":
         return _node_text(source_bytes, node)
+    return None
+
+
+def _constructor_call_type(source_bytes: bytes, node: Node, syntax: ReferenceSyntax) -> str | None:
+    """Return the called name when a binder's value is a direct call (`x = Foo(...)`).
+
+    This records the call target as a *candidate* type name only; the resolver's
+    unique-type-kind gate decides whether it actually names a type, so binding to a
+    factory function or an unknown name proves nothing and stays ambiguous.
+    """
+    for value_field in syntax.binder_value_fields:
+        value = _field_child(node, value_field)
+        if value is None or value.type not in syntax.call_types:
+            continue
+        function_node = _field_child(value, syntax.call_function_field)
+        if function_node is None:
+            continue
+        function_text = _node_text(source_bytes, function_node)
+        if _DOTTED_PATH.match(function_text):
+            return function_text.split(".")[-1]
     return None
 
 
@@ -508,6 +571,8 @@ def _build_file_scope(
     imported: list[str] = []
     aliases: list[tuple[str, str]] = []
     bindings: list[TypeBinding] = []
+    return_types: dict[str, str] = {}
+    conflicting_returns: set[str] = set()
 
     for node in _walk(tree.root_node):
         if node.type in syntax.namespace_types:
@@ -541,6 +606,19 @@ def _build_file_scope(
             else:
                 imported.append(target_text)
             continue
+        if node.type in syntax.callable_types:
+            name_node = _field_child(node, syntax.name_field)
+            annotation = _field_child(node, syntax.return_type_field)
+            if name_node is not None and annotation is not None:
+                return_type = _base_type_name(source_bytes, annotation, syntax)
+                if return_type is not None:
+                    callable_name = _node_text(source_bytes, name_node)
+                    if callable_name in return_types and return_types[callable_name] != (
+                        return_type
+                    ):
+                        conflicting_returns.add(callable_name)
+                    else:
+                        return_types[callable_name] = return_type
         if node.type in syntax.binder_types:
             type_node = _field_child(node, syntax.type_field)
             name_node = next(
@@ -551,9 +629,22 @@ def _build_file_scope(
                 ),
                 None,
             )
-            if type_node is None or name_node is None:
+            if name_node is None and syntax.binder_name_child_types:
+                name_node = next(
+                    (
+                        child
+                        for child in node.named_children
+                        if child.type in syntax.binder_name_child_types
+                    ),
+                    None,
+                )
+            if name_node is None:
                 continue
-            type_name = _base_type_name(source_bytes, type_node, syntax)
+            type_name = (
+                _base_type_name(source_bytes, type_node, syntax)
+                if type_node is not None
+                else _constructor_call_type(source_bytes, node, syntax)
+            )
             scope = _binder_scope(node, syntax)
             if type_name is None or scope is None:
                 continue
@@ -594,6 +685,12 @@ def _build_file_scope(
         imported_namespaces=tuple(dict.fromkeys(imported)),
         aliases=tuple(dict.fromkeys(aliases)),
         bindings=tuple(bindings),
+        return_types=tuple(
+            (name, type_name)
+            for name, type_name in return_types.items()
+            if name not in conflicting_returns
+        ),
+        self_receivers=syntax.self_receivers,
     )
 
 
@@ -638,6 +735,10 @@ def _extract_references_from_tree(
         # Usages outside any indexed declaration (C# top-level statements) are still
         # real usages; they are anchored to the file rather than dropped.
         from_symbol = _enclosing_symbol(symbols, node.start_byte)
+        receiver_text: str | None = None
+        receiver_call: str | None = None
+        if syntax is not None:
+            receiver_text, receiver_call = _receiver_parts(source_bytes, node, syntax)
         raw_refs.append(
             RawReference(
                 name=_decode_node_text(source_bytes, node.start_byte, node.end_byte),
@@ -651,9 +752,8 @@ def _extract_references_from_tree(
                 qualified_text=(
                     _qualified_text(source_bytes, node, syntax) if syntax is not None else None
                 ),
-                receiver_text=(
-                    _receiver_text(source_bytes, node, syntax) if syntax is not None else None
-                ),
+                receiver_text=receiver_text,
+                receiver_call=receiver_call,
             )
         )
     return raw_refs
@@ -790,10 +890,16 @@ def build_reference_relations(
                         cached = found
                 if cached is not None:
                     declared_type_of[raw_ref.receiver_text] = cached
+            return_type_of: dict[str, str] = {}
+            if raw_ref.receiver_call is not None:
+                annotated_return = file_scope.return_type_of(raw_ref.receiver_call)
+                if annotated_return is not None:
+                    return_type_of[raw_ref.receiver_call] = annotated_return
             resolved = resolve_reference(
                 name=raw_ref.name,
                 qualified_text=raw_ref.qualified_text,
                 receiver_text=raw_ref.receiver_text,
+                receiver_call=raw_ref.receiver_call,
                 start_byte=raw_ref.start_byte,
                 enclosing_qualified_name=(
                     raw_ref.from_symbol.qualified_name if raw_ref.from_symbol else None
@@ -803,6 +909,8 @@ def build_reference_relations(
                 imported_namespaces=file_scope.imported_namespaces,
                 aliases=dict(file_scope.aliases),
                 declared_type_of=declared_type_of,
+                return_type_of=return_type_of,
+                self_receivers=file_scope.self_receivers,
             )
         anchor = raw_ref.from_symbol.id if raw_ref.from_symbol is not None else raw_ref.file_path
         target = resolved.to_symbol_id or raw_ref.name

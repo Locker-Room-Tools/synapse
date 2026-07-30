@@ -242,10 +242,10 @@ def test_resolution_facts_never_target_namespaces_or_imports(tmp_path: Path) -> 
     assert reachable.isdisjoint(excluded)
 
 
-def test_languages_without_reference_syntax_fall_back_to_unique_name(
+def test_resolution_without_facts_falls_back_to_unique_name(
     tmp_path: Path,
 ) -> None:
-    """A language with no grammar metadata still resolves by unique name only."""
+    """Without workspace resolution facts, references resolve by unique name only."""
     path = tmp_path / "sample.py"
     path.write_text("def target():\n    return 1\n\ndef caller():\n    return target()\n", "utf-8")
     from synapse.core.indexing.parser import parse_file
@@ -259,3 +259,166 @@ def test_languages_without_reference_syntax_fall_back_to_unique_name(
     assert relation.resolution is ResolutionMethod.UNIQUE_NAME
     assert relation.confidence is Confidence.MEDIUM
     assert relation.usage_kind is None
+
+
+_PYTHON_STORE = """class Repo:
+    def save(self, item):
+        return item
+
+    def load(self):
+        return None
+
+class Cache:
+    def save(self, item):
+        return item
+"""
+
+
+def _resolve_python_usage(tmp_path: Path, usage_source: str) -> list[Relation]:
+    from synapse.core.indexing.parser import parse_source
+
+    sources = {"store.py": _PYTHON_STORE, "usage.py": usage_source}
+    symbols = []
+    parsed_usage = None
+    for file_name, source in sources.items():
+        parsed = parse_source(tmp_path / file_name, "python", source.encode(), tmp_path)
+        symbols.extend(parsed.symbols)
+        if file_name == "usage.py":
+            parsed_usage = parsed
+    assert parsed_usage is not None
+    facts = build_resolution_facts(
+        kinds={symbol.id: str(symbol.kind) for symbol in symbols},
+        qualified_names={symbol.id: symbol.qualified_name or symbol.name for symbol in symbols},
+    )
+    name_index: dict[str, list[str]] = {}
+    for symbol in symbols:
+        name_index.setdefault(symbol.name, []).append(symbol.id)
+        if symbol.qualified_name:
+            name_index.setdefault(symbol.qualified_name, []).append(symbol.id)
+    return build_reference_relations(
+        parsed_usage.references, name_index, facts=facts, scope=parsed_usage.scope
+    )
+
+
+def test_python_typed_parameter_receiver_resolves_member_exactly(tmp_path: Path) -> None:
+    relations = _resolve_python_usage(tmp_path, "def use(repo: Repo):\n    return repo.save(1)\n")
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.EXACT
+    assert relation.to_symbol_id is not None
+    assert "Repo.save" in relation.to_symbol_id
+
+
+def test_python_annotated_local_and_constructor_receivers_resolve(tmp_path: Path) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "def annotated():\n    r: Repo = anything()\n    return r.load()\n\n"
+        "def constructed():\n    c = Repo()\n    return c.save(2)\n",
+    )
+    load = _relation_named(relations, "load")
+    save = _relation_named(relations, "save")
+    assert load.resolution is ResolutionMethod.EXACT
+    assert "Repo.load" in (load.to_symbol_id or "")
+    assert save.resolution is ResolutionMethod.EXACT
+    assert "Repo.save" in (save.to_symbol_id or "")
+
+
+def test_python_factory_return_annotation_types_the_receiver(tmp_path: Path) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "def make_repo() -> Repo:\n    return Repo()\n\n"
+        "def use():\n    return make_repo().save(3)\n",
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.EXACT
+    assert "Repo.save" in (relation.to_symbol_id or "")
+
+
+def test_python_self_receiver_resolves_within_the_enclosing_class(tmp_path: Path) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "class Holder:\n"
+        "    def helper(self):\n"
+        "        return 1\n\n"
+        "    def caller(self):\n"
+        "        return self.helper()\n",
+    )
+    relation = _relation_named(relations, "helper")
+    assert relation.resolution is ResolutionMethod.EXACT
+    assert "Holder.helper" in (relation.to_symbol_id or "")
+
+
+def test_python_static_type_receiver_resolves_member(tmp_path: Path) -> None:
+    relations = _resolve_python_usage(tmp_path, "def use():\n    return Repo.load(None)\n")
+    relation = _relation_named(relations, "load")
+    assert relation.resolution is ResolutionMethod.EXACT
+    assert "Repo.load" in (relation.to_symbol_id or "")
+
+
+def test_python_unannotated_receiver_stays_ambiguous(tmp_path: Path) -> None:
+    """`save` exists on Repo and Cache; without receiver evidence it must stay open."""
+    relations = _resolve_python_usage(tmp_path, "def use(x):\n    return x.save(4)\n")
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None
+
+
+def test_python_union_return_annotation_proves_nothing(tmp_path: Path) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "def maybe_repo() -> Repo | None:\n    return None\n\n"
+        "def use():\n    return maybe_repo().save(5)\n",
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None
+
+
+def test_python_generic_member_names_never_bind_without_receiver_evidence(
+    tmp_path: Path,
+) -> None:
+    """Generic names on unknown receivers must not chain to unrelated declarations."""
+    usage = (
+        "def use(thing):\n    thing.add(1)\n    thing.get(2)\n    thing.run()\n    thing.find(3)\n"
+    )
+    extra = (
+        "class A:\n    def add(self):\n        return 1\n\n"
+        "class B:\n    def add(self):\n        return 2\n\n"
+        "class OnlyRun:\n    def run(self):\n        return 3\n"
+    )
+    from synapse.core.indexing.parser import parse_source
+
+    symbols = []
+    for file_name, source in {
+        "classes.py": extra,
+        "usage.py": usage,
+    }.items():
+        parsed = parse_source(tmp_path / file_name, "python", source.encode(), tmp_path)
+        symbols.extend(parsed.symbols)
+        if file_name == "usage.py":
+            parsed_usage = parsed
+    facts = build_resolution_facts(
+        kinds={symbol.id: str(symbol.kind) for symbol in symbols},
+        qualified_names={symbol.id: symbol.qualified_name or symbol.name for symbol in symbols},
+    )
+    name_index: dict[str, list[str]] = {}
+    for symbol in symbols:
+        name_index.setdefault(symbol.name, []).append(symbol.id)
+    relations = build_reference_relations(
+        parsed_usage.references, name_index, facts=facts, scope=parsed_usage.scope
+    )
+    add = _relation_named(relations, "add")
+    assert add.resolution is ResolutionMethod.AMBIGUOUS
+    assert add.to_symbol_id is None
+    # Even a workspace-unique method name is only heuristic without receiver evidence.
+    run = _relation_named(relations, "run")
+    assert run.resolution is not ResolutionMethod.EXACT
+
+
+def test_python_conflicting_rebinding_stays_ambiguous(tmp_path: Path) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "def use():\n    r = Repo()\n    r = Cache()\n    return r.save(6)\n",
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None

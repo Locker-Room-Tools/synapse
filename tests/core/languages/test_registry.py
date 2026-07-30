@@ -246,11 +246,27 @@ def test_reference_extraction_metadata_accessors() -> None:
         "partial-classes",
     )
 
-    # Languages without explicit metadata stay partial with no advertised kinds.
+    # Python advertises structural resolution with its honest gaps.
     assert reference_extraction("python") is ReferenceExtraction.PARTIAL
     assert reference_usage_kinds("python") == ()
-    assert reference_limitations("python") == ()
-    assert reference_syntax("python") is None
+    assert reference_limitations("python") == (
+        "inherited-members",
+        "union-return-types",
+        "cross-file-factory-returns",
+        "dynamic-receivers",
+        "import-scope-narrowing",
+    )
+    python_syntax = reference_syntax("python")
+    assert python_syntax is not None
+    assert python_syntax.member_access_types == ("attribute",)
+    assert python_syntax.receiver_field == "object"
+    assert python_syntax.self_receivers == ("self", "cls")
+
+    # Languages without explicit metadata stay partial with no advertised kinds.
+    assert reference_extraction("ruby") is ReferenceExtraction.PARTIAL
+    assert reference_usage_kinds("ruby") == ()
+    assert reference_limitations("ruby") == ()
+    assert reference_syntax("ruby") is None
 
     with pytest.raises(ValueError, match="Unsupported language"):
         reference_extraction("klingon")
