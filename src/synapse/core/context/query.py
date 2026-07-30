@@ -49,6 +49,7 @@ MAX_ID_ECHO = 120
 MAX_IDS_ECHOED = 10
 MAX_EXTRA_EDGES = 30
 MAX_UNRESOLVED_SHOWN = 10
+MAX_TEST_NODES = 5
 
 
 def _bounded_text(value: str, cap: int) -> str:
@@ -280,15 +281,21 @@ def _node_drop_order(
     *,
     min_depth: int,
     max_depth: int,
+    tests_first: bool = False,
 ) -> list[str]:
-    """Order node ids worst-evidence-first for budget drops."""
+    """Order node ids worst-evidence-first for budget drops.
+
+    With tests_first (production-focus policy), test-path nodes drop before any
+    comparable production evidence regardless of depth.
+    """
     edges_by_id = {edge.relation.id: edge for edge in outcome.edges}
 
-    def drop_rank(node: TraversedNode) -> tuple[int, int, int, int, int, str, int, str]:
+    def drop_rank(node: TraversedNode) -> tuple[int, int, int, int, int, int, str, int, str]:
         edge = edges_by_id.get(node.parent_edge_id or "")
         relation = edge.relation if edge is not None else None
         symbol = node.symbol
         return (
+            1 if tests_first and is_test_path(symbol.file_path) else 0,
             node.depth,
             resolution_rank(relation.resolution if relation is not None else None),
             confidence_rank(relation.confidence) if relation is not None else 0,
@@ -396,9 +403,32 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
     flows = _build_flows(outcome)
     protected = set(flows[0].ids) | seed_ids if flows else set(seed_ids)
 
+    # Projection policy: a query about test symbols keeps full test evidence;
+    # everything else is production-focused, with test evidence demoted and capped.
+    test_relevant = any(is_test_path(seed.symbol.file_path) for seed in discovery.seeds)
+    policy = "test-relevant" if test_relevant else "production-focus"
+
     # Mutable projection state consumed by assemble() and the drop steps.
     node_ids = [node_id for node_id in outcome.nodes if node_id not in seed_ids]
     node_set = set(node_ids)
+    tests_discovered = sum(
+        1 for node_id in node_ids if is_test_path(outcome.nodes[node_id].symbol.file_path)
+    )
+    tests_demoted = 0
+    if policy == "production-focus" and tests_discovered > MAX_TEST_NODES:
+        for node_id in _node_drop_order(
+            outcome, protected, min_depth=1, max_depth=limits.max_depth, tests_first=True
+        ):
+            if tests_discovered - tests_demoted <= MAX_TEST_NODES:
+                break
+            if node_id in node_set and is_test_path(outcome.nodes[node_id].symbol.file_path):
+                node_set.discard(node_id)
+                tests_demoted += 1
+        flows = [
+            flow
+            for index_position, flow in enumerate(flows)
+            if index_position == 0 or flow.ids[-1] in node_set | seed_ids
+        ]
     flow_state = list(flows)
     alternates = list(discovery.alternates)
     ranked_extras = _ranked_extra_edges(outcome)
@@ -489,14 +519,23 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
             1 for node_id in node_set if outcome.nodes[node_id].parent_edge_id is not None
         )
         extra_projected = len(projected_extra_edges())
+        tests_projected = sum(
+            1 for node_id in node_set if is_test_path(outcome.nodes[node_id].symbol.file_path)
+        )
         projection: dict[str, object] = {
             "flows_are_projections_over_stored_edges": True,
+            "policy": policy,
             "nodes_projected": len(node_set) + len(seed_ids & set(outcome.nodes)),
             "edges": {
                 "discovered": len(outcome.edges),
                 "tree_projected": tree_projected,
                 "extra_projected": extra_projected,
                 "omitted": len(outcome.edges) - tree_projected - extra_projected,
+            },
+            "tests": {
+                "discovered": tests_discovered,
+                "projected": tests_projected,
+                "demoted": tests_discovered - tests_projected,
             },
         }
         if extra_edges_capped:
@@ -616,7 +655,14 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
         steps.append(drop_last("alternates", alternates))
     for _ in range(len(snippets)):
         steps.append(drop_last("snippets", snippets))
-    for node_id in _node_drop_order(outcome, protected, min_depth=2, max_depth=limits.max_depth):
+    tests_drop_first = policy == "production-focus"
+    for node_id in _node_drop_order(
+        outcome,
+        protected,
+        min_depth=2,
+        max_depth=limits.max_depth,
+        tests_first=tests_drop_first,
+    ):
         steps.append(drop_node(node_id))
     for file_path in reversed(list(imports_state)):
         steps.append(drop_import(file_path))
@@ -626,7 +672,9 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
         steps.append(drop_last("unresolved", unresolved_state))
     for _ in range(min(len(alternates), MIN_ALTERNATES_SHOWN)):
         steps.append(drop_last("alternates", alternates))
-    for node_id in _node_drop_order(outcome, protected, min_depth=1, max_depth=1):
+    for node_id in _node_drop_order(
+        outcome, protected, min_depth=1, max_depth=1, tests_first=tests_drop_first
+    ):
         steps.append(drop_node(node_id))
 
     return enforce_budget(assemble, steps, minimal, token_budget=token_budget)

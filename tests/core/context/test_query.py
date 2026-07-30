@@ -592,3 +592,85 @@ def test_ambiguous_seed_references_surface_as_unresolved_evidence(
         "items": [{"name": "find_things", "res": "ambiguous", "at": "src/tool.py:5"}],
         "total": 1,
     }
+
+
+def _build_test_heavy_hub(index: SymbolIndex) -> None:
+    """One production hub called by 2 production callers and 12 test callers."""
+    _add_file(index, "src/hub.py", [_symbol("sym-hub", "publish_event", "src/hub.py")], [])
+    for i in range(2):
+        _add_file(
+            index,
+            f"src/caller_{i}.py",
+            [_symbol(f"sym-prod-{i}", f"caller_{i}", f"src/caller_{i}.py")],
+            [
+                _reference(
+                    f"ref-prod-{i}", f"sym-prod-{i}", "sym-hub", file_path=f"src/caller_{i}.py"
+                )
+            ],
+        )
+    for i in range(12):
+        _add_file(
+            index,
+            f"tests/test_caller_{i:02d}.py",
+            [_symbol(f"sym-t{i:02d}", f"test_caller_{i:02d}", f"tests/test_caller_{i:02d}.py")],
+            [
+                _reference(
+                    f"ref-t{i:02d}",
+                    f"sym-t{i:02d}",
+                    "sym-hub",
+                    file_path=f"tests/test_caller_{i:02d}.py",
+                )
+            ],
+        )
+
+
+def test_production_focus_caps_and_accounts_for_test_nodes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _build_test_heavy_hub(index)
+    result = query_context(
+        index,
+        ContextQuery(question="who publishes events? `publish_event`"),
+        workspace_root=workspace_root,
+    )
+    payload = json.loads(result)
+    projection = payload["coverage"]["projection"]
+    assert projection["policy"] == "production-focus"
+    assert projection["tests"] == {"discovered": 12, "projected": 5, "demoted": 7}
+    node_files = [node["file"] for node in payload["nodes"]]
+    production_nodes = [file for file in node_files if not file.startswith("tests/")]
+    test_nodes = [file for file in node_files if file.startswith("tests/")]
+    assert len(production_nodes) == 2
+    assert len(test_nodes) == 5
+
+
+def test_explicit_test_symbol_query_keeps_full_test_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _build_test_heavy_hub(index)
+    result = query_context(
+        index,
+        ContextQuery(question="explain `test_caller_00`"),
+        workspace_root=workspace_root,
+    )
+    payload = json.loads(result)
+    assert payload["coverage"]["projection"]["policy"] == "test-relevant"
+    assert payload["seeds"][0]["test_path"] is True
+
+
+def test_impact_query_still_surfaces_relevant_tests_within_the_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _build_test_heavy_hub(index)
+    result = query_context(
+        index,
+        ContextQuery(question="what would break if `publish_event` changes?"),
+        workspace_root=workspace_root,
+    )
+    payload = json.loads(result)
+    test_nodes = [node for node in payload["nodes"] if node["file"].startswith("tests/")]
+    assert 1 <= len(test_nodes) <= 5
+    assert payload["coverage"]["projection"]["tests"]["discovered"] == 12
