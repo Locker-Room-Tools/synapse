@@ -163,3 +163,19 @@ def test_read_session_pins_one_snapshot_across_concurrent_writes(tmp_path: Path)
     assert before == {}
     assert during == {}
     assert list(after) == ["sym-c1"]
+
+
+def test_top_referenced_symbols_orders_by_incoming_count(tmp_path: Path) -> None:
+    index = _build_two_file_index(tmp_path)
+    with index.read_session() as reads:
+        top = reads.top_referenced_symbols(10)
+    assert [(symbol.id, count) for symbol, count in top] == [("sym-b1", 2)]
+
+
+def test_top_declared_symbols_is_bounded_and_deterministic(tmp_path: Path) -> None:
+    index = _build_two_file_index(tmp_path)
+    with index.read_session() as reads:
+        first = reads.top_declared_symbols(2)
+        second = reads.top_declared_symbols(2)
+    assert first == second
+    assert len(first) == 2

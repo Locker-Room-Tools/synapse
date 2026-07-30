@@ -585,6 +585,47 @@ class ReadProjections:
             relations.extend(_map_relation(row) for row in rows)
         return relations
 
+    def top_referenced_symbols(self, limit: int) -> list[tuple[Symbol, int]]:
+        """Return the most-referenced symbols with their incoming reference counts.
+
+        Ordered by count descending, then symbol id, so the projection is
+        deterministic for one index state. Targets whose symbol row is missing
+        (stale references) are silently skipped.
+        """
+        normalized_limit = min(500, max(1, limit))
+        rows = self.connection.execute(
+            """
+            SELECT to_symbol_id, COUNT(*) AS c
+            FROM relations
+            WHERE kind = ? AND to_symbol_id IS NOT NULL
+            GROUP BY to_symbol_id
+            ORDER BY c DESC, to_symbol_id
+            LIMIT ?
+            """,
+            [str(RelationKind.REFERENCES), normalized_limit],
+        ).fetchall()
+        counts = {str(row["to_symbol_id"]): int(row["c"]) for row in rows}
+        symbols = self.get_symbols_by_ids(list(counts))
+        return [
+            (symbols[symbol_id], count)
+            for symbol_id, count in counts.items()
+            if symbol_id in symbols
+        ]
+
+    def top_declared_symbols(self, limit: int) -> list[Symbol]:
+        """Return prominent declarations by kind relevance, name, and location."""
+        normalized_limit = min(MAX_PAGE_LIMIT, max(1, limit))
+        symbols: list[Symbol] = []
+        for kind in TOP_SYMBOL_KINDS:
+            rows = self.connection.execute(
+                "SELECT * FROM symbols WHERE kind = ? ORDER BY name, file_path, start_line LIMIT ?",
+                (str(kind), normalized_limit),
+            ).fetchall()
+            symbols.extend(_map_symbol(row) for row in rows)
+            if len(symbols) >= normalized_limit:
+                break
+        return symbols[:normalized_limit]
+
     def imports_for_files(self, file_paths: Sequence[str]) -> dict[str, list[str]]:
         """Return the distinct imported names per file, ordered by name."""
         imports: dict[str, list[str]] = {}

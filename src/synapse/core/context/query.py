@@ -396,8 +396,14 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
             projection["source_note"] = (
                 "snippets read from current disk state; indexed line ranges may drift"
             )
+        seed_coverage: dict[str, object] = {"origin": str(discovery.origin)}
+        if discovery.fallback_reason is not None:
+            seed_coverage["fallback_reason"] = discovery.fallback_reason
+        if discovery.seeds and all(is_test_path(seed.symbol.file_path) for seed in discovery.seeds):
+            seed_coverage["only_test_matches"] = True
         coverage: dict[str, object] = {
             "index": index_coverage,
+            "seeds": seed_coverage,
             "extraction": _extraction_coverage(languages),
             "traversal": traversal_coverage,
         }

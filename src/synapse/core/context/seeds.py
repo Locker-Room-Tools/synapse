@@ -10,6 +10,8 @@ from synapse.core.models import Symbol, SymbolKind
 MAX_SEEDS = 5
 MAX_ALTERNATES = 10
 PER_TOKEN_CANDIDATE_LIMIT = 25
+STRUCTURAL_CANDIDATE_LIMIT = 200
+STRUCTURAL_MAX_PER_DIRECTORY = 2
 
 _KIND_RANKS: dict[str, int] = {str(kind): rank for rank, kind in enumerate(TOP_SYMBOL_KINDS)}
 _UNRANKED_KIND = len(TOP_SYMBOL_KINDS)
@@ -24,6 +26,15 @@ class SeedMatch(StrEnum):
     EXACT_NAME = "exact-name"
     PREFIX = "prefix"
     TERM = "term"
+    STRUCTURAL = "structural"
+
+
+class SeedOrigin(StrEnum):
+    """Which discovery tier produced the returned seeds."""
+
+    EXPLICIT_SYMBOL = "explicit-symbol"
+    QUESTION_MATCH = "question-match"
+    STRUCTURAL_FALLBACK = "structural-fallback"
 
 
 _MATCH_TIERS: dict[SeedMatch, int] = {
@@ -31,6 +42,7 @@ _MATCH_TIERS: dict[SeedMatch, int] = {
     SeedMatch.EXACT_NAME: 1,
     SeedMatch.PREFIX: 2,
     SeedMatch.TERM: 3,
+    SeedMatch.STRUCTURAL: 4,
 }
 
 
@@ -51,6 +63,8 @@ class SeedDiscovery:
     alternates: tuple[Seed, ...]
     total_candidates: int
     unknown_symbol_ids: tuple[str, ...]
+    origin: SeedOrigin
+    fallback_reason: str | None = None
 
 
 def kind_rank(kind: object) -> int:
@@ -159,6 +173,41 @@ def _collect_token_candidates(
             _merge_candidate(candidates, Seed(symbol=symbol, match=seed_match, matched_token=token))
 
 
+def _seed_directory(file_path: str) -> str:
+    parts = file_path.replace("\\", "/").split("/")
+    return "/".join(parts[:-1])
+
+
+def _structural_seeds(reads: ReadProjections) -> list[Seed]:
+    """Language-neutral fallback seeds: connected production declarations, diversified.
+
+    Highly referenced symbols come first; prominent declarations back-fill when the
+    index has few resolved references. Test paths and non-declaration kinds are
+    excluded, and a per-directory cap spreads seeds across repository areas.
+    """
+    ranked: list[Symbol] = [
+        symbol for symbol, _count in reads.top_referenced_symbols(STRUCTURAL_CANDIDATE_LIMIT)
+    ]
+    ranked.extend(reads.top_declared_symbols(STRUCTURAL_CANDIDATE_LIMIT))
+    picked: list[Seed] = []
+    picked_ids: set[str] = set()
+    per_directory: dict[str, int] = {}
+    for symbol in ranked:
+        if symbol.id in picked_ids:
+            continue
+        if str(symbol.kind) not in _KIND_RANKS or is_test_path(symbol.file_path):
+            continue
+        directory = _seed_directory(symbol.file_path)
+        if per_directory.get(directory, 0) >= STRUCTURAL_MAX_PER_DIRECTORY:
+            continue
+        per_directory[directory] = per_directory.get(directory, 0) + 1
+        picked.append(Seed(symbol=symbol, match=SeedMatch.STRUCTURAL, matched_token=""))
+        picked_ids.add(symbol.id)
+        if len(picked) >= MAX_SEEDS:
+            break
+    return picked
+
+
 def discover_seeds(
     reads: ReadProjections,
     keywords: QueryKeywords,
@@ -169,7 +218,9 @@ def discover_seeds(
     Explicit symbol ids win outright; ids missing from the index are reported as
     unknown. Otherwise identifier-like tokens are matched by exact name first and
     FTS prefix second; plain terms are consulted only when identifiers match nothing.
-    Ambiguity is explicit: candidates beyond the seed cap surface as alternates.
+    When the question matches no symbol at all, a bounded structural fallback seeds
+    the query from connected production declarations and reports why. Ambiguity is
+    explicit: candidates beyond the seed cap surface as alternates.
     """
     if explicit_ids:
         seeds, unknown = _discover_explicit(reads, explicit_ids)
@@ -179,6 +230,7 @@ def discover_seeds(
                 alternates=tuple(seeds[MAX_SEEDS : MAX_SEEDS + MAX_ALTERNATES]),
                 total_candidates=len(seeds),
                 unknown_symbol_ids=unknown,
+                origin=SeedOrigin.EXPLICIT_SYMBOL,
             )
     else:
         unknown = ()
@@ -188,10 +240,23 @@ def discover_seeds(
     if not candidates:
         _collect_token_candidates(reads, keywords.terms, SeedMatch.TERM, candidates)
 
+    if not candidates:
+        structural = _structural_seeds(reads)
+        had_tokens = bool(keywords.identifiers or keywords.terms)
+        return SeedDiscovery(
+            seeds=tuple(structural),
+            alternates=(),
+            total_candidates=len(structural),
+            unknown_symbol_ids=unknown,
+            origin=SeedOrigin.STRUCTURAL_FALLBACK,
+            fallback_reason="no-question-match" if had_tokens else "no-question-tokens",
+        )
+
     ranked = [candidate.seed for candidate in sorted(candidates.values(), key=_candidate_rank_key)]
     return SeedDiscovery(
         seeds=tuple(ranked[:MAX_SEEDS]),
         alternates=tuple(ranked[MAX_SEEDS : MAX_SEEDS + MAX_ALTERNATES]),
         total_candidates=len(ranked),
         unknown_symbol_ids=unknown,
+        origin=SeedOrigin.QUESTION_MATCH,
     )

@@ -3,9 +3,17 @@
 from pathlib import Path
 
 from synapse.core.context import QueryKeywords, discover_seeds
-from synapse.core.context.seeds import SeedMatch, is_test_path
+from synapse.core.context.seeds import SeedMatch, SeedOrigin, is_test_path
 from synapse.core.index import SymbolIndex
-from synapse.core.models import Confidence, SourceFile, Symbol, SymbolKind
+from synapse.core.models import (
+    Confidence,
+    Relation,
+    RelationKind,
+    ResolutionMethod,
+    SourceFile,
+    Symbol,
+    SymbolKind,
+)
 
 
 def _symbol(
@@ -175,3 +183,72 @@ def test_symbols_matching_more_query_terms_rank_higher(tmp_path: Path) -> None:
     with index.read_session() as reads:
         discovery = discover_seeds(reads, keywords)
     assert discovery.seeds[0].symbol.id == "sym-two-terms"
+
+
+def _add_reference(index: SymbolIndex, relation_id: str, to_symbol_id: str, file_path: str) -> None:
+    index.add_relations_for_file(
+        file_path,
+        [
+            Relation(
+                id=relation_id,
+                kind=RelationKind.REFERENCES,
+                from_symbol_id=None,
+                to_symbol_id=to_symbol_id,
+                from_file_path=file_path,
+                to_file_path=None,
+                to_name="target",
+                source="test",
+                confidence=Confidence.HIGH,
+                resolution=ResolutionMethod.EXACT,
+            )
+        ],
+    )
+
+
+def test_structural_fallback_seeds_span_production_areas(tmp_path: Path) -> None:
+    """When the question matches nothing, connected production symbols seed the query."""
+    index = _build_index(
+        tmp_path,
+        {
+            "src/api/server.py": [
+                _symbol("sym-server", "Server", "src/api/server.py", kind=SymbolKind.CLASS)
+            ],
+            "src/store/db.py": [
+                _symbol("sym-db", "Database", "src/store/db.py", kind=SymbolKind.CLASS)
+            ],
+            "tests/test_server.py": [
+                _symbol("sym-test", "ServerTest", "tests/test_server.py", kind=SymbolKind.CLASS)
+            ],
+        },
+    )
+    _add_reference(index, "ref-1", "sym-server", "src/api/server.py")
+    _add_reference(index, "ref-2", "sym-db", "src/store/db.py")
+    _add_reference(index, "ref-3", "sym-test", "tests/test_server.py")
+    keywords = QueryKeywords(identifiers=(), terms=("архитектура", "репозитория"))
+    with index.read_session() as reads:
+        discovery = discover_seeds(reads, keywords)
+    assert discovery.origin is SeedOrigin.STRUCTURAL_FALLBACK
+    assert discovery.fallback_reason == "no-question-match"
+    seed_ids = [seed.symbol.id for seed in discovery.seeds]
+    assert "sym-server" in seed_ids
+    assert "sym-db" in seed_ids
+    assert "sym-test" not in seed_ids
+    assert all(seed.match is SeedMatch.STRUCTURAL for seed in discovery.seeds)
+
+
+def test_structural_fallback_is_deterministic(tmp_path: Path) -> None:
+    index = _build_index(
+        tmp_path,
+        {
+            "src/a.py": [_symbol("sym-a", "Alpha", "src/a.py", kind=SymbolKind.CLASS)],
+            "src/b.py": [_symbol("sym-b", "Beta", "src/b.py", kind=SymbolKind.CLASS)],
+        },
+    )
+    keywords = QueryKeywords(identifiers=(), terms=())
+    with index.read_session() as reads:
+        first = discover_seeds(reads, keywords)
+        second = discover_seeds(reads, keywords)
+    assert first == second
+    assert first.origin is SeedOrigin.STRUCTURAL_FALLBACK
+    assert first.fallback_reason == "no-question-tokens"
+    assert first.seeds

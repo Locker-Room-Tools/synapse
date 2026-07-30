@@ -206,9 +206,10 @@ def test_empty_index_is_reported_honestly(tmp_path: Path, monkeypatch: pytest.Mo
     assert payload["coverage"]["zero_result"] == "empty-index"
 
 
-def test_no_seed_match_is_not_proof_of_absence(
+def test_unmatched_question_falls_back_to_structural_seeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """An unmatched identifier is not proof of absence: fallback fires with a reason."""
     workspace_root, index = _workspace_index(tmp_path, monkeypatch)
     _build_chain(index)
     result = query_context(
@@ -217,8 +218,11 @@ def test_no_seed_match_is_not_proof_of_absence(
         workspace_root=workspace_root,
     )
     payload = json.loads(result)
-    assert payload["seeds"] == []
-    assert payload["coverage"]["zero_result"] == "no-seed-match"
+    assert payload["seeds"]
+    assert all(seed["match"] == "structural" for seed in payload["seeds"])
+    assert payload["coverage"]["seeds"]["origin"] == "structural-fallback"
+    assert payload["coverage"]["seeds"]["fallback_reason"] == "no-question-match"
+    assert "zero_result" not in payload["coverage"]
     assert payload["coverage"]["index"]["symbols"] == 3
 
 
@@ -232,7 +236,7 @@ def test_unknown_explicit_ids_are_reported(tmp_path: Path, monkeypatch: pytest.M
     )
     payload = json.loads(result)
     assert payload["coverage"]["unknown_symbol_ids"] == ["sym-gone", "sym-also-gone"]
-    assert payload["coverage"]["zero_result"] == "unknown-symbol-ids"
+    assert payload["coverage"]["seeds"]["origin"] == "structural-fallback"
 
 
 def test_empty_question_and_ids_raise_value_error(
@@ -357,3 +361,102 @@ def test_exact_flow_outranks_longer_heuristic_flow(
     assert all(len(flow["ids"]) >= 2 for flow in heuristic_flows)
     node_resolutions = {node["id"]: node["via"].get("res") for node in payload["nodes"]}
     assert node_resolutions["sym-weak"] == "unique-name"
+
+
+def _build_multi_area_repo(index: SymbolIndex) -> None:
+    """Production symbols in three areas with exact references, plus a test file."""
+    _add_file(
+        index,
+        "src/api/server.py",
+        [_symbol("sym-server", "Server", "src/api/server.py", kind=SymbolKind.CLASS)],
+        [_reference("ref-sd", "sym-server", "sym-db", file_path="src/api/server.py")],
+    )
+    _add_file(
+        index,
+        "src/store/db.py",
+        [_symbol("sym-db", "Database", "src/store/db.py", kind=SymbolKind.CLASS)],
+        [],
+    )
+    _add_file(
+        index,
+        "src/cli/main.py",
+        [_symbol("sym-main", "main", "src/cli/main.py")],
+        [_reference("ref-ms", "sym-main", "sym-server", file_path="src/cli/main.py")],
+    )
+    _add_file(
+        index,
+        "tests/test_api.py",
+        [_symbol("sym-test-api", "test_api", "tests/test_api.py")],
+        [_reference("ref-ts", "sym-test-api", "sym-server", file_path="tests/test_api.py")],
+    )
+
+
+def test_russian_architecture_question_gets_structural_orientation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _build_multi_area_repo(index)
+    result = query_context(
+        index,
+        ContextQuery(
+            question="Объясни архитектуру всего репозитория, поток запросов и ключевые точки входа."
+        ),
+        workspace_root=workspace_root,
+    )
+    payload = json.loads(result)
+    assert payload["coverage"]["seeds"]["origin"] == "structural-fallback"
+    assert "zero_result" not in payload["coverage"]
+    seed_files = {seed["file"] for seed in payload["seeds"]}
+    assert len({file.rsplit("/", 1)[0] for file in seed_files}) >= 2
+    assert all("tests/" not in file for file in seed_files)
+    assert len(result) <= payload["query"]["token_budget"] * CHARS_PER_TOKEN
+
+
+def test_identifier_free_english_question_uses_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _build_multi_area_repo(index)
+    result = query_context(
+        index,
+        ContextQuery(question="How does everything fit together in here?"),
+        workspace_root=workspace_root,
+    )
+    payload = json.loads(result)
+    assert payload["coverage"]["seeds"]["origin"] == "structural-fallback"
+    assert payload["seeds"]
+
+
+def test_mixed_language_question_with_identifier_skips_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _build_multi_area_repo(index)
+    result = query_context(
+        index,
+        ContextQuery(question="Объясни `Database` подробно"),
+        workspace_root=workspace_root,
+    )
+    payload = json.loads(result)
+    assert payload["coverage"]["seeds"]["origin"] == "question-match"
+    assert [seed["id"] for seed in payload["seeds"]] == ["sym-db"]
+    assert payload["seeds"][0]["match"] == "exact-name"
+
+
+def test_only_test_matches_are_flagged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _add_file(
+        index,
+        "tests/test_widget.py",
+        [_symbol("sym-tw", "widget_fixture", "tests/test_widget.py")],
+        [],
+    )
+    result = query_context(
+        index,
+        ContextQuery(question="explain `widget_fixture`"),
+        workspace_root=workspace_root,
+    )
+    payload = json.loads(result)
+    assert payload["coverage"]["seeds"]["origin"] == "question-match"
+    assert payload["coverage"]["seeds"]["only_test_matches"] is True
+    assert payload["seeds"][0]["test_path"] is True

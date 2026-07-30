@@ -26,9 +26,11 @@ STOPWORDS: frozenset[str] = frozenset(
 )  # fmt: skip
 
 _QUOTED_PATTERN = re.compile(r"[`'\"]([^`'\"]+)[`'\"]")
-_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_.]+")
+_TOKEN_PATTERN = re.compile(r"[\w.]+")
 _CASE_TRANSITION_PATTERN = re.compile(r"[a-z][A-Z]")
-_SUBTOKEN_PATTERN = re.compile(r"[A-Z]+(?![a-z])|[A-Za-z][a-z0-9]*|[0-9]+")
+# ASCII camel/acronym splitting plus whole runs of non-ASCII word characters, so
+# non-English question words survive tokenization instead of being discarded.
+_SUBTOKEN_PATTERN = re.compile(r"[A-Z]+(?![a-z])|[A-Za-z][a-z0-9]*|[0-9]+|[^\W\da-zA-Z_]+")
 
 
 @dataclass(frozen=True, slots=True)

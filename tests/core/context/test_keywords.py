@@ -46,3 +46,18 @@ def test_empty_question_yields_no_keywords() -> None:
     keywords = extract_keywords("")
     assert keywords.identifiers == ()
     assert keywords.terms == ()
+
+
+def test_non_ascii_questions_produce_unicode_terms() -> None:
+    keywords = extract_keywords("Объясни архитектуру всего репозитория, поток запросов")
+    assert keywords.identifiers == ()
+    assert "архитектуру" in keywords.terms
+    assert "поток" in keywords.terms
+    assert "запросов" in keywords.terms
+
+
+def test_mixed_language_question_preserves_code_identifiers() -> None:
+    keywords = extract_keywords("Объясни `WatchWorker.apply_batch` подробно")
+    assert keywords.identifiers == ("WatchWorker.apply_batch",)
+    assert "объясни" in keywords.terms
+    assert "watch" in keywords.terms
