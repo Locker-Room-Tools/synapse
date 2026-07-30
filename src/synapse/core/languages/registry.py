@@ -77,6 +77,15 @@ class ReferenceSyntax:
     frame_types: tuple[str, ...] = ()
     # Parameter-list nodes whose untyped children still bind names locally.
     parameter_list_types: tuple[str, ...] = ()
+    # Import nodes that bind a local alias (`import x as y`, `from m import x as y`);
+    # the alias shadows type names like any untyped binding. References are never
+    # resolved *through* the alias (documented as import-scope-narrowing).
+    alias_import_types: tuple[str, ...] = ()
+    alias_field: str = "alias"
+    # Binders that introduce names with no type evidence (loop targets, `as`
+    # targets, comprehension targets, walrus): recorded as untyped bindings that
+    # shadow type names but never prove a type.
+    untyped_binder_types: tuple[str, ...] = ()
     # Wrapper holding a decorated definition together with its decorators.
     decorator_wrapper_types: tuple[str, ...] = ()
     decorator_types: tuple[str, ...] = ()
@@ -178,10 +187,17 @@ PYTHON_REFERENCE_SYNTAX = ReferenceSyntax(
     self_receivers=("self", "cls"),
     scope_types=("module", "block", "function_definition", "class_definition", "lambda"),
     frame_types=("module", "function_definition", "class_definition", "lambda"),
-    parameter_list_types=("parameters",),
+    parameter_list_types=("parameters", "lambda_parameters"),
+    alias_import_types=("aliased_import",),
+    untyped_binder_types=(
+        "for_statement",
+        "as_pattern_target",
+        "named_expression",
+        "for_in_clause",
+    ),
     decorator_wrapper_types=("decorated_definition",),
     decorator_types=("decorator",),
-    static_decorators=("staticmethod",),
+    static_decorators=("staticmethod", "abstractstaticmethod"),
     callable_defs_bind_names=True,
 )
 

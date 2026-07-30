@@ -35,7 +35,7 @@ from synapse.core.models import (
 
 # Bump whenever Python-side reference-extraction or resolution semantics change;
 # feeds the index-content fingerprint that invalidates stale relation rows.
-REFERENCE_EXTRACTOR_VERSION = 4
+REFERENCE_EXTRACTOR_VERSION = 5
 
 
 @dataclass(slots=True)
@@ -641,6 +641,21 @@ def _parameter_name(child: Node, source_bytes: bytes, syntax: ReferenceSyntax) -
     return None
 
 
+def _untyped_target_names(node: Node, source_bytes: bytes, syntax: ReferenceSyntax) -> list[str]:
+    """All identifier names bound by an untyped binder target.
+
+    Recursive: a tuple/pattern target binds every identifier inside it. Over-
+    collection (`for x[0] in items` also yielding `x`) is safe — untyped bindings
+    only ever block proofs, never create them.
+    """
+    if node.type in syntax.binder_name_child_types:
+        return [_node_text(source_bytes, node)]
+    names: list[str] = []
+    for child in node.named_children:
+        names.extend(_untyped_target_names(child, source_bytes, syntax))
+    return names
+
+
 def _callable_parameter_names(
     callable_node: Node, source_bytes: bytes, syntax: ReferenceSyntax
 ) -> list[str]:
@@ -662,13 +677,21 @@ def _callable_parameter_names(
     return names
 
 
+def _decorator_base_name(text: str) -> str:
+    """Reduce a decorator spelling to its base name (`@builtins.staticmethod()` -> that base)."""
+    return text.lstrip("@").strip().split("(", 1)[0].rsplit(".", 1)[-1].strip()
+
+
 def _is_static_callable(callable_node: Node, source_bytes: bytes, syntax: ReferenceSyntax) -> bool:
+    # Matching by base name treats any `@unrelated.staticmethod` attribute as static
+    # too — deliberately conservative: it can only withdraw a self-proof, never
+    # fabricate one.
     parent = callable_node.parent
     if parent is None or parent.type not in syntax.decorator_wrapper_types:
         return False
     return any(
         child.type in syntax.decorator_types
-        and _node_text(source_bytes, child).lstrip("@").strip() in syntax.static_decorators
+        and _decorator_base_name(_node_text(source_bytes, child)) in syntax.static_decorators
         for child in parent.named_children
     )
 
@@ -749,6 +772,52 @@ def _build_file_scope(
                 aliases.append((_node_text(source_bytes, alias_node), target_text))
             else:
                 imported.append(target_text)
+            continue
+        if node.type in syntax.alias_import_types:
+            # An import alias rebinds a local name; only `alias_field` names the
+            # binding (the node's `name` field is the imported path). The alias is a
+            # shadow only — references are never resolved through it.
+            alias_target = _field_child(node, syntax.alias_field)
+            scope = _binder_scope(node, syntax)
+            if alias_target is not None and scope is not None:
+                frame = _binder_frame(node, syntax, tree.root_node)
+                bindings.append(
+                    TypeBinding(
+                        name=_node_text(source_bytes, alias_target),
+                        type_name=None,
+                        scope_start_byte=scope[0],
+                        scope_end_byte=scope[1],
+                        frame_start_byte=frame[0],
+                        frame_end_byte=frame[1],
+                    )
+                )
+            continue
+        if node.type in syntax.untyped_binder_types:
+            # Loop/`as`/comprehension/walrus targets bind names with no type
+            # evidence; never infer a type here (a loop variable is not typed by
+            # its iterable's call).
+            target = next(
+                (
+                    found
+                    for field in syntax.binder_name_fields
+                    if (found := _field_child(node, field)) is not None
+                ),
+                node,
+            )
+            scope = _binder_scope(node, syntax)
+            if scope is not None:
+                frame = _binder_frame(node, syntax, tree.root_node)
+                for target_name in _untyped_target_names(target, source_bytes, syntax):
+                    bindings.append(
+                        TypeBinding(
+                            name=target_name,
+                            type_name=None,
+                            scope_start_byte=scope[0],
+                            scope_end_byte=scope[1],
+                            frame_start_byte=frame[0],
+                            frame_end_byte=frame[1],
+                        )
+                    )
             continue
         if node.type in syntax.callable_types:
             name_node = _field_child(node, syntax.name_field)
@@ -1077,10 +1146,17 @@ def build_reference_relations(
                     raw_ref.start_byte,
                 )
                 if binding is not None and binding.type_name is not None:
-                    declared_type_of[raw_ref.receiver_text] = (
+                    # A constructor-derived type name that is itself locally bound
+                    # (an alias, a local callable) names a value, not the type.
+                    type_name_shadowed = not binding.annotated and file_scope.binds_name_at(
                         binding.type_name,
-                        binding.annotated,
+                        raw_ref.start_byte,
                     )
+                    if not type_name_shadowed:
+                        declared_type_of[raw_ref.receiver_text] = (
+                            binding.type_name,
+                            binding.annotated,
+                        )
                 # Local bindings shadow type names: the chain's root decides.
                 receiver_bound_locally = file_scope.binds_name_at(
                     raw_ref.receiver_text.split(separator)[0],

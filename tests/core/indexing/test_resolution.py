@@ -274,10 +274,12 @@ class Cache:
 """
 
 
-def _resolve_python_usage(tmp_path: Path, usage_source: str) -> list[Relation]:
+def _resolve_python_usage(
+    tmp_path: Path, usage_source: str, extra_sources: dict[str, str] | None = None
+) -> list[Relation]:
     from synapse.core.indexing.parser import parse_source
 
-    sources = {"store.py": _PYTHON_STORE, "usage.py": usage_source}
+    sources = {"store.py": _PYTHON_STORE, **(extra_sources or {}), "usage.py": usage_source}
     symbols = []
     parsed_usage = None
     for file_name, source in sources.items():
@@ -614,3 +616,193 @@ def test_python_self_annotated_with_another_type_follows_the_annotation(
     relation = _relation_named(relations, "load")
     assert relation.resolution is ResolutionMethod.EXACT
     assert "Repo.load" in (relation.to_symbol_id or "")
+
+
+def test_python_lambda_parameter_shadowing_a_type_name_blocks_static_access(
+    tmp_path: Path,
+) -> None:
+    relations = _resolve_python_usage(tmp_path, "f = lambda Repo: Repo.save(1)\n")
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None
+
+
+def test_python_aliased_import_shadowing_a_class_blocks_the_constructor_proof(
+    tmp_path: Path,
+) -> None:
+    """`from funcs import build as Repo` rebinds Repo; the call is not a constructor."""
+    relations = _resolve_python_usage(
+        tmp_path,
+        "from funcs import build as Repo\n\ndef use():\n    r = Repo()\n    return r.save(1)\n",
+        extra_sources={"funcs.py": "def build():\n    return None\n"},
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None
+
+
+def test_python_module_import_alias_shadowing_blocks_static_type_access(
+    tmp_path: Path,
+) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "import funcs as Repo\n\ndef use():\n    return Repo.save(1)\n",
+        extra_sources={"funcs.py": "def build():\n    return None\n"},
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is not ResolutionMethod.EXACT
+    assert relation.confidence is not Confidence.HIGH
+
+
+def test_python_qualified_staticmethod_decorator_still_proves_no_instance(
+    tmp_path: Path,
+) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "class Holder:\n"
+        "    def helper(self):\n"
+        "        return 1\n\n"
+        "    @builtins.staticmethod\n"
+        "    def caller(self):\n"
+        "        return self.helper()\n",
+    )
+    relation = _relation_named(relations, "helper")
+    assert relation.resolution is not ResolutionMethod.EXACT
+    assert relation.confidence is not Confidence.HIGH
+
+
+def test_python_call_form_staticmethod_decorator_still_proves_no_instance(
+    tmp_path: Path,
+) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "class Holder:\n"
+        "    def helper(self):\n"
+        "        return 1\n\n"
+        "    @staticmethod()\n"
+        "    def caller(self):\n"
+        "        return self.helper()\n",
+    )
+    relation = _relation_named(relations, "helper")
+    assert relation.resolution is not ResolutionMethod.EXACT
+    assert relation.confidence is not Confidence.HIGH
+
+
+def test_python_abstractstaticmethod_decorator_proves_no_instance(tmp_path: Path) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "class Holder:\n"
+        "    def helper(self):\n"
+        "        return 1\n\n"
+        "    @abc.abstractstaticmethod\n"
+        "    def caller(self):\n"
+        "        return self.helper()\n",
+    )
+    relation = _relation_named(relations, "helper")
+    assert relation.resolution is not ResolutionMethod.EXACT
+    assert relation.confidence is not Confidence.HIGH
+
+
+def test_python_for_loop_target_shadowing_a_type_name_blocks_static_access(
+    tmp_path: Path,
+) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "def use(items):\n    for Repo in items:\n        return Repo.save(2)\n",
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None
+
+
+def test_python_tuple_for_loop_target_shadowing_a_type_name_blocks_static_access(
+    tmp_path: Path,
+) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "def use(items):\n    for Repo, x in items:\n        return Repo.save(2)\n",
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None
+
+
+def test_python_with_as_target_shadowing_a_type_name_blocks_static_access(
+    tmp_path: Path,
+) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "def use():\n    with open('x') as Repo:\n        return Repo.save(3)\n",
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None
+
+
+def test_python_except_as_target_shadowing_a_type_name_blocks_static_access(
+    tmp_path: Path,
+) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "def use():\n"
+        "    try:\n"
+        "        return None\n"
+        "    except Exception as Repo:\n"
+        "        return Repo.save(4)\n",
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None
+
+
+def test_python_comprehension_target_shadowing_a_type_name_blocks_static_access(
+    tmp_path: Path,
+) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "def use(items):\n    return [Repo.save(5) for Repo in items]\n",
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None
+
+
+def test_python_walrus_target_shadowing_a_type_name_blocks_static_access(
+    tmp_path: Path,
+) -> None:
+    relations = _resolve_python_usage(
+        tmp_path,
+        "def use(get):\n    if (Repo := get()):\n        return Repo.save(6)\n",
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.AMBIGUOUS
+    assert relation.to_symbol_id is None
+
+
+def test_python_plain_import_of_a_class_does_not_shadow_the_constructor(
+    tmp_path: Path,
+) -> None:
+    """Non-aliased imports are how types enter scope; they must not block proofs."""
+    relations = _resolve_python_usage(
+        tmp_path,
+        "from store import Repo\n\ndef use():\n    r = Repo()\n    return r.save(1)\n",
+    )
+    relation = _relation_named(relations, "save")
+    assert relation.resolution is ResolutionMethod.EXACT
+    assert "Repo.save" in (relation.to_symbol_id or "")
+
+
+def test_python_functools_wraps_decorated_method_still_resolves_self(tmp_path: Path) -> None:
+    """A non-static decorator must not withdraw the structural self proof."""
+    relations = _resolve_python_usage(
+        tmp_path,
+        "class Holder:\n"
+        "    def helper(self):\n"
+        "        return 1\n\n"
+        "    @functools.wraps(f)\n"
+        "    def caller(self):\n"
+        "        return self.helper()\n",
+    )
+    relation = _relation_named(relations, "helper")
+    assert relation.resolution is ResolutionMethod.EXACT
+    assert "Holder.helper" in (relation.to_symbol_id or "")

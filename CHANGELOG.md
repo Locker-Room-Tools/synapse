@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- Python shadow coverage widened: lambda parameters, import aliases
+  (`import x as y`, `from m import x as y`), loop and comprehension targets,
+  `with`/`except ... as` targets, and walrus bindings now shadow type names, so
+  a shadowed name is never proven a constructor or static type access. Static
+  decorator detection normalizes dotted and call forms
+  (`@builtins.staticmethod`, `@staticmethod()`, `@abc.abstractstaticmethod`).
+  A constructor-derived type name that is itself locally bound proves nothing.
+  `REFERENCE_EXTRACTOR_VERSION` is now 5; existing indexes rebuild once.
 - `synapse_query_context` treats the token budget as a maximum, not a target:
   flow ranking adds question relevance after aggregate path trust; a flow must
   carry a reference edge or end at a question-relevant symbol (pure containment
