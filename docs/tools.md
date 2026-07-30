@@ -3,6 +3,49 @@
 Synapse exposes deterministic structural data from a local AST index. Agents should use these
 tools before broad text search or reading whole files.
 
+## Tool profiles
+
+The advertised tool surface is selected at server start: `synapse serve --profile default`
+(the default) exposes the minimal coding-agent set — `synapse_ensure_workspace`,
+`synapse_query_context`, `synapse_get_definition`, `synapse_get_symbol_context`, and
+`synapse_find_references` — which keeps the static `tools/list` schema cost low.
+`--profile full` additionally exposes the administrative, configuration, and primitive
+projection tools documented below. `synapse doctor` validates the default surface exactly.
+
+## High-level context query
+
+### `synapse_query_context`
+
+The first call for architecture, lifecycle, impact, and multi-file execution-flow
+questions. One bounded call performs seed discovery, multi-hop traversal over stored
+relations, ranking, deduplication, and projection server-side.
+
+- Parameters: `question`, `symbol_ids=None`, `direction="both"` (`in`/`out`/`both`),
+  `max_depth=3` (clamped 1–5), `token_budget=4000` (clamped 500–20000),
+  `include_source=False`, `workspace_path="."`
+- Returns: one compact JSON **string** (a single wire representation; no duplicated
+  structured payload) with:
+  - `seeds` — ranked seed symbols with match provenance (`explicit`/`exact-name`/
+    `prefix`/`term`) and a `test_path` marker when a seed lives in test code;
+  - `alternates` — ambiguity is explicit: further candidates with the total count;
+  - `nodes` — discovered symbols with `depth` and a `via` edge (stored kind,
+    direction, resolution, confidence, `file:line` site, usage kind) — stored facts,
+    verbatim;
+  - `flows` — ordered root-to-leaf chains projected over the BFS discovery tree
+    (marked as projections, never presented as stored edges);
+  - `imports` — file-level import facts for discovered files;
+  - `coverage` — index freshness/staleness, per-language extraction completeness and
+    limitations, traversal guards (depth/nodes/edges/fan-out suppression, remaining
+    frontier), resolution-method counts, and `zero_result` reasons;
+  - `truncation` — the applied budget, estimated tokens, and exactly what was dropped.
+- The token budget is enforced on the exact returned string using a deterministic
+  estimate of 4 characters per token; seeds, the primary flow, and coverage survive
+  truncation. Empty or truncated results are never proof of absence — read `coverage`.
+
+The intended workflow is `synapse_ensure_workspace` → one `synapse_query_context` → at
+most a few targeted `synapse_get_definition` / `synapse_find_references` /
+`synapse_get_symbol_context` checks.
+
 ## Workspace bootstrap
 
 ### `synapse_ensure_workspace`

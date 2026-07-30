@@ -20,9 +20,9 @@ _EXPLORATION_PATTERN = re.compile(r"(?:^|[|;&(]\s*)(?:command\s+)?(?:grep|rg|cat
 
 _REMINDER = (
     "This workspace is indexed by Synapse. For code navigation prefer the MCP tools over "
-    "shell exploration: synapse_project_map (layout), synapse_search_symbols / "
-    "synapse_get_definition (find symbols), synapse_find_references (usages), "
-    "synapse_get_file_outline (file structure), and "
+    "shell exploration: synapse_query_context (one bounded answer for architecture, "
+    "lifecycle, impact, and flow questions), synapse_get_definition (find a declaration), "
+    "synapse_find_references (usages), and "
     "synapse_get_symbol_context(include_body=True) (implementation source). Shell search "
     "remains fine for exact text or content Synapse does not index."
 )

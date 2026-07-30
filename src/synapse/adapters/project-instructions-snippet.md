@@ -1,38 +1,27 @@
 ## Synapse Context Engine (use first)
 
-This repository is indexed by Synapse. Before the first code navigation in a session, call
-`synapse_ensure_workspace`, then use Synapse MCP tools instead of grep, ripgrep, shell
-search, or reading whole files:
-
-- Repository layout (`ls -R`, `find`, `tree`) -> `synapse_project_map`
-- Find a symbol (`grep -r "Name"`) -> `synapse_search_symbols` or `synapse_get_definition`
-- Find usages -> `synapse_find_references(symbol_id=...)`
-- File structure (`cat`, reading a whole file) -> `synapse_get_file_outline`
-- Read an implementation -> `synapse_get_symbol_context(symbol_id=..., include_body=True)`
+This repository is indexed by Synapse. Call `synapse_ensure_workspace` before the first
+code navigation in a session, then prefer Synapse MCP tools over grep, ripgrep, shell
+search, and whole-file reads.
 
 Canonical flow:
 
 1. `synapse_ensure_workspace()` -> initializes or repairs the workspace; continue when healthy.
-2. `synapse_get_definition(name=...)` -> returns a stable `symbol_id`.
-3. `synapse_find_references(symbol_id=...)` -> all usages.
-4. `synapse_get_symbol_context(symbol_id=..., include_body=True)` -> the implementation source.
+2. `synapse_query_context(question=...)` -> one bounded answer for architecture, lifecycle,
+   impact, and multi-file flow questions: ranked seeds, evidence nodes with `file:line`,
+   ordered flows, and explicit coverage/truncation within a token budget.
+3. At most a few targeted evidence checks:
+   - `synapse_get_definition(name=...)` -> a stable `symbol_id` for an exact name.
+   - `synapse_find_references(symbol_id=...)` -> incoming usages.
+   - `synapse_get_symbol_context(symbol_id=..., include_body=True)` -> implementation source.
+4. Stop when the evidence covers the task. Never repeat a successful Synapse investigation
+   as a shell-search or file-read pass.
 
-Tool guide:
-
-- `synapse_search_symbols` - find classes, functions, methods, types when the exact name is unknown.
-- `synapse_get_file_outline` - file structure with signatures before opening a file.
-- `synapse_project_map` / `synapse_workspace_stats` - workspace overview and index statistics.
-- `synapse_compact_context` / `synapse_get_symbol_context` - understand one symbol;
-  `include_body=True` returns the implementation without a file read.
-- `synapse_get_dependencies` / `synapse_get_file_dependencies` / `synapse_related_symbols` -
-  outgoing relations, file imports, and graph neighbors.
-- `synapse_watch_status` - read-only freshness and daemon health diagnosis.
-- `synapse_index_workspace` - recovery and administration only, never the first step.
-
-If Synapse tools are deferred, load them together in a single ToolSearch call before
-exploring; never fall back to shell search because tool schemas are not loaded yet. If a
-query reports an uninitialized or degraded workspace, call `synapse_ensure_workspace`
-again. Use grep or file reads only for exact text matching or content Synapse does not
-index (unsupported languages, generated files).
+Empty or truncated results carry a coverage block and are never proof of absence — narrow
+the question or pass explicit `symbol_ids` instead of falling back to shell. If Synapse
+tools are deferred, load them together in one ToolSearch call before exploring. Use grep or
+file reads only for exact text matching or content the coverage block reports as unindexed
+(unsupported languages, generated files). Administrative tools (re-indexing, configuration,
+diagnostics) are available via `synapse serve --profile full`.
 
 Validate the setup with `synapse doctor --path . --agent {agent_id}`.

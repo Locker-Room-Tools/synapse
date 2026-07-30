@@ -61,14 +61,28 @@ package's internal decomposition, not separate import targets.
   global user config, and a workspace-local `.synapse/config.json` — and owns atomic writes.
   `ignores` is the shared directory ignore matcher used by both the crawler and the watch layer,
   so crawl and watch filter identically.
-- **`mcp.server` / `mcp.tools`**: expose deterministic, token-frugal tools to agents
-  (`synapse_index_workspace`, `synapse_search_symbols`, `synapse_get_definition`,
-  `synapse_ensure_workspace`, `synapse_get_file_outline`, `synapse_get_symbol_context`,
+- **`core.context`**: the high-level retrieval pipeline behind `synapse_query_context`:
+  deterministic keyword extraction (`keywords`), seed discovery and ranking (`seeds`),
+  bounded breadth-first traversal over stored relations with cycle prevention and
+  hub-fan-out suppression (`traversal`), a deterministic output budget with explicit
+  truncation metadata (`budget`), and orchestration plus coverage assembly (`query`).
+  The whole read runs on one consistent SQLite snapshot via `SymbolIndex.read_session()`.
+  Ranking may reorder stored facts (for example demoting test paths) but never upgrades
+  stored confidence, and projected flows are marked as projections over stored edges.
+- **`mcp.server` / `mcp.tools` / `mcp.profiles`**: expose deterministic, token-frugal
+  tools to agents through profile-tiered registration (`synapse serve --profile
+  default|full`). The default profile is the minimal coding-agent surface
+  (`synapse_ensure_workspace`, `synapse_query_context`, `synapse_get_definition`,
+  `synapse_get_symbol_context`, `synapse_find_references`); the full profile adds
+  (`synapse_index_workspace`, `synapse_search_symbols`, `synapse_get_file_outline`,
   `synapse_get_dependencies`,
   `synapse_workspace_stats`, `synapse_project_map`, `synapse_get_file_dependencies`,
-  `synapse_find_references`, `synapse_related_symbols`, `synapse_compact_context`,
+  `synapse_related_symbols`, `synapse_compact_context`,
   `synapse_watch_status`, `synapse_get_config`, `synapse_add_ignored_directories`,
   `synapse_remove_ignored_directories`).
+  `synapse_query_context` returns one compact JSON string so its token budget binds the
+  exact wire payload; query tools return a uniform `{found: false, ...}` envelope
+  instead of `None` so not-found never serializes as an empty result.
   Relations populated during indexing are `CONTAINS` (resolved member edges), `IMPORTS`
   (unresolved import target name), and `REFERENCES` (usage edges from reference queries).
   Reference resolution is syntactic and structural, never semantic.

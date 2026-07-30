@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `synapse_query_context`: a high-level, deterministic, token-budgeted context query.
+  One bounded MCP call performs seed discovery, multi-hop traversal over stored
+  relations, ranking, deduplication, and evidence projection server-side (new
+  `core/context` package), executed on one consistent SQLite read snapshot. Results are
+  a single compact JSON string with ranked seeds, `file:line` evidence carrying stored
+  resolution/confidence verbatim, ordered flows (marked as projections over stored
+  edges), file-level imports, an explicit five-part coverage model (index, extraction,
+  traversal, resolution, projection), and truncation metadata; seeds, the primary flow,
+  and coverage always survive the budget.
+- Profile-tiered MCP tool surface: `synapse serve --profile default|full`. The default
+  profile exposes the minimal coding-agent set (`synapse_ensure_workspace`,
+  `synapse_query_context`, `synapse_get_definition`, `synapse_get_symbol_context`,
+  `synapse_find_references`); `--profile full` restores every tool. `synapse doctor`
+  derives its expected tool sets from the same registry and probes the default surface
+  exactly.
+
+### Changed
+- **Breaking:** bare `synapse serve` now serves the minimal default profile instead of
+  all seventeen tools; pass `--profile full` for the previous surface. Installed agent
+  configs pick the new default up on upgrade without config changes.
+- Query tools that previously returned `null`/empty content for a missing symbol or
+  file (`synapse_get_definition`, `synapse_get_file_outline`,
+  `synapse_get_file_dependencies`, `synapse_get_symbol_context`,
+  `synapse_related_symbols`, `synapse_compact_context`) now return a uniform
+  `{found: false, target, reason, hint}` envelope, and no longer wrap structured
+  results in `{"result": ...}`.
+- Managed instructions, the server handshake, the `synapse-code-context` skill, and the
+  Claude Code hook reminder now teach the bounded workflow: ensure workspace → one
+  `synapse_query_context` → at most a few targeted evidence checks → stop, with an
+  explicit rule against repeating a successful Synapse investigation through shell
+  search.
 - Nine new agent adapters for `synapse install` / `synapse uninstall` / `synapse setup`,
   each verified against official documentation on 2026-07-29: `hermes`, `gemini`, `copilot`,
   `cursor`, `windsurf`, `cline`, `kiro`, `qwen`, and `continue`. Capabilities are declared

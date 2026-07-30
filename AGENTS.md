@@ -49,28 +49,58 @@ This file is the contract for any human or AI agent contributing to THIS reposit
 - Add tests in `tests/`, mirroring the package path. Cover edge cases.
 
 ## MCP tool conventions
-- Tools are deterministic and token-frugal. Typed params/returns; concise docstrings
-  (the docstring is the agent-facing contract). Return structural data, not prose.
-- Current tools: `synapse_ensure_workspace`, `synapse_index_workspace`, `synapse_search_symbols`,
-  `synapse_get_definition`, `synapse_get_file_outline`, `synapse_get_symbol_context`,
+- Optimize for the total tokens and model turns needed to complete a user task, not
+  merely for the size of one tool response. Many individually compact, sequential
+  tool calls can cost more context than one bounded, task-oriented response because
+  every result remains in the agent history.
+- Tools are deterministic, evidence-first, and token-frugal at both levels: each
+  response must be concise, and a normal workflow must avoid unnecessary round trips,
+  repeated metadata, and duplicated projections. Typed params/returns; concise
+  docstrings (the docstring is the agent-facing contract). Return structural data, not
+  prose.
+- Keep low-level index operations reusable in `core`, but do not expose every helper
+  as an MCP tool. For multi-file architecture, lifecycle, impact, or flow questions,
+  prefer a bounded high-level context operation that performs search, traversal,
+  ranking, deduplication, and projection server-side. A high-level MCP tool must call
+  core APIs directly, never invoke other MCP tools.
+- Every bounded or partial result must make its coverage explicit. Empty, paginated,
+  truncated, ambiguous, heuristic, and unindexed results must never look like proof of
+  absence or complete coverage.
+- The MCP surface is profile-tiered (`synapse serve --profile default|full`; the
+  registry lives in `mcp/profiles.py`). The default profile is the minimal coding-agent
+  surface: `synapse_ensure_workspace`, `synapse_query_context`, `synapse_get_definition`,
+  `synapse_get_symbol_context`, `synapse_find_references`. The full profile adds:
+  `synapse_index_workspace`, `synapse_search_symbols`, `synapse_get_file_outline`,
   `synapse_get_dependencies`, `synapse_workspace_stats`, `synapse_project_map`,
-  `synapse_get_file_dependencies`, `synapse_find_references`,
-  `synapse_related_symbols`, `synapse_compact_context`, `synapse_watch_status`,
-  `synapse_get_config`, `synapse_add_ignored_directories`,
+  `synapse_get_file_dependencies`, `synapse_related_symbols`, `synapse_compact_context`,
+  `synapse_watch_status`, `synapse_get_config`, `synapse_add_ignored_directories`,
   `synapse_remove_ignored_directories`.
+- `synapse_query_context` is the bounded, task-oriented context operation: seed
+  discovery, multi-hop traversal over stored relations, ranking, deduplication, and
+  projection run server-side in `core/context`, under one deterministic output budget
+  and one consistent read snapshot. It returns a single compact JSON string so the
+  budget applies to the exact wire payload.
 
-### Ideal Agent Flow
+### Agent workflow
 
 ```
 synapse_ensure_workspace()
-synapse_get_definition(name="synapse_find_references")
-→ { symbol_id: "...", file_path: "...", line_range: [...] }
 
-synapse_find_references(symbol_id="...")
-→ { items: [...], files: [...] }
+synapse_query_context(question=...)
+→ ranked flow with file:line evidence, confidence, and coverage
+
+targeted definition, reference, or source check (at most a few)
+→ verify the specific claim that still needs exact evidence
 ```
 
-Avoid intermediate `search_symbols` or manual `grep` when a `symbol_id` is available.
+Start with one `synapse_query_context` call for architecture, lifecycle, impact, and
+multi-file flow questions; narrow with `symbol_ids`, `direction`, or `max_depth` rather
+than enumerating low-level tools. Stop once the task has enough evidence.
+
+Avoid intermediate searches or manual `grep` when a `symbol_id` is available.
+Use grep or whole-file reads only for exact-text verification, unsupported syntax,
+generated files, or an explicit index-coverage gap. Do not repeat a successful Synapse
+investigation as a full shell investigation merely for reassurance.
 
 ## Commits / PRs
 - Do not commit `.venv/`, `__pycache__/`, `.idea/`, or `.ai/` output.

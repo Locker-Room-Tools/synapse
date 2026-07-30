@@ -57,7 +57,7 @@ def test_hook_suggests_synapse_for_exploration_in_indexed_workspace(
     payload = json.loads(output)
     hook_output = payload["hookSpecificOutput"]
     assert hook_output["hookEventName"] == "PreToolUse"
-    assert "synapse_search_symbols" in hook_output["additionalContext"]
+    assert "synapse_query_context" in hook_output["additionalContext"]
     assert "permissionDecision" not in hook_output
 
 
