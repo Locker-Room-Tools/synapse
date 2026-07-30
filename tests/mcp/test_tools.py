@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from synapse.core.config import config_file_path, write_global_ignored_directories
+from synapse.core.context import ContextQuery, Direction
+from synapse.core.index import SymbolIndex
 from synapse.core.indexing import IndexStats
 from synapse.core.lifecycle import EnsureWorkspaceResult, WorkspaceNotReadyError
 from synapse.core.models import Confidence, Relation, RelationKind, Symbol, SymbolKind
@@ -397,8 +399,12 @@ def test_two_workspaces_are_indexed_and_queried_independently(
     results_a = tools.synapse_search_symbols("func_a", workspace_path=str(workspace_a))
     results_b = tools.synapse_search_symbols("func_b", workspace_path=str(workspace_b))
 
-    assert [item["name"] for item in results_a["items"]] == ["func_a"]
-    assert [item["name"] for item in results_b["items"]] == ["func_b"]
+    items_a = results_a["items"]
+    items_b = results_b["items"]
+    assert isinstance(items_a, list)
+    assert isinstance(items_b, list)
+    assert [item["name"] for item in items_a] == ["func_a"]
+    assert [item["name"] for item in items_b] == ["func_b"]
 
     missing_a = tools.synapse_search_symbols("func_b", workspace_path=str(workspace_a))
     missing_b = tools.synapse_search_symbols("func_a", workspace_path=str(workspace_b))
@@ -529,7 +535,9 @@ def test_synapse_get_config_describes_the_option_surface(
 
     result = tools.synapse_get_config(str(tmp_path))
 
-    option = result["options"]["ignored_directories"]
+    options = result["options"]
+    assert isinstance(options, dict)
+    option = options["ignored_directories"]
     assert result["project_config_exists"] is False
     assert result["project_config_path"] == str(tmp_path / ".synapse" / "config.json")
     assert option["writes_to"] == str(tmp_path / ".synapse" / "config.json")
@@ -559,7 +567,9 @@ def test_synapse_add_ignored_directories_writes_project_config(
     assert payload == {"ignored_directories": ["src/generated"]}
 
     follow_up = tools.synapse_get_config(str(tmp_path))
-    option = follow_up["options"]["ignored_directories"]
+    follow_up_options = follow_up["options"]
+    assert isinstance(follow_up_options, dict)
+    option = follow_up_options["ignored_directories"]
     assert follow_up["project_config_exists"] is True
     assert {"value": "src/generated", "sources": ["project"]} in option["effective"]
 
@@ -661,3 +671,45 @@ def test_config_tool_docstrings_document_contracts() -> None:
     assert "next watch sweep" in (tools.synapse_add_ignored_directories.__doc__ or "")
     assert "Built-in" in (tools.synapse_remove_ignored_directories.__doc__ or "")
     assert "synapse_index_workspace" in (tools.synapse_remove_ignored_directories.__doc__ or "")
+
+
+def test_synapse_query_context_delegates_to_core(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The high-level context tool stays a thin delegator returning the core string."""
+    captured: dict[str, object] = {}
+
+    def fake_query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Path) -> str:
+        captured["query"] = query
+        captured["workspace_root"] = workspace_root
+        return '{"seeds":[]}'
+
+    monkeypatch.setattr(tools, "require_workspace_ready", lambda path: tmp_path)
+    monkeypatch.setattr(tools, "query_context", fake_query_context)
+
+    result = tools.synapse_query_context(
+        "how does indexing work?",
+        symbol_ids=["sym-1"],
+        direction="out",
+        max_depth=2,
+        token_budget=1000,
+        include_source=True,
+    )
+
+    assert result == '{"seeds":[]}'
+    assert captured["workspace_root"] == tmp_path
+    query = captured["query"]
+    assert isinstance(query, ContextQuery)
+    assert query.question == "how does indexing work?"
+    assert query.symbol_ids == ("sym-1",)
+    assert query.direction is Direction.OUT
+    assert query.max_depth == 2
+    assert query.token_budget == 1000
+    assert query.include_source is True
+
+
+def test_synapse_query_context_rejects_unknown_direction() -> None:
+    """An invalid direction fails fast with the accepted choices."""
+    with pytest.raises(ValueError, match="in, out, both"):
+        tools.synapse_query_context("question", direction="sideways")

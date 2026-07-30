@@ -12,6 +12,7 @@ from synapse.cli import doctor as cli_doctor
 from synapse.cli import main as cli_main
 from synapse.cli.doctor import DoctorReport
 from synapse.core.indexing import IndexStats
+from synapse.mcp.profiles import ToolProfile
 
 
 def test_version_flag_reports_installed_package_version(
@@ -352,8 +353,12 @@ def test_doctor_validates_mcp_path(
     workspace_root.mkdir()
     (workspace_root / "sample.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
 
-    async def fake_probe(_workspace_root: Path) -> tuple[list[str], int, str | None]:
-        return sorted(cli_doctor.EXPECTED_TOOLS), 1, "Use Synapse first"
+    async def fake_probe(
+        _workspace_root: Path,
+        _profile: ToolProfile = ToolProfile.DEFAULT,
+    ) -> tuple[list[str], int, str | None]:
+        expected = cli_doctor.expected_tools(ToolProfile.DEFAULT)
+        return sorted(expected), 1, "Use Synapse first"
 
     monkeypatch.setattr(cli_doctor, "_probe_mcp", fake_probe)
     monkeypatch.setattr(

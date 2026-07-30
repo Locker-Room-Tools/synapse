@@ -59,6 +59,7 @@ from synapse.core.workspace import (
     normalize_workspace_path,
     require_workspace_path,
 )
+from synapse.mcp.profiles import ToolProfile
 from synapse.mcp.server import run
 
 
@@ -414,7 +415,7 @@ def _handle_setup(args: Namespace) -> int:
 
 
 def _handle_serve(args: Namespace) -> int:
-    run(workspace_path=args.workspace)
+    run(workspace_path=args.workspace, profile=ToolProfile(args.profile))
     return 0
 
 
@@ -683,6 +684,12 @@ def build_parser() -> ArgumentParser:
 
     serve_parser = subparsers.add_parser("serve", help="Internal MCP stdio entry point")
     serve_parser.add_argument("--workspace")
+    serve_parser.add_argument(
+        "--profile",
+        choices=tuple(profile.value for profile in ToolProfile),
+        default=ToolProfile.DEFAULT.value,
+        help="Tool surface: 'default' (minimal coding-agent set) or 'full' (all tools)",
+    )
     serve_parser.set_defaults(func=_handle_serve)
 
     watch_parser = subparsers.add_parser("watch", help="Run or inspect the watch daemon")

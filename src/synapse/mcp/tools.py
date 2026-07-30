@@ -14,13 +14,14 @@ from synapse.core.config import (
     normalize_ignore_entry,
     write_project_ignored_directories,
 )
+from synapse.core.context import ContextQuery, Direction, query_context
 from synapse.core.index import SymbolIndex, relation_summary, symbol_summary
 from synapse.core.indexing import index_workspace
 from synapse.core.lifecycle import ensure_workspace, require_workspace_ready
 from synapse.core.provenance import runtime_provenance
 from synapse.core.watch.state import watch_status_payload
 from synapse.core.workspace import db_path, require_workspace_path
-from synapse.mcp.server import mcp
+from synapse.mcp.profiles import ToolProfile, tool
 from synapse.mcp.workspace import current_workspace
 
 _DIRECTORIES_ARGUMENT = "the directories argument"
@@ -107,7 +108,7 @@ def _mutation_payload(
     }
 
 
-@mcp.tool()
+@tool(ToolProfile.DEFAULT)
 def synapse_ensure_workspace(workspace_path: str = ".") -> dict[str, object]:
     """Initialize or repair Synapse before any code navigation or query.
 
@@ -118,7 +119,49 @@ def synapse_ensure_workspace(workspace_path: str = ".") -> dict[str, object]:
     return ensure_workspace(_workspace_root(workspace_path)).to_payload()
 
 
-@mcp.tool()
+@tool(ToolProfile.DEFAULT)
+def synapse_query_context(
+    question: str,
+    symbol_ids: list[str] | None = None,
+    direction: str = "both",
+    max_depth: int = 3,
+    token_budget: int = 4000,
+    include_source: bool = False,
+    workspace_path: str = ".",
+) -> str:
+    """First call for architecture, lifecycle, impact, and multi-file flow questions.
+
+    One bounded query: finds seed symbols for the question (or explicit symbol_ids),
+    traverses stored relations up to max_depth (direction: in|out|both), and returns
+    one JSON evidence bundle within token_budget (~4 chars/token): ranked seeds,
+    nodes with file:line + resolution + confidence evidence, ordered flows, and
+    explicit coverage/truncation. Empty or truncated results are never proof of
+    absence — check coverage. Follow up with at most a few targeted
+    synapse_get_definition / synapse_find_references / synapse_get_symbol_context
+    calls; do not re-run the same investigation through shell search.
+    """
+    try:
+        parsed_direction = Direction(direction)
+    except ValueError as exc:
+        msg = f"direction must be one of: {', '.join(item.value for item in Direction)}."
+        raise ValueError(msg) from exc
+    workspace_root = require_workspace_ready(_workspace_root(workspace_path))
+    context_query = ContextQuery(
+        question=question,
+        symbol_ids=tuple(symbol_ids or ()),
+        direction=parsed_direction,
+        max_depth=max_depth,
+        token_budget=token_budget,
+        include_source=include_source,
+    )
+    return query_context(
+        SymbolIndex(db_path(workspace_root)),
+        context_query,
+        workspace_root=workspace_root,
+    )
+
+
+@tool()
 def synapse_index_workspace(workspace_path: str = ".", force: bool = False) -> dict[str, object]:
     """Explicitly re-index a workspace; recovery and administration only.
 
@@ -129,7 +172,7 @@ def synapse_index_workspace(workspace_path: str = ".", force: bool = False) -> d
     return asdict(index_workspace(workspace_root, force=force))
 
 
-@mcp.tool()
+@tool()
 def synapse_search_symbols(
     query: str,
     kind: str | None = None,
@@ -155,7 +198,7 @@ def synapse_search_symbols(
     return {"items": [symbol_summary(item) for item in items], "page": page}
 
 
-@mcp.tool()
+@tool(ToolProfile.DEFAULT)
 def synapse_get_definition(
     symbol_id: str | None = None,
     name: str | None = None,
@@ -189,7 +232,7 @@ def synapse_get_definition(
     }
 
 
-@mcp.tool()
+@tool()
 def synapse_get_file_outline(
     file_path: str,
     workspace_path: str = ".",
@@ -209,7 +252,7 @@ def synapse_get_file_outline(
     )
 
 
-@mcp.tool()
+@tool()
 def synapse_workspace_stats(workspace_path: str = ".") -> dict[str, object]:
     """Return indexed workspace statistics (files, symbols, language mix).
 
@@ -221,7 +264,7 @@ def synapse_workspace_stats(workspace_path: str = ".") -> dict[str, object]:
     return stats
 
 
-@mcp.tool()
+@tool()
 def synapse_watch_status(workspace_path: str = ".") -> dict[str, object]:
     """Read-only watch daemon freshness and health; diagnosis only, never repairs.
 
@@ -230,7 +273,7 @@ def synapse_watch_status(workspace_path: str = ".") -> dict[str, object]:
     return watch_status_payload(_workspace_root(workspace_path))
 
 
-@mcp.tool()
+@tool()
 def synapse_project_map(
     workspace_path: str = ".",
     limit: int = 50,
@@ -250,7 +293,7 @@ def synapse_project_map(
     )
 
 
-@mcp.tool()
+@tool()
 def synapse_get_file_dependencies(
     file_path: str,
     workspace_path: str = ".",
@@ -271,7 +314,7 @@ def synapse_get_file_dependencies(
     )
 
 
-@mcp.tool()
+@tool(ToolProfile.DEFAULT)
 def synapse_get_symbol_context(
     symbol_id: str,
     include_body: bool = False,
@@ -297,7 +340,7 @@ def synapse_get_symbol_context(
     )
 
 
-@mcp.tool()
+@tool()
 def synapse_get_dependencies(
     symbol_id: str,
     workspace_path: str = ".",
@@ -320,7 +363,7 @@ def synapse_get_dependencies(
     }
 
 
-@mcp.tool()
+@tool(ToolProfile.DEFAULT)
 def synapse_find_references(
     symbol_id: str | None = None,
     name: str | None = None,
@@ -349,7 +392,7 @@ def synapse_find_references(
     )
 
 
-@mcp.tool()
+@tool()
 def synapse_related_symbols(
     symbol_id: str,
     limit: int = 20,
@@ -368,7 +411,7 @@ def synapse_related_symbols(
     )
 
 
-@mcp.tool()
+@tool()
 def synapse_compact_context(
     symbol_id: str,
     workspace_path: str = ".",
@@ -381,7 +424,7 @@ def synapse_compact_context(
     return _workspace_index(workspace_path).compact_context(symbol_id)
 
 
-@mcp.tool()
+@tool()
 def synapse_get_config(workspace_path: str = ".") -> dict[str, object]:
     """Read Synapse configuration: effective values, per-entry source, and write targets.
 
@@ -421,7 +464,7 @@ def synapse_get_config(workspace_path: str = ".") -> dict[str, object]:
     }
 
 
-@mcp.tool()
+@tool()
 def synapse_add_ignored_directories(
     directories: list[str],
     workspace_path: str = ".",
@@ -464,7 +507,7 @@ def synapse_add_ignored_directories(
     )
 
 
-@mcp.tool()
+@tool()
 def synapse_remove_ignored_directories(
     directories: list[str],
     workspace_path: str = ".",

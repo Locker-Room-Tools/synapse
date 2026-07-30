@@ -23,26 +23,12 @@ from synapse.core.index import SymbolIndex
 from synapse.core.indexing import index_workspace
 from synapse.core.watch.state import watch_status_payload
 from synapse.core.workspace import db_path, normalize_workspace_path
+from synapse.mcp.profiles import ToolProfile, tool_names_for_profile
 
-EXPECTED_TOOLS = {
-    "synapse_add_ignored_directories",
-    "synapse_compact_context",
-    "synapse_ensure_workspace",
-    "synapse_find_references",
-    "synapse_get_config",
-    "synapse_get_definition",
-    "synapse_get_dependencies",
-    "synapse_get_file_dependencies",
-    "synapse_get_file_outline",
-    "synapse_get_symbol_context",
-    "synapse_index_workspace",
-    "synapse_remove_ignored_directories",
-    "synapse_project_map",
-    "synapse_related_symbols",
-    "synapse_search_symbols",
-    "synapse_watch_status",
-    "synapse_workspace_stats",
-}
+
+def expected_tools(profile: ToolProfile) -> set[str]:
+    """Expected advertised tool names, derived from the single profile registry."""
+    return set(tool_names_for_profile(profile))
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,10 +49,20 @@ class DoctorReport:
     checks: list[DoctorCheck]
 
 
-async def _probe_mcp(workspace_root: Path) -> tuple[list[str], int, str | None]:
+async def _probe_mcp(
+    workspace_root: Path, profile: ToolProfile = ToolProfile.DEFAULT
+) -> tuple[list[str], int, str | None]:
     params = StdioServerParameters(
         command=sys.executable,
-        args=["-m", "synapse", "serve", "--workspace", str(workspace_root)],
+        args=[
+            "-m",
+            "synapse",
+            "serve",
+            "--workspace",
+            str(workspace_root),
+            "--profile",
+            profile.value,
+        ],
         cwd=str(workspace_root),
         env=dict(os.environ),
     )
@@ -78,17 +74,13 @@ async def _probe_mcp(workspace_root: Path) -> tuple[list[str], int, str | None]:
                 tools_response = await session.list_tools()
                 tool_names = sorted(tool.name for tool in tools_response.tools)
                 result = await session.call_tool(
-                    "synapse_search_symbols",
-                    {"query": "", "limit": 1},
+                    "synapse_query_context",
+                    {"question": "workspace entry points", "token_budget": 500},
                 )
-    structured = getattr(result, "structuredContent", None)
-    if isinstance(structured, dict):
-        items = structured.get("items", [])
-        if isinstance(items, list):
-            return tool_names, len(items), instructions
     content: Any = getattr(result, "content", [])
     if isinstance(content, list):
-        return tool_names, len(content), instructions
+        payload_chars = sum(len(getattr(item, "text", "")) for item in content)
+        return tool_names, payload_chars, instructions
     return tool_names, 0, instructions
 
 
@@ -183,14 +175,25 @@ def _check_watch(workspace_root: Path) -> DoctorCheck:
 
 def _check_mcp_probe(workspace_root: Path) -> list[DoctorCheck]:
     try:
-        tool_names, result_count, instructions = anyio.run(_probe_mcp, workspace_root)
+        tool_names, payload_chars, instructions = anyio.run(_probe_mcp, workspace_root)
     except Exception as exc:
         return [DoctorCheck("mcp", "fail", f"MCP probe failed: {exc}")]
     checks: list[DoctorCheck] = []
-    missing_tools = sorted(EXPECTED_TOOLS - set(tool_names))
+    expected = expected_tools(ToolProfile.DEFAULT)
+    advertised = set(tool_names)
+    missing_tools = sorted(expected - advertised)
+    unexpected_tools = sorted(advertised - expected)
     if missing_tools:
         checks.append(
             DoctorCheck("mcp_tools", "fail", f"missing tools: {', '.join(missing_tools)}")
+        )
+    elif unexpected_tools:
+        checks.append(
+            DoctorCheck(
+                "mcp_tools",
+                "fail",
+                f"unexpected tools in default profile: {', '.join(unexpected_tools)}",
+            )
         )
     else:
         checks.append(DoctorCheck("mcp_tools", "ok", f"{len(tool_names)} tools advertised"))
@@ -198,7 +201,12 @@ def _check_mcp_probe(workspace_root: Path) -> list[DoctorCheck]:
         checks.append(DoctorCheck("server_instructions", "ok", "server instructions advertised"))
     else:
         checks.append(DoctorCheck("server_instructions", "warn", "server instructions missing"))
-    checks.append(DoctorCheck("mcp_call", "ok", f"search call returned {result_count} items"))
+    if payload_chars > 0:
+        checks.append(
+            DoctorCheck("mcp_call", "ok", f"context query returned {payload_chars} chars")
+        )
+    else:
+        checks.append(DoctorCheck("mcp_call", "fail", "context query returned no content"))
     return checks
 
 
