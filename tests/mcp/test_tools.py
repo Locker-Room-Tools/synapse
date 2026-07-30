@@ -358,7 +358,11 @@ def test_tool_docstrings_document_contracts() -> None:
     assert "workspace-relative" in (tools.synapse_get_file_outline.__doc__ or "")
     assert "workspace-relative" in (tools.synapse_get_file_dependencies.__doc__ or "")
     assert "diagnosis only" in (tools.synapse_watch_status.__doc__ or "")
-    assert "synapse_compact_context" in (tools.synapse_get_symbol_context.__doc__ or "")
+    assert "include_body=True" in (tools.synapse_get_symbol_context.__doc__ or "")
+    assert "{found: false" in (tools.synapse_get_symbol_context.__doc__ or "")
+    query_doc = " ".join((tools.synapse_query_context.__doc__ or "").split())
+    assert "never proof of absence" in query_doc
+    assert "in|out|both" in query_doc
 
 
 def test_workspace_root_resolves_relative_paths_from_configured_workspace(
@@ -713,3 +717,61 @@ def test_synapse_query_context_rejects_unknown_direction() -> None:
     """An invalid direction fails fast with the accepted choices."""
     with pytest.raises(ValueError, match="in, out, both"):
         tools.synapse_query_context("question", direction="sideways")
+
+
+class _EmptyIndex:
+    """Duck-typed index where nothing is found."""
+
+    def get_symbol(self, symbol_id: str) -> Symbol | None:
+        return None
+
+    def get_definition(self, name: str) -> list[Symbol]:
+        return []
+
+    def get_definition_page(
+        self,
+        name: str,
+        **_: object,
+    ) -> tuple[list[Symbol], dict[str, object]]:
+        return [], _page(returned=0, total=0)
+
+    def get_file_outline(self, file_path: str, **_: object) -> dict[str, object] | None:
+        return None
+
+    def get_file_dependencies(self, file_path: str, **_: object) -> dict[str, object] | None:
+        return None
+
+    def get_symbol_context(self, symbol_id: str, **_: object) -> dict[str, object] | None:
+        return None
+
+    def related_symbols(self, symbol_id: str, **_: object) -> dict[str, object] | None:
+        return None
+
+    def compact_context(self, symbol_id: str) -> dict[str, object] | None:
+        return None
+
+
+def test_not_found_is_a_uniform_envelope_never_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every optional-result tool returns the same {found: false} envelope."""
+    monkeypatch.setattr(tools, "_workspace_index", lambda path=".": _EmptyIndex())
+    monkeypatch.setattr(tools, "_workspace_root", lambda path=".": tmp_path)
+
+    results = {
+        "symbol": tools.synapse_get_definition(symbol_id="missing-id"),
+        "name": tools.synapse_get_definition(name="missing_name"),
+        "outline": tools.synapse_get_file_outline("missing.py"),
+        "file_deps": tools.synapse_get_file_dependencies("missing.py"),
+        "context": tools.synapse_get_symbol_context("missing-id"),
+        "related": tools.synapse_related_symbols("missing-id"),
+        "compact": tools.synapse_compact_context("missing-id"),
+    }
+
+    for result in results.values():
+        assert result["found"] is False
+        assert result["reason"] == "not-indexed"
+        assert "hint" in result
+    assert results["symbol"]["target"] == "missing-id"
+    assert results["outline"]["target"] == "missing.py"

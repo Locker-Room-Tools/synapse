@@ -57,6 +57,19 @@ def _normalize_file_path(file_path: str, workspace_root: Path) -> str:
     return candidate.as_posix()
 
 
+def _not_found(target: str) -> dict[str, object]:
+    """Uniform not-found envelope: every query tool returns a dict, never None."""
+    return {
+        "found": False,
+        "target": target,
+        "reason": "not-indexed",
+        "hint": (
+            "Verify the name with synapse_get_definition or synapse_query_context; "
+            "re-run synapse_ensure_workspace if the index may be stale."
+        ),
+    }
+
+
 def _takes_effect(config: EffectiveConfig) -> str:
     return (
         f"next watch sweep (<= {config.watch.poll_interval_s}s); "
@@ -205,11 +218,11 @@ def synapse_get_definition(
     workspace_path: str = ".",
     limit: int = 50,
     offset: int = 0,
-) -> dict[str, object] | None:
+) -> dict[str, object]:
     """Resolve a declaration to a stable symbol_id; prefer over opening files.
 
     Provide symbol_id OR exact name. Returns one symbol, {candidates, page} when the
-    name is ambiguous, or None when not found.
+    name is ambiguous, or {found: false, ...} when not indexed.
     """
     if symbol_id is None and name is None:
         msg = "Either symbol_id or name must be provided."
@@ -217,13 +230,13 @@ def synapse_get_definition(
     index = _workspace_index(workspace_path)
     if symbol_id is not None:
         symbol = index.get_symbol(symbol_id)
-        return symbol_summary(symbol) if symbol is not None else None
+        return symbol_summary(symbol) if symbol is not None else _not_found(symbol_id)
     assert name is not None
     candidates, page = index.get_definition_page(name, limit=limit, offset=offset)
     total = page["total"]
     assert isinstance(total, int)
     if total == 0:
-        return None
+        return _not_found(name)
     if total == 1:
         return symbol_summary(index.get_definition(name)[0])
     return {
@@ -237,19 +250,20 @@ def synapse_get_file_outline(
     file_path: str,
     workspace_path: str = ".",
     max_symbols: int = 200,
-) -> dict[str, object] | None:
+) -> dict[str, object]:
     """Structural outline of one file; prefer before reading a whole file.
 
     Each item carries kind, name, signature, and line_range. file_path is
     workspace-relative (absolute paths inside the workspace are accepted).
-    Returns None when the file is not indexed.
+    Returns {found: false, ...} when the file is not indexed.
     """
     workspace_root = _workspace_root(workspace_path)
     normalized_file_path = _normalize_file_path(file_path, workspace_root)
-    return _workspace_index(workspace_root).get_file_outline(
+    outline = _workspace_index(workspace_root).get_file_outline(
         normalized_file_path,
         max_symbols=max_symbols,
     )
+    return outline if outline is not None else _not_found(normalized_file_path)
 
 
 @tool()
@@ -299,19 +313,20 @@ def synapse_get_file_dependencies(
     workspace_path: str = ".",
     limit: int = 50,
     offset: int = 0,
-) -> dict[str, object] | None:
+) -> dict[str, object]:
     """Return file-level import dependencies for one indexed file (what it imports).
 
     file_path is workspace-relative (absolute paths inside the workspace are accepted).
-    Returns None when the file is not indexed.
+    Returns {found: false, ...} when the file is not indexed.
     """
     workspace_root = _workspace_root(workspace_path)
     normalized_file_path = _normalize_file_path(file_path, workspace_root)
-    return _workspace_index(workspace_root).get_file_dependencies(
+    dependencies = _workspace_index(workspace_root).get_file_dependencies(
         normalized_file_path,
         limit=limit,
         offset=offset,
     )
+    return dependencies if dependencies is not None else _not_found(normalized_file_path)
 
 
 @tool(ToolProfile.DEFAULT)
@@ -322,22 +337,23 @@ def synapse_get_symbol_context(
     children_limit: int = 50,
     children_offset: int = 0,
     max_body_lines: int = 200,
-) -> dict[str, object] | None:
+) -> dict[str, object]:
     """Structural context around one symbol: parent, paged children, optional body.
 
-    symbol_id comes from synapse_search_symbols or synapse_get_definition. Set
+    symbol_id comes from synapse_query_context or synapse_get_definition. Set
     include_body=True to read the implementation source; prefer this over reading the
     file. body is capped at max_body_lines and body_truncated reports a cut — narrow
-    to a child symbol or raise the cap for more. For the smallest view use
-    synapse_compact_context. Returns None for an unknown symbol_id.
+    to a child symbol or raise the cap for more. Returns {found: false, ...} for an
+    unknown symbol_id.
     """
-    return _workspace_index(workspace_path).get_symbol_context(
+    context = _workspace_index(workspace_path).get_symbol_context(
         symbol_id,
         include_body=include_body,
         children_limit=children_limit,
         children_offset=children_offset,
         max_body_lines=max_body_lines,
     )
+    return context if context is not None else _not_found(symbol_id)
 
 
 @tool()
@@ -398,30 +414,32 @@ def synapse_related_symbols(
     limit: int = 20,
     workspace_path: str = ".",
     offset: int = 0,
-) -> dict[str, object] | None:
+) -> dict[str, object]:
     """Return graph neighbors of one symbol.
 
     Includes referenced symbols, referencing symbols, container or file siblings, and
-    name-stem matches. Returns None for an unknown symbol_id.
+    name-stem matches. Returns {found: false, ...} for an unknown symbol_id.
     """
-    return _workspace_index(workspace_path).related_symbols(
+    related = _workspace_index(workspace_path).related_symbols(
         symbol_id,
         limit=limit,
         offset=offset,
     )
+    return related if related is not None else _not_found(symbol_id)
 
 
 @tool()
 def synapse_compact_context(
     symbol_id: str,
     workspace_path: str = ".",
-) -> dict[str, object] | None:
+) -> dict[str, object]:
     """Minimum context to understand a symbol; prefer over reading source.
 
     Returns a compact definition with capped dependency and related-name lists.
-    Returns None for an unknown symbol_id.
+    Returns {found: false, ...} for an unknown symbol_id.
     """
-    return _workspace_index(workspace_path).compact_context(symbol_id)
+    context = _workspace_index(workspace_path).compact_context(symbol_id)
+    return context if context is not None else _not_found(symbol_id)
 
 
 @tool()
