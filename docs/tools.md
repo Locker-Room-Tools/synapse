@@ -49,6 +49,9 @@ relations, ranking, deduplication, and projection server-side.
     outranks a shorter trustworthy one;
   - `edges` — a bounded, ranked projection of discovered **non-tree** edges
     (cross-links and cycles) with the same evidence fields;
+  - `unresolved` — seed-level references the index could not bind to one target
+    (`ambiguous`/`unresolved`), with name and `file:line` site, so gaps invite a
+    targeted `synapse_get_definition` drill-down instead of looking like absence;
   - `imports` — file-level import facts for discovered files;
   - `coverage` — index freshness/staleness, seed origin, per-language extraction
     completeness and limitations, traversal guards (depth/nodes/edges/fan-out

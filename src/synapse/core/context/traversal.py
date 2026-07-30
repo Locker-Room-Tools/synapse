@@ -1,6 +1,6 @@
 """Bounded, deterministic breadth-first traversal over stored index relations."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from synapse.core.index import ReadProjections
@@ -10,6 +10,7 @@ TRAVERSAL_KINDS: tuple[RelationKind, ...] = (RelationKind.CONTAINS, RelationKind
 
 MIN_DEPTH = 1
 MAX_DEPTH = 5
+MAX_NULL_TARGET_REFS = 25
 
 
 class Direction(StrEnum):
@@ -70,6 +71,7 @@ class TraversalOutcome:
     depth_reached: int
     frontier_remaining: int
     heuristic_leaf_edges: int
+    null_target_references: tuple[Relation, ...]
 
 
 _KIND_RANKS: dict[RelationKind, int] = {
@@ -149,6 +151,7 @@ class _TraversalState:
     dangling_targets: int = 0
     depth_reached: int = 0
     heuristic_leaf_edges: int = 0
+    null_target_references: list[Relation] = field(default_factory=list)
 
 
 def _group_by_endpoint(relations: list[Relation], *, endpoint: str) -> dict[str, list[Relation]]:
@@ -182,6 +185,10 @@ def _expand_level(
                 )
                 if far_id is None:
                     state.unresolved_edges += 1
+                    if depth == 1 and len(state.null_target_references) < MAX_NULL_TARGET_REFS:
+                        # Seed-level ambiguity is evidence the caller needs to see,
+                        # not just a count.
+                        state.null_target_references.append(relation)
                     continue
                 if relation.id in state.seen_edge_ids:
                     continue
@@ -291,4 +298,5 @@ def traverse(
         depth_reached=state.depth_reached,
         frontier_remaining=len(frontier),
         heuristic_leaf_edges=state.heuristic_leaf_edges,
+        null_target_references=tuple(state.null_target_references),
     )

@@ -554,3 +554,41 @@ def test_edge_projection_counts_stay_consistent_under_budget(
         + edge_coverage["omitted"]
     )
     assert edge_coverage["omitted"] > 0
+
+
+def test_ambiguous_seed_references_surface_as_unresolved_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Null-target references from seeds are shown with resolution and site."""
+    workspace_root, index = _workspace_index(tmp_path, monkeypatch)
+    _add_file(
+        index,
+        "src/tool.py",
+        [_symbol("sym-tool", "the_tool", "src/tool.py")],
+        [
+            Relation(
+                id="ref-amb",
+                kind=RelationKind.REFERENCES,
+                from_symbol_id="sym-tool",
+                to_symbol_id=None,
+                from_file_path="src/tool.py",
+                to_file_path=None,
+                to_name="find_things",
+                source="test",
+                confidence=Confidence.LOW,
+                start_line=5,
+                start_byte_col=0,
+                resolution=ResolutionMethod.AMBIGUOUS,
+            )
+        ],
+    )
+    result = query_context(
+        index,
+        ContextQuery(question="trace `the_tool`", direction=Direction.OUT),
+        workspace_root=workspace_root,
+    )
+    payload = json.loads(result)
+    assert payload["unresolved"] == {
+        "items": [{"name": "find_things", "res": "ambiguous", "at": "src/tool.py:5"}],
+        "total": 1,
+    }

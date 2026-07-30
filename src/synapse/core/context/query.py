@@ -48,6 +48,7 @@ MAX_QUESTION_ECHO = 240
 MAX_ID_ECHO = 120
 MAX_IDS_ECHOED = 10
 MAX_EXTRA_EDGES = 30
+MAX_UNRESOLVED_SHOWN = 10
 
 
 def _bounded_text(value: str, cap: int) -> str:
@@ -147,6 +148,33 @@ def _extra_edge_payload(edge: TraversedEdge) -> dict[str, object]:
     if relation.start_line is not None:
         payload["at"] = f"{relation.from_file_path}:{relation.start_line}"
     return payload
+
+
+def _unresolved_items(outcome: TraversalOutcome) -> list[dict[str, object]]:
+    """Seed-level references the index could not bind to one target, as evidence.
+
+    Each entry names the referenced symbol, the stored resolution (ambiguous or
+    unresolved), and the source site, so a caller can drill down with a targeted
+    definition lookup instead of mistaking the gap for absence.
+    """
+    best: dict[str, dict[str, object]] = {}
+    for relation in outcome.null_target_references:
+        if relation.to_name is None:
+            continue
+        entry: dict[str, object] = {
+            "name": relation.to_name,
+            "res": str(relation.resolution) if relation.resolution is not None else "unresolved",
+        }
+        if relation.start_line is not None:
+            entry["at"] = f"{relation.from_file_path}:{relation.start_line}"
+        existing = best.get(relation.to_name)
+        if existing is None:
+            best[relation.to_name] = entry
+    ranked = sorted(
+        best.values(),
+        key=lambda item: (0 if item["res"] == "ambiguous" else 1, str(item["name"])),
+    )
+    return ranked[:MAX_UNRESOLVED_SHOWN]
 
 
 def _ranked_extra_edges(outcome: TraversalOutcome) -> list[TraversedEdge]:
@@ -376,6 +404,7 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
     ranked_extras = _ranked_extra_edges(outcome)
     extra_edges_state = ranked_extras[:MAX_EXTRA_EDGES]
     extra_edges_capped = len(ranked_extras) - len(extra_edges_state)
+    unresolved_state = _unresolved_items(outcome)
 
     def projected_extra_edges() -> list[TraversedEdge]:
         projected = seed_ids | node_set
@@ -522,6 +551,11 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
         projected_extras = projected_extra_edges()
         if projected_extras:
             payload["edges"] = [_extra_edge_payload(edge) for edge in projected_extras]
+        if unresolved_state:
+            payload["unresolved"] = {
+                "items": list(unresolved_state),
+                "total": outcome.unresolved_edges,
+            }
         if imports_state:
             payload["imports"] = dict(imports_state)
         if snippets:
@@ -588,6 +622,8 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
         steps.append(drop_import(file_path))
     for _ in range(len(extra_edges_state)):
         steps.append(drop_last("edges", extra_edges_state))
+    for _ in range(len(unresolved_state)):
+        steps.append(drop_last("unresolved", unresolved_state))
     for _ in range(min(len(alternates), MIN_ALTERNATES_SHOWN)):
         steps.append(drop_last("alternates", alternates))
     for node_id in _node_drop_order(outcome, protected, min_depth=1, max_depth=1):

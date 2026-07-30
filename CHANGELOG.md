@@ -28,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   projection: a bounded ranked `edges` section returns them with evidence, and
   `coverage.projection.edges` accounts for discovered vs tree-projected vs
   extra-projected vs omitted edges.
+- Seed-level references the index cannot bind to one target (`ambiguous`/
+  `unresolved`) now surface in a bounded `unresolved` section with name, stored
+  resolution, and `file:line` site — a gap that invites a targeted
+  `synapse_get_definition` drill-down instead of masquerading as absence.
 - Questions with no ASCII identifiers (including non-English questions) no longer
   dead-end in `no-seed-match`: tokenization is Unicode-aware, and a deterministic
   structural fallback seeds the query from connected production declarations across
