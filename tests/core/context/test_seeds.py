@@ -79,12 +79,11 @@ def test_exact_name_outranks_prefix_matches(tmp_path: Path) -> None:
     keywords = QueryKeywords(identifiers=("WatchWorker",), terms=("watch", "worker"))
     with index.read_session() as reads:
         discovery = discover_seeds(reads, keywords)
-    assert [seed.symbol.name for seed in discovery.seeds] == [
-        "WatchWorker",
-        "WatchWorkerFactory",
-    ]
+    # The exact production declaration dominates; the prefix variant is an alternate.
+    assert [seed.symbol.name for seed in discovery.seeds] == ["WatchWorker"]
     assert discovery.seeds[0].match is SeedMatch.EXACT_NAME
-    assert discovery.seeds[1].match is SeedMatch.PREFIX
+    assert [seed.symbol.name for seed in discovery.alternates] == ["WatchWorkerFactory"]
+    assert discovery.alternates[0].match is SeedMatch.PREFIX
 
 
 def test_production_code_outranks_test_paths(tmp_path: Path) -> None:
@@ -252,3 +251,67 @@ def test_structural_fallback_is_deterministic(tmp_path: Path) -> None:
     assert first.origin is SeedOrigin.STRUCTURAL_FALLBACK
     assert first.fallback_reason == "no-question-tokens"
     assert first.seeds
+
+
+def test_exact_production_match_suppresses_test_prefix_matches(tmp_path: Path) -> None:
+    """`test_<name>` variants never become active peers of an exact production match."""
+    index = _build_index(
+        tmp_path,
+        {
+            "src/tools.py": [_symbol("sym-prod", "find_refs", "src/tools.py")],
+            "tests/test_tools.py": [
+                _symbol("sym-test", "test_find_refs_works", "tests/test_tools.py")
+            ],
+        },
+    )
+    keywords = QueryKeywords(identifiers=("find_refs",), terms=("find", "refs"))
+    with index.read_session() as reads:
+        discovery = discover_seeds(reads, keywords)
+    assert [seed.symbol.id for seed in discovery.seeds] == ["sym-prod"]
+    alternate_ids = {seed.symbol.id for seed in discovery.alternates}
+    assert "sym-test" in alternate_ids
+
+
+def test_multiple_exact_declarations_all_stay_active(tmp_path: Path) -> None:
+    index = _build_index(
+        tmp_path,
+        {
+            "src/a.py": [_symbol("sym-1", "handle", "src/a.py")],
+            "src/b.py": [_symbol("sym-2", "handle", "src/b.py")],
+        },
+    )
+    keywords = QueryKeywords(identifiers=("handle",), terms=("handle",))
+    with index.read_session() as reads:
+        discovery = discover_seeds(reads, keywords)
+    assert {seed.symbol.id for seed in discovery.seeds} == {"sym-1", "sym-2"}
+    assert all(seed.match is SeedMatch.EXACT_NAME for seed in discovery.seeds)
+
+
+def test_test_only_exact_matches_stay_active_without_hiding_production_prefixes(
+    tmp_path: Path,
+) -> None:
+    index = _build_index(
+        tmp_path,
+        {
+            "tests/test_widget.py": [_symbol("sym-test", "widget_fixture", "tests/test_widget.py")],
+            "src/widgets.py": [_symbol("sym-prod", "widget_fixture_factory", "src/widgets.py")],
+        },
+    )
+    keywords = QueryKeywords(identifiers=("widget_fixture",), terms=("widget", "fixture"))
+    with index.read_session() as reads:
+        discovery = discover_seeds(reads, keywords)
+    seed_ids = [seed.symbol.id for seed in discovery.seeds]
+    assert "sym-test" in seed_ids
+    assert "sym-prod" in seed_ids
+
+
+def test_long_terms_relax_to_a_prefix_when_nothing_matches(tmp_path: Path) -> None:
+    index = _build_index(
+        tmp_path,
+        {"src/server.py": [_symbol("sym-reg", "register_tools", "src/server.py")]},
+    )
+    keywords = QueryKeywords(identifiers=(), terms=("registration",))
+    with index.read_session() as reads:
+        discovery = discover_seeds(reads, keywords)
+    assert [seed.symbol.id for seed in discovery.seeds] == ["sym-reg"]
+    assert discovery.origin is SeedOrigin.QUESTION_MATCH

@@ -585,24 +585,30 @@ class ReadProjections:
             relations.extend(_map_relation(row) for row in rows)
         return relations
 
-    def top_referenced_symbols(self, limit: int) -> list[tuple[Symbol, int]]:
-        """Return the most-referenced symbols with their incoming reference counts.
+    def trusted_incoming_degrees(self, limit: int) -> list[tuple[Symbol, int]]:
+        """Return symbols by incoming exact/scoped reference count, best first.
 
-        Ordered by count descending, then symbol id, so the projection is
-        deterministic for one index state. Targets whose symbol row is missing
-        (stale references) are silently skipped.
+        Only syntax-proven (`exact`) and scope-narrowed (`scoped`) references count:
+        heuristic unique-name popularity is never a centrality signal. Ordered by
+        count descending, then symbol id, so the projection is deterministic for one
+        index state. Targets whose symbol row is missing are silently skipped.
         """
         normalized_limit = min(500, max(1, limit))
         rows = self.connection.execute(
             """
             SELECT to_symbol_id, COUNT(*) AS c
             FROM relations
-            WHERE kind = ? AND to_symbol_id IS NOT NULL
+            WHERE kind = ? AND to_symbol_id IS NOT NULL AND resolution IN (?, ?)
             GROUP BY to_symbol_id
             ORDER BY c DESC, to_symbol_id
             LIMIT ?
             """,
-            [str(RelationKind.REFERENCES), normalized_limit],
+            [
+                str(RelationKind.REFERENCES),
+                str(ResolutionMethod.EXACT),
+                str(ResolutionMethod.SCOPED),
+                normalized_limit,
+            ],
         ).fetchall()
         counts = {str(row["to_symbol_id"]): int(row["c"]) for row in rows}
         symbols = self.get_symbols_by_ids(list(counts))
@@ -611,6 +617,40 @@ class ReadProjections:
             for symbol_id, count in counts.items()
             if symbol_id in symbols
         ]
+
+    def containment_child_counts(self, limit: int) -> dict[str, int]:
+        """Return per-container child counts from parser-proven containment edges."""
+        normalized_limit = min(1000, max(1, limit))
+        rows = self.connection.execute(
+            """
+            SELECT from_symbol_id, COUNT(*) AS c
+            FROM relations
+            WHERE kind = ? AND from_symbol_id IS NOT NULL
+            GROUP BY from_symbol_id
+            ORDER BY c DESC, from_symbol_id
+            LIMIT ?
+            """,
+            [str(RelationKind.CONTAINS), normalized_limit],
+        ).fetchall()
+        return {str(row["from_symbol_id"]): int(row["c"]) for row in rows}
+
+    def import_name_counts(self) -> dict[str, int]:
+        """Return, per imported dotted name, how many distinct files declare the import.
+
+        Declared module structure: each entry is an explicit import statement, so the
+        counts measure public-surface reach, not name-matching popularity.
+        """
+        rows = self.connection.execute(
+            """
+            SELECT to_name, COUNT(DISTINCT from_file_path) AS c
+            FROM relations
+            WHERE kind = ? AND to_name IS NOT NULL
+            GROUP BY to_name
+            ORDER BY c DESC, to_name
+            """,
+            [str(RelationKind.IMPORTS)],
+        ).fetchall()
+        return {str(row["to_name"]): int(row["c"]) for row in rows}
 
     def top_declared_symbols(self, limit: int) -> list[Symbol]:
         """Return prominent declarations by kind relevance, name, and location."""
