@@ -13,6 +13,8 @@ from synapse.core.context.budget import (
 )
 from synapse.core.context.keywords import QueryKeywords, extract_keywords
 from synapse.core.context.seeds import (
+    TERM_RELAXATION_MIN_LENGTH,
+    TERM_RELAXATION_PREFIX,
     Seed,
     SeedDiscovery,
     discover_seeds,
@@ -214,41 +216,52 @@ class Flow:
     trust: str
 
 
-def _relevant_node_ids(
-    outcome: TraversalOutcome, seed_ids: set[str], keywords: QueryKeywords
-) -> set[str]:
-    """Seeds plus nodes whose own name carries a question token.
+def _node_token_matches(
+    outcome: TraversalOutcome, keywords: QueryKeywords
+) -> dict[str, frozenset[str]]:
+    """Question tokens each node's own name carries (long terms also as a prefix).
 
     Deliberately narrower than seed matching: the qualified name is excluded, so a
-    matched container does not bless every member it contains as relevant.
+    matched container does not bless every member it contains as relevant. Long
+    terms additionally match by the seed tier's relaxed prefix, so morphological
+    variants ("registration") still credit declarations ("register_tools").
     """
-    tokens = {
-        token.lower()
-        for token in (*keywords.identifiers, *keywords.terms)
-        if len(token) >= MIN_RELEVANCE_TOKEN_LENGTH
-    }
-    relevant = set(seed_ids)
-    if not tokens:
-        return relevant
+    probes: dict[str, str] = {}
+    for token in (*keywords.identifiers, *keywords.terms):
+        lowered = token.lower()
+        if len(lowered) < MIN_RELEVANCE_TOKEN_LENGTH:
+            continue
+        probes.setdefault(lowered, lowered)
+        if len(lowered) >= TERM_RELAXATION_MIN_LENGTH:
+            probes.setdefault(lowered[:TERM_RELAXATION_PREFIX], lowered)
+    matches: dict[str, frozenset[str]] = {}
+    if not probes:
+        return matches
     for node_id, node in outcome.nodes.items():
         name = node.symbol.name.lower()
-        if any(token in name for token in tokens):
-            relevant.add(node_id)
-    return relevant
+        matched = frozenset(token for probe, token in probes.items() if probe in name)
+        if matched:
+            matches[node_id] = matched
+    return matches
 
 
-def _build_flows(outcome: TraversalOutcome, *, relevant_ids: set[str]) -> tuple[list[Flow], bool]:
+def _build_flows(
+    outcome: TraversalOutcome,
+    *,
+    relevant_ids: set[str],
+    token_matches: dict[str, frozenset[str]],
+) -> tuple[list[Flow], bool]:
     """Project root-to-leaf chains over the BFS discovery tree, best evidence first.
 
     Ranking uses aggregate path trust before depth: a chain's trust is its weakest
     edge, so one heuristic hop marks the whole flow heuristic and a long weak path
-    never outranks a shorter exact/scoped path. Among equally trusted chains,
-    question relevance decides. A chain must be substantive — carry at least one
-    reference edge or end at a question-relevant symbol; pure containment descent
-    into unmatched members is structure, not an answer, and projects as nodes only.
-    Returns the flows and whether chains existed but none was substantive. Chains
-    routed through test code rank below production chains at equal trust — ranking
-    choices only; stored facts are unchanged.
+    never outranks a shorter exact/scoped path. Among equally trusted chains, the
+    one covering more distinct question tokens wins. A chain must be substantive —
+    carry at least one reference edge or end at a question-relevant symbol; pure
+    containment descent into unmatched members is structure, not an answer, and
+    projects as nodes only. Returns the flows and whether chains existed but none
+    was substantive. Chains routed through test code rank below production chains
+    at equal trust — ranking choices only; stored facts are unchanged.
     """
     edges_by_id = {edge.relation.id: edge for edge in outcome.edges}
 
@@ -269,7 +282,7 @@ def _build_flows(outcome: TraversalOutcome, *, relevant_ids: set[str]) -> tuple[
         return chain, edges
 
     chains_existed = False
-    ranked_chains: list[tuple[tuple[int, int, int, int, int, int, str], Flow]] = []
+    ranked_chains: list[tuple[tuple[int, int, int, int, int, int, int, str], Flow]] = []
     for node in outcome.nodes.values():
         if node.parent_edge_id is None:
             continue
@@ -293,12 +306,18 @@ def _build_flows(outcome: TraversalOutcome, *, relevant_ids: set[str]) -> tuple[
         test_penalty = sum(
             1 for node_id in chain if is_test_path(outcome.nodes[node_id].symbol.file_path)
         )
-        relevance = sum(1 for node_id in chain if node_id in relevant_ids)
+        # Relevance is two-tier: how much of the chain stays on-topic (relevant
+        # nodes), then how many distinct question tokens the chain covers.
+        relevant_nodes = sum(1 for node_id in chain if node_id in relevant_ids)
+        covered_tokens: set[str] = set()
+        for node_id in chain:
+            covered_tokens.update(token_matches.get(node_id, frozenset()))
         rank = (
             heuristic_hops,
             worst_resolution,
             test_penalty,
-            -relevance,
+            -relevant_nodes,
+            -len(covered_tokens),
             -node.depth,
             worst_confidence,
             node.symbol.id,
@@ -491,8 +510,11 @@ def query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Pa
 
     symbol_count = int(stats["symbols"]) if isinstance(stats["symbols"], int) else 0
     seed_ids = {seed.symbol.id for seed in discovery.seeds}
-    relevant_ids = _relevant_node_ids(outcome, seed_ids, keywords)
-    flows, flows_omitted_for_relevance = _build_flows(outcome, relevant_ids=relevant_ids)
+    token_matches = _node_token_matches(outcome, keywords)
+    relevant_ids = seed_ids | set(token_matches)
+    flows, flows_omitted_for_relevance = _build_flows(
+        outcome, relevant_ids=relevant_ids, token_matches=token_matches
+    )
     protected = set(flows[0].ids) | seed_ids if flows else set(seed_ids)
 
     # Projection policy: a query about test symbols keeps full test evidence;
