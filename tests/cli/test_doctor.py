@@ -123,7 +123,7 @@ def test_doctor_fails_when_tools_are_missing(
     monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
     _stub_probe(
         monkeypatch,
-        tools=set(sorted(expected_tools(ToolProfile.DEFAULT))[:3]),
+        tools=set(sorted(expected_tools(ToolProfile.DEFAULT))[:1]),
         instructions=None,
     )
     (tmp_path / "app.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")

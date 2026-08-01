@@ -74,8 +74,8 @@ async def _probe_mcp(
                 tools_response = await session.list_tools()
                 tool_names = sorted(tool.name for tool in tools_response.tools)
                 result = await session.call_tool(
-                    "synapse_query_context",
-                    {"question": "workspace entry points", "token_budget": 500},
+                    "synapse_orient",
+                    {"terms": [], "token_budget": 400},
                 )
     content: Any = getattr(result, "content", [])
     if isinstance(content, list):
@@ -202,11 +202,9 @@ def _check_mcp_probe(workspace_root: Path) -> list[DoctorCheck]:
     else:
         checks.append(DoctorCheck("server_instructions", "warn", "server instructions missing"))
     if payload_chars > 0:
-        checks.append(
-            DoctorCheck("mcp_call", "ok", f"context query returned {payload_chars} chars")
-        )
+        checks.append(DoctorCheck("mcp_call", "ok", f"orientation returned {payload_chars} chars"))
     else:
-        checks.append(DoctorCheck("mcp_call", "fail", "context query returned no content"))
+        checks.append(DoctorCheck("mcp_call", "fail", "orientation returned no content"))
     return checks
 
 

@@ -1,16 +1,18 @@
 ## Synapse code context
 
-Codebases on this machine are indexed by Synapse (MCP server `synapse`). Call
-`synapse_ensure_workspace` once before the first query, then:
+Codebases on this machine are indexed by Synapse (MCP server `synapse`). For any code
+question, translate the task into repository vocabulary (identifiers, file names, path
+fragments), then:
 
-- Architecture, lifecycle, impact, or multi-file flow questions -> `synapse_query_context`
-  (one bounded call: ranked evidence, ordered flows, file:line, explicit coverage)
-- Locate a declaration -> `synapse_get_definition` (returns a stable `symbol_id`)
-- Find usages -> `synapse_find_references(symbol_id=...)`
-- Read an implementation -> `synapse_get_symbol_context(symbol_id=..., include_body=True)`
+- `synapse_orient(terms=[...])` -> ranked production-first matches with compact handles,
+  weak candidates, crowded/unmatched terms, and coverage (no terms -> repository map)
+- `synapse_inspect(symbols=[...handles...])` -> one batch call: definitions, bounded
+  source, call-proven `callers`/`callees` plus neutral `refs_in`/`refs_out`, each with
+  stored resolution, confidence, and usage kind
 
-After a successful `synapse_query_context`, make at most a few targeted follow-up calls and
-stop; do not repeat the investigation with shell search or whole-file reads. Empty or
-truncated results include a coverage block and are never proof of absence. If Synapse tools
-are deferred, load them together in a single ToolSearch call before exploring. Use grep or
-file reads only for exact text matching or content the coverage block reports as unindexed.
+Both tools initialize and refresh the workspace automatically. Two calls is the normal
+flow; a weak orientation may need one more `synapse_orient` with better terms. Empty or
+truncated results include a coverage block and are never proof of absence — empty
+`callers` means no call was proven, not that none exist. If Synapse tools are
+deferred, load them together in a single ToolSearch call before exploring. Use grep or
+file reads only for exact text matching or gaps the coverage block reports as unindexed.

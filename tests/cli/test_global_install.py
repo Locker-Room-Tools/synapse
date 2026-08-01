@@ -87,14 +87,13 @@ def test_global_instruction_and_skill_are_idempotent(
     assert second_skill.status == "unchanged"
     assert instruction_text.count(BEGIN_MARKER) == 1
     assert instruction_text.count(END_MARKER) == 1
-    assert "synapse_ensure_workspace" in instruction_text
-    assert "synapse_query_context" in instruction_text
-    assert "include_body=True" in instruction_text
+    assert "synapse_orient" in instruction_text
+    assert "synapse_inspect" in instruction_text
     assert "exact text" in instruction_text
     assert "<!-- SYNAPSE MANAGED SKILL -->" in skill_text
-    assert "synapse_query_context" in skill_text
-    assert "synapse_get_definition" in skill_text
-    assert "synapse_find_references" in skill_text
+    assert "synapse_orient" in skill_text
+    assert "synapse_inspect" in skill_text
+    assert "repository vocabulary" in skill_text
     assert "never proof" in skill_text
     assert "do not imitate those operations manually" in skill_text
 

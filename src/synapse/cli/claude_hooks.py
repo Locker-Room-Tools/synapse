@@ -20,11 +20,11 @@ _EXPLORATION_PATTERN = re.compile(r"(?:^|[|;&(]\s*)(?:command\s+)?(?:grep|rg|cat
 
 _REMINDER = (
     "This workspace is indexed by Synapse. For code navigation prefer the MCP tools over "
-    "shell exploration: synapse_query_context (one bounded answer for architecture, "
-    "lifecycle, impact, and flow questions), synapse_get_definition (find a declaration), "
-    "synapse_find_references (usages), and "
-    "synapse_get_symbol_context(include_body=True) (implementation source). Shell search "
-    "remains fine for exact text or content Synapse does not index."
+    "shell exploration: translate the task into repository terms, call synapse_orient "
+    "for ranked matches with compact handles, then synapse_inspect once with the "
+    "selected handles for definitions, bounded source, call-proven callers/callees, and "
+    "neutral refs_in/refs_out. Shell search remains fine for exact text or content "
+    "Synapse does not index."
 )
 
 

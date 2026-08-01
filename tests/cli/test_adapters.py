@@ -104,10 +104,9 @@ def test_install_instruction_snippet_creates_and_is_idempotent(tmp_path: Path) -
     assert second.status == "unchanged"
     assert content.count(BEGIN_MARKER) == 1
     assert content.count(END_MARKER) == 1
-    assert "synapse_ensure_workspace" in content
-    assert "synapse_query_context" in content
-    assert "synapse_get_definition" in content
-    assert "synapse_find_references" in content
+    assert "synapse_orient" in content
+    assert "synapse_inspect" in content
+    assert "repository vocabulary" in content
     assert "never proof of absence" in content
     assert "synapse doctor --path . --agent codex" in content
     assert "use only if the index is stale or missing" not in content

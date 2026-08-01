@@ -7,37 +7,57 @@ description: Navigate and understand codebases with fresh Synapse structural con
 
 # Synapse Code Context
 
-Use Synapse as the first source of code structure. One bounded context query answers most
-architecture questions; follow it with a few targeted checks and stop.
+Use Synapse as the first source of code structure. Two bounded calls answer most code
+questions: one orientation, one batch inspection. Both initialize the workspace
+automatically — no setup call is needed.
 
 ## Workflow
 
-1. Before the first code-navigation operation:
-   - Normally call `synapse_ensure_workspace`. Continue when it reports `initialized: true`,
-     `daemon.running: true`, and `daemon.degraded: false`.
-   - If the task explicitly forbids workspace mutation, use query tools only if a previous
-     call in this session succeeded; otherwise explain that initialization needs permission
-     and use a permitted fallback.
-2. Ask `synapse_query_context(question=...)` for architecture, lifecycle, impact, or
-   multi-file flow questions. It returns ranked seeds, evidence nodes with `file:line`,
-   resolution and confidence, ordered flows, and an explicit coverage block, all within
-   `token_budget`. Narrow with `symbol_ids`, `direction` (`in`/`out`/`both`), or
-   `max_depth` when the first answer is too broad.
-3. Verify only what still needs exact evidence (at most a few calls):
-   - Exact declaration: `synapse_get_definition(name=...)` -> stable `symbol_id`.
-   - Usages: `synapse_find_references(symbol_id=...)`.
-   - Implementation source: `synapse_get_symbol_context(symbol_id=..., include_body=True)`;
-     when `body_truncated` is true, narrow to a child symbol or raise `max_body_lines`.
-4. Stop when the evidence covers the task. Never repeat a successful Synapse investigation
-   as a full shell-search or file-read pass.
-5. Read the `coverage` and `truncation` blocks: empty or truncated results are never proof
-   of absence. Use grep or file reads only for exact text, generated files, unsupported
-   syntax, or gaps the coverage block reports.
+1. Translate the user's request into likely repository vocabulary: concrete identifiers,
+   file names, and path fragments (translate non-English task words into probable code
+   terms). This translation is your job — Synapse evaluates the terms literally.
+2. Call `synapse_orient(terms=[...])` with up to 12 terms, or with no terms for a
+   repository-map orientation (areas, entrypoints, anchors). The response ranks
+   production code first and returns compact handles (`s_...`), match provenance
+   (`exact|prefix|substring|path|map`), weak candidates, crowded terms (too generic to
+   rank) and unmatched terms, plus coverage counts. Scope with `path_scope` when the
+   area is known.
+3. Select the handles the task needs and call `synapse_inspect(symbols=[...])` once with
+   up to 8 of them. Each symbol returns its definition with `file:line`, a bounded
+   source slice, parent/children, and four relation groups — `callers`, `callees`,
+   `refs_in`, `refs_out` — carrying stored resolution
+   (`exact|scoped|unique-name|ambiguous|unresolved`), confidence, and usage kind
+   verbatim, plus unresolved hypotheses.
+4. Synthesize the answer yourself from that evidence. Two calls is the normal target;
+   a weakly matched orientation may need one more `synapse_orient` with better terms.
+5. Read the `coverage` and `budget` blocks: empty or truncated results are never proof
+   of absence, and a complete payload is not a claim that the evidence is complete. Use
+   grep or file reads only for exact text, generated files, unsupported syntax, or gaps
+   the coverage block reports.
+
+## Reading callers and callees
+
+`callers` and `callees` contain only sites whose syntax proves a call. Every other
+reference — a declared type, a return type, a base class, an attribute or decorator, a
+member read — is returned as `refs_in`/`refs_out` with its usage kind, so it is still
+visible evidence but is not presented as a call.
+
+An empty `callers` therefore means "no call was proven", not "nothing calls this". Check
+`coverage.extraction[].call_kinds`: it lists the usage kinds that prove a call in that
+language, and an empty list means the language yields no call evidence at all, so the
+relevant usages will be in `refs_in`/`refs_out` instead.
+
+When a symbol has zero incoming references, `coverage.extraction` also calibrates the
+other indexed workspace languages, marked `"evidence": false` — a caller could have been
+written in any of them, so read the zero against their `call_kinds` and `limitations`
+before concluding nothing calls the symbol.
 
 ## Freshness and recovery
 
-If a query reports that the workspace is uninitialized or degraded, call
-`synapse_ensure_workspace` again unless the task forbids mutation. If Synapse tools are
-unavailable, report that the global integration may need installation or an agent restart;
-do not imitate those operations manually. Administrative tools (re-indexing, configuration,
-watch diagnostics) live behind `synapse serve --profile full`.
+The navigation tools repair the workspace automatically when it has no index, is
+uninitialized or degraded, is missing parsers, or still holds relations built by an older
+extractor — so an upgrade costs one rebuild rather than stale answers. If Synapse tools
+are unavailable, report that the global integration may need installation or an agent
+restart; do not imitate those operations manually. Administrative and primitive tools
+(re-indexing, definitions, references, configuration, watch diagnostics) live behind
+`synapse serve --profile full`.
