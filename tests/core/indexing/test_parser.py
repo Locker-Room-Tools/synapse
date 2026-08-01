@@ -1611,6 +1611,7 @@ def test_csharp_references_carry_usage_kinds_and_qualified_text(tmp_path: Path) 
         "    {\n"
         "        var item = new Widget();\n"
         "        repo.Save();\n"
+        "        var total = repo.Total;\n"
         "        var t = typeof(Marker);\n"
         "        var q = Overlock.Api.Servers.Server.Create();\n"
         "    }\n"
@@ -1625,7 +1626,10 @@ def test_csharp_references_carry_usage_kinds_and_qualified_text(tmp_path: Path) 
     assert by_name["BaseC"].usage_kind == "base-type"
     assert by_name["Repo"].usage_kind == "declared-type"
     assert by_name["Widget"].usage_kind == "object-creation"
-    assert by_name["Save"].usage_kind == "member-access"
+    # A call through a receiver is an invocation; only a genuine member read stays
+    # a member access. Both match the member-access pattern, so priority decides.
+    assert by_name["Save"].usage_kind == "invocation"
+    assert by_name["Total"].usage_kind == "member-access"
     assert by_name["Marker"].usage_kind == "type-literal"
     assert by_name["Save"].receiver_text == "repo"
     # The full dotted path survives extraction so the resolver can match it.

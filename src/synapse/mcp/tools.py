@@ -14,10 +14,21 @@ from synapse.core.config import (
     normalize_ignore_entry,
     write_project_ignored_directories,
 )
-from synapse.core.context import ContextQuery, Direction, query_context
 from synapse.core.index import SymbolIndex, relation_summary, symbol_summary
 from synapse.core.indexing import index_workspace
-from synapse.core.lifecycle import ensure_workspace, require_workspace_ready
+from synapse.core.lifecycle import (
+    ensure_navigation_ready,
+    ensure_workspace,
+    require_workspace_ready,
+)
+from synapse.core.navigation import (
+    INSPECT_DEFAULT_TOKEN_BUDGET,
+    ORIENT_DEFAULT_TOKEN_BUDGET,
+    InspectRequest,
+    OrientRequest,
+    inspect_symbols,
+    orient_workspace,
+)
 from synapse.core.provenance import runtime_provenance
 from synapse.core.watch.state import watch_status_payload
 from synapse.core.workspace import db_path, require_workspace_path
@@ -50,6 +61,11 @@ def _workspace_index(path: str | Path = ".") -> SymbolIndex:
     return SymbolIndex(db_path(root))
 
 
+def _navigation_workspace(path: str | Path = ".") -> Path:
+    """Lazy readiness for the navigation tools; the whole decision lives in core."""
+    return ensure_navigation_ready(_workspace_root(path))
+
+
 def _normalize_file_path(file_path: str, workspace_root: Path) -> str:
     candidate = Path(file_path)
     if candidate.is_absolute() and candidate.is_relative_to(workspace_root):
@@ -64,8 +80,8 @@ def _not_found(target: str) -> dict[str, object]:
         "target": target,
         "reason": "not-indexed",
         "hint": (
-            "Verify the name with synapse_get_definition or synapse_query_context; "
-            "re-run synapse_ensure_workspace if the index may be stale."
+            "Verify the name with synapse_orient; "
+            "re-index with synapse_index_workspace if the index may be stale."
         ),
     }
 
@@ -121,65 +137,64 @@ def _mutation_payload(
     }
 
 
-@tool(ToolProfile.DEFAULT)
+@tool()
 def synapse_ensure_workspace(workspace_path: str = ".") -> dict[str, object]:
-    """Initialize or repair Synapse before any code navigation or query.
+    """Initialize or repair Synapse explicitly; navigation tools do this lazily.
 
     Idempotent: returns action (initialized/reused/repaired), daemon health, and index
-    counts. Query tools reject uninitialized or degraded workspaces; re-call this when
-    they do.
+    counts. Full-profile query tools reject uninitialized or degraded workspaces;
+    re-call this when they do.
     """
     return ensure_workspace(_workspace_root(workspace_path)).to_payload()
 
 
 @tool(ToolProfile.DEFAULT, structured_output=False)
-def synapse_query_context(
-    question: str,
-    symbol_ids: list[str] | None = None,
-    direction: str = "both",
-    max_depth: int = 3,
-    token_budget: int = 4000,
-    include_source: bool = False,
+def synapse_orient(
+    terms: list[str] | None = None,
+    path_scope: str | None = None,
+    token_budget: int = ORIENT_DEFAULT_TOKEN_BUDGET,
     workspace_path: str = ".",
 ) -> str:
-    """First call for architecture, lifecycle, impact, and multi-file flow questions.
+    """Start here for any code question: ranked matches for literal repository terms.
 
-    One bounded query: finds seeds (explicit symbol_ids, question matches, or a
-    structural fallback when nothing matches), traverses stored relations up to
-    max_depth (direction: in|out|both; only exact/scoped edges are transit —
-    heuristic references stay leaf evidence), and returns one JSON bundle: ranked
-    seeds, nodes and extra edges with file:line + resolution + confidence, flows
-    (verified chains only — every hop exact/scoped; heuristic matches stay leaf
-    evidence) ranked by aggregate path trust then question relevance, and explicit
-    coverage/truncation. token_budget is a maximum, not a target: low-relevance
-    evidence is omitted with explicit coverage accounting, and flows are omitted
-    with a reason (coverage.projection.flows_omitted: no-trusted-flow |
-    no-relevant-flow) when no trusted question-relevant chain exists.
-    token_budget is an estimate at 4 chars/token; the returned string never exceeds
-    token_budget*4 characters. Empty or truncated results are never proof of
-    absence — check coverage. Follow up with at most a few targeted
-    synapse_get_definition / synapse_find_references / synapse_get_symbol_context
-    calls; do not re-run the same investigation through shell search.
+    Pass up to 12 identifiers, file names, or path fragments in the repository's
+    own vocabulary (translate the task into likely code terms first — not a
+    natural-language question). Empty terms return a repository-map orientation
+    (areas, entrypoints, anchors). Returns production-first ranked matches with
+    compact handles for synapse_inspect, weak candidates, crowded/unmatched
+    terms, and coverage counts. Initializes the workspace automatically.
+    token_budget is an estimate at 4 chars/token, clamped to 400-1200. Empty
+    results are never proof of absence — check coverage and unmatched_terms.
     """
-    try:
-        parsed_direction = Direction(direction)
-    except ValueError as exc:
-        msg = f"direction must be one of: {', '.join(item.value for item in Direction)}."
-        raise ValueError(msg) from exc
-    workspace_root = require_workspace_ready(_workspace_root(workspace_path))
-    context_query = ContextQuery(
-        question=question,
-        symbol_ids=tuple(symbol_ids or ()),
-        direction=parsed_direction,
-        max_depth=max_depth,
+    root = _navigation_workspace(workspace_path)
+    request = OrientRequest(
+        terms=tuple(terms or ()),
+        path_scope=path_scope,
         token_budget=token_budget,
-        include_source=include_source,
     )
-    return query_context(
-        SymbolIndex(db_path(workspace_root)),
-        context_query,
-        workspace_root=workspace_root,
-    )
+    return orient_workspace(SymbolIndex(db_path(root)), request, workspace_root=root)
+
+
+@tool(ToolProfile.DEFAULT, structured_output=False)
+def synapse_inspect(
+    symbols: list[str],
+    token_budget: int = INSPECT_DEFAULT_TOKEN_BUDGET,
+    workspace_path: str = ".",
+) -> str:
+    """Inspect 1-8 selected symbols in one call using handles from synapse_orient.
+
+    Accepts compact handles (s_...) or stable symbol ids. Returns per symbol: the
+    definition with signature and file:line, a bounded source slice (<=40 lines),
+    parent and children, and grouped callers/callees/other references carrying
+    stored resolution (exact|scoped|unique-name|ambiguous|unresolved), confidence,
+    and usage kind verbatim, plus unresolved hypotheses. Totals and omitted counts
+    stay visible; unknown inputs are listed in missing. token_budget is an
+    estimate at 4 chars/token, clamped to 500-4000. A complete payload is not
+    proof the evidence or answer is complete — check coverage.
+    """
+    root = _navigation_workspace(workspace_path)
+    request = InspectRequest(symbols=tuple(symbols), token_budget=token_budget)
+    return inspect_symbols(SymbolIndex(db_path(root)), request, workspace_root=root)
 
 
 @tool()
@@ -219,7 +234,7 @@ def synapse_search_symbols(
     return {"items": [symbol_summary(item) for item in items], "page": page}
 
 
-@tool(ToolProfile.DEFAULT)
+@tool()
 def synapse_get_definition(
     symbol_id: str | None = None,
     name: str | None = None,
@@ -337,7 +352,7 @@ def synapse_get_file_dependencies(
     return dependencies if dependencies is not None else _not_found(normalized_file_path)
 
 
-@tool(ToolProfile.DEFAULT)
+@tool()
 def synapse_get_symbol_context(
     symbol_id: str,
     include_body: bool = False,
@@ -348,7 +363,7 @@ def synapse_get_symbol_context(
 ) -> dict[str, object]:
     """Structural context around one symbol: parent, paged children, optional body.
 
-    symbol_id comes from synapse_query_context or synapse_get_definition. Set
+    symbol_id comes from synapse_orient or synapse_get_definition. Set
     include_body=True to read the implementation source; prefer this over reading the
     file. body is capped at max_body_lines and body_truncated reports a cut — narrow
     to a child symbol or raise the cap for more. Returns {found: false, ...} for an
@@ -387,7 +402,7 @@ def synapse_get_dependencies(
     }
 
 
-@tool(ToolProfile.DEFAULT)
+@tool()
 def synapse_find_references(
     symbol_id: str | None = None,
     name: str | None = None,

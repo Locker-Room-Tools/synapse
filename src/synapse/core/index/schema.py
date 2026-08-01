@@ -7,7 +7,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-SCHEMA_VERSION = 4
+from synapse.core.index.handles import symbol_handle
+
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 PRAGMA foreign_keys = ON;
@@ -38,6 +40,7 @@ CREATE TABLE IF NOT EXISTS symbols (
     signature TEXT,
     source TEXT NOT NULL,
     confidence TEXT NOT NULL,
+    handle TEXT,
     FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
 );
 
@@ -70,6 +73,7 @@ CREATE INDEX IF NOT EXISTS idx_symbols_qualified_name ON symbols(qualified_name)
 CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
 CREATE INDEX IF NOT EXISTS idx_symbols_language ON symbols(language);
 CREATE INDEX IF NOT EXISTS idx_symbols_file_id ON symbols(file_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_symbols_handle ON symbols(handle);
 CREATE INDEX IF NOT EXISTS idx_relations_to_symbol_id ON relations(to_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_relations_from_symbol_id ON relations(from_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_relations_kind ON relations(kind);
@@ -141,27 +145,46 @@ _RELATION_COLUMN_MIGRATIONS = (
 )
 
 
-def _migrate_relation_columns(connection: sqlite3.Connection) -> None:
+_SYMBOL_COLUMN_MIGRATIONS = (("handle", "TEXT"),)
+
+
+def _migrate_columns(
+    connection: sqlite3.Connection,
+    table: str,
+    migrations: tuple[tuple[str, str], ...],
+) -> None:
     table_exists = connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'relations'"
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
     ).fetchone()
     if table_exists is None:
         return
-    existing = {
-        str(row[1]) for row in connection.execute("PRAGMA table_info(relations)").fetchall()
-    }
-    for column, column_type in _RELATION_COLUMN_MIGRATIONS:
+    existing = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
+    for column, column_type in migrations:
         if column not in existing:
-            connection.execute(f"ALTER TABLE relations ADD COLUMN {column} {column_type}")
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+
+
+def _backfill_symbol_handles(connection: sqlite3.Connection) -> None:
+    rows = connection.execute("SELECT id FROM symbols WHERE handle IS NULL").fetchall()
+    if not rows:
+        return
+    connection.executemany(
+        "UPDATE symbols SET handle = ? WHERE id = ?",
+        [(symbol_handle(str(row[0])), str(row[0])) for row in rows],
+    )
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
     """Create or migrate the index schema on an open connection."""
     version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    _migrate_relation_columns(connection)
+    _migrate_columns(connection, "relations", _RELATION_COLUMN_MIGRATIONS)
+    _migrate_columns(connection, "symbols", _SYMBOL_COLUMN_MIGRATIONS)
     connection.executescript(SCHEMA)
     if version < SCHEMA_VERSION:
+        # Rebuild before the backfill: the backfill UPDATE fires the FTS sync
+        # triggers, which require the external-content index to match `symbols`.
         connection.execute("INSERT INTO symbols_fts(symbols_fts) VALUES ('rebuild')")
+        _backfill_symbol_handles(connection)
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from synapse.core.config import IgnoreMatcher, write_project_ignored_directories
-from synapse.core.index import SymbolIndex
+from synapse.core.index import SymbolIndex, load_repo_map
 from synapse.core.indexing.crawler import hash_source as calculate_source_hash
 from synapse.core.indexing.crawler import iter_source_files
 from synapse.core.indexing.parser import ParsedSource
@@ -592,3 +592,38 @@ def test_watch_status_payload_marks_dead_running_status_as_stopped(
     assert payload["running"] is False
     assert payload["pending"] == 0
     assert isinstance(payload["staleness_seconds"], int)
+
+
+def test_watch_worker_refreshes_repository_map_incrementally(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An applied batch rewrites the stored repository map in the same transaction."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace_root = tmp_path / "workspace"
+    (workspace_root / "app").mkdir(parents=True)
+    (workspace_root / "app" / "main.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+    worker = WatchWorker(workspace_root)
+    worker.apply_batch(reindex_paths=["app/main.py"], remove_paths=[])
+
+    index = SymbolIndex(db_path(workspace_root))
+    with index.read_session() as reads:
+        first_map = load_repo_map(reads)
+    assert first_map is not None
+    assert {area.path for area in first_map.areas} == {"app"}
+
+    (workspace_root / "core").mkdir()
+    (workspace_root / "core" / "store.py").write_text(
+        "class Store:\n    def get(self):\n        return 1\n", encoding="utf-8"
+    )
+    worker.apply_batch(reindex_paths=["core/store.py"], remove_paths=[])
+    with index.read_session() as reads:
+        second_map = load_repo_map(reads)
+    assert second_map is not None
+    assert {area.path for area in second_map.areas} == {"app", "core"}
+
+    empty = worker.apply_batch(reindex_paths=[], remove_paths=[])
+    assert empty.indexed_files == 0
+    with index.read_session() as reads:
+        third_map = load_repo_map(reads)
+    assert third_map == second_map

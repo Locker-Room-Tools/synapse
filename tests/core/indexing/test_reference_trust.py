@@ -14,7 +14,13 @@ import pytest
 from synapse.core.index import SymbolIndex
 from synapse.core.indexing import index_workspace
 from synapse.core.indexing.parser import extract_references, parse_file
-from synapse.core.languages import ReferenceExtraction, reference_extraction
+from synapse.core.languages import (
+    LANGUAGES,
+    ReferenceExtraction,
+    is_call_usage,
+    reference_extraction,
+)
+from synapse.core.languages import call_usage_kinds as get_call_usage_kinds
 from synapse.core.languages import reference_usage_kinds as get_reference_usage_kinds
 from synapse.core.workspace import db_path
 
@@ -125,6 +131,126 @@ def test_advertised_usage_kinds_and_produced_usage_kinds_agree() -> None:
     """The sample table covers exactly the usage kinds C# advertises."""
     covered = {sample[0] for sample in CSHARP_USAGE_KIND_SAMPLES}
     assert covered == set(get_reference_usage_kinds("csharp"))
+
+
+# Python labels the same four captures it always had; only the label is new.
+PYTHON_USAGE_KIND_SAMPLES: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "invocation",
+        "def caller():\n    return helper()\n",
+        "helper",
+        "caller",
+    ),
+    (
+        "invocation",
+        "def caller(repository):\n    return repository.save(1)\n",
+        "save",
+        "repository",
+    ),
+    (
+        "base-type",
+        "class Derived(Base):\n    pass\n",
+        "Base",
+        "Derived",
+    ),
+    (
+        "decorator",
+        "@memoize\ndef work():\n    return 1\n",
+        "memoize",
+        "work",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("usage_kind", "source", "expected", "not_expected"),
+    PYTHON_USAGE_KIND_SAMPLES,
+    ids=[f"{sample[0]}-{sample[2]}" for sample in PYTHON_USAGE_KIND_SAMPLES],
+)
+def test_every_advertised_python_usage_kind_has_a_positive_and_negative_case(
+    tmp_path: Path,
+    usage_kind: str,
+    source: str,
+    expected: str,
+    not_expected: str,
+) -> None:
+    """Each advertised usage kind captures its target and nothing adjacent to it."""
+    file_path = tmp_path / f"{usage_kind.replace('-', '_')}_{expected}.py"
+    file_path.write_text(source, encoding="utf-8")
+
+    symbols = parse_file(file_path, "python", workspace_root=tmp_path)
+    references = extract_references(file_path, "python", symbols, workspace_root=tmp_path)
+    by_name = {reference.name: reference for reference in references}
+
+    assert expected in by_name
+    assert by_name[expected].usage_kind == usage_kind
+    assert not_expected not in by_name
+
+
+def test_advertised_and_produced_python_usage_kinds_agree() -> None:
+    """The sample table covers exactly the usage kinds Python advertises."""
+    covered = {sample[0] for sample in PYTHON_USAGE_KIND_SAMPLES}
+    assert covered == set(get_reference_usage_kinds("python"))
+
+
+def test_python_reference_spans_are_unchanged_by_labelling(tmp_path: Path) -> None:
+    """Labelling the existing captures must not change which usages are extracted.
+
+    The four Python patterns were relabelled, not rewritten, so recall and resolution
+    are unaffected; only `usage_kind` moved from None to a real id.
+    """
+    source = (
+        "import functools\n\n\n"
+        "class Derived(Base):\n"
+        "    @functools.cache\n"
+        "    def run(self, repository):\n"
+        "        helper()\n"
+        "        return repository.save(1)\n"
+    )
+    file_path = tmp_path / "spans.py"
+    file_path.write_text(source, encoding="utf-8")
+
+    symbols = parse_file(file_path, "python", workspace_root=tmp_path)
+    references = extract_references(file_path, "python", symbols, workspace_root=tmp_path)
+
+    assert {(reference.name, reference.start_line) for reference in references} == {
+        ("Base", 4),
+        ("helper", 7),
+        ("save", 8),
+    }
+    assert all(reference.usage_kind is not None for reference in references)
+
+
+def test_call_proven_usage_kinds_are_a_subset_of_advertised_kinds() -> None:
+    """A language can only prove a call with a kind its query actually captures."""
+    for language in LANGUAGES:
+        assert set(get_call_usage_kinds(language)) <= set(get_reference_usage_kinds(language))
+
+
+@pytest.mark.parametrize(
+    ("language", "usage_kind", "expected"),
+    [
+        ("python", "invocation", True),
+        ("python", "base-type", False),
+        ("python", "decorator", False),
+        ("csharp", "invocation", True),
+        ("csharp", "object-creation", True),
+        ("csharp", "member-access", False),
+        ("csharp", "nameof", False),
+        ("csharp", "declared-type", False),
+        # No language proves a call from an unlabelled site or an unknown language.
+        ("python", None, False),
+        (None, "invocation", False),
+        ("go", "invocation", False),
+    ],
+)
+def test_call_evidence_is_never_inferred(
+    language: str | None,
+    usage_kind: str | None,
+    expected: bool,
+) -> None:
+    """Absence of evidence is never evidence of a call."""
+    assert is_call_usage(language, usage_kind) is expected
 
 
 def test_csharp_coverage_is_never_advertised_as_exhaustive() -> None:

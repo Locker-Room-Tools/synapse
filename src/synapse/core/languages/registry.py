@@ -112,6 +112,11 @@ class LanguageSpec:
     reference_extraction: ReferenceExtraction = ReferenceExtraction.PARTIAL
     # Usage-kind ids the reference query is known to capture.
     reference_usage_kinds: tuple[str, ...] = ()
+    # Usage-kind ids whose syntax proves control transfers into the target: a strict
+    # subset of reference_usage_kinds. Empty means the language yields no call evidence,
+    # so a consumer must report its references neutrally rather than guessing a call
+    # from either endpoint's declaration kind.
+    call_usage_kinds: tuple[str, ...] = ()
     # Known extraction gaps, as short machine-readable ids.
     reference_limitations: tuple[str, ...] = ()
     # Grammar facts enabling structural resolution; absent means unique-name only.
@@ -299,6 +304,10 @@ LANGUAGES: dict[str, LanguageSpec] = {
             "attribute",
             "base-type",
         ),
+        # `new T(...)` transfers control into a constructor exactly as an invocation
+        # does; every other advertised kind is a type position, a metadata position,
+        # or a member read that proves nothing about control flow.
+        call_usage_kinds=("invocation", "object-creation"),
         reference_limitations=(
             # A member-access receiver is not itself captured, so a static access such
             # as `EndpointTags.Servers` records the member but not the type.
@@ -531,6 +540,10 @@ LANGUAGES: dict[str, LanguageSpec] = {
         tree_sitter_name="python",
         extensions=(".py",),
         query_dir="python",
+        reference_usage_kinds=("invocation", "base-type", "decorator"),
+        # A base list is a declaration position, and a bare decorator name sits in one
+        # too; both are reported neutrally with their usage kind rather than as calls.
+        call_usage_kinds=("invocation",),
         reference_limitations=(
             "inherited-members",
             "union-return-types",
@@ -752,6 +765,28 @@ def reference_usage_kinds(language: str) -> tuple[str, ...]:
     except KeyError as exc:
         msg = f"Unsupported language: {language}"
         raise ValueError(msg) from exc
+
+
+def call_usage_kinds(language: str) -> tuple[str, ...]:
+    """Return the usage-kind ids that prove a call site in a language."""
+    try:
+        return LANGUAGES[language].call_usage_kinds
+    except KeyError as exc:
+        msg = f"Unsupported language: {language}"
+        raise ValueError(msg) from exc
+
+
+def is_call_usage(language: str | None, usage_kind: str | None) -> bool:
+    """Report whether a stored usage kind proves a call at a site in this language.
+
+    The single place where usage-kind vocabulary becomes call semantics. An unknown
+    language, an unlabelled site, or a language advertising no call kinds is never a
+    call: absence of evidence is not evidence of a call.
+    """
+    if language is None or usage_kind is None:
+        return False
+    spec = LANGUAGES.get(language)
+    return spec is not None and usage_kind in spec.call_usage_kinds
 
 
 def reference_limitations(language: str) -> tuple[str, ...]:

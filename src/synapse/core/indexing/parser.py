@@ -35,7 +35,7 @@ from synapse.core.models import (
 
 # Bump whenever Python-side reference-extraction or resolution semantics change;
 # feeds the index-content fingerprint that invalidates stale relation rows.
-REFERENCE_EXTRACTOR_VERSION = 5
+REFERENCE_EXTRACTOR_VERSION = 6
 
 
 @dataclass(slots=True)
@@ -420,11 +420,14 @@ def _extract_symbols_from_tree(
 _REFERENCE_CAPTURE_PREFIX = "reference"
 
 # When several patterns match one identifier, the most specific usage kind wins. One
-# source location stays exactly one usage; only its label is decided here.
+# source location stays exactly one usage; only its label is decided here. `invocation`
+# outranks `member-access` because a receiver call matches both patterns and only the
+# invocation label proves control transfers into the target.
 _USAGE_KIND_PRIORITY: tuple[str, ...] = (
     "nameof",
     "object-creation",
     "base-type",
+    "decorator",
     "attribute",
     "type-literal",
     "cast-and-pattern",
@@ -432,8 +435,8 @@ _USAGE_KIND_PRIORITY: tuple[str, ...] = (
     "declared-type",
     "type-argument",
     "generic-type",
-    "member-access",
     "invocation",
+    "member-access",
 )
 
 

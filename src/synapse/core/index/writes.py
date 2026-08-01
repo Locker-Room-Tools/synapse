@@ -3,6 +3,7 @@
 import sqlite3
 from collections.abc import Iterable
 
+from synapse.core.index.handles import symbol_handle
 from synapse.core.models import Relation, RelationKind, SourceFile, Symbol
 
 
@@ -103,6 +104,7 @@ def replace_symbols_for_file(
             symbol.signature,
             symbol.source,
             str(symbol.confidence),
+            symbol_handle(symbol.id),
         )
         for symbol in symbols
     ]
@@ -115,9 +117,9 @@ def replace_symbols_for_file(
             INSERT INTO symbols (
                 id, file_id, language, kind, native_kind, name, qualified_name, file_path,
                 container_id, start_line, end_line, start_byte, end_byte, signature,
-                source, confidence
+                source, confidence, handle
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             symbol_rows,
         )

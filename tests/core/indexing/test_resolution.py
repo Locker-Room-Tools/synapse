@@ -258,7 +258,9 @@ def test_resolution_without_facts_falls_back_to_unique_name(
     relation = _relation_named(relations, "target")
     assert relation.resolution is ResolutionMethod.UNIQUE_NAME
     assert relation.confidence is Confidence.MEDIUM
-    assert relation.usage_kind is None
+    # Resolution strength and usage kind are independent: a heuristically bound target
+    # is still a syntactically proven call site.
+    assert relation.usage_kind == "invocation"
 
 
 _PYTHON_STORE = """class Repo:

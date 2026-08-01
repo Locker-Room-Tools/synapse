@@ -6,11 +6,11 @@ from pathlib import Path
 import pytest
 
 from synapse.core.config import config_file_path, write_global_ignored_directories
-from synapse.core.context import ContextQuery, Direction
-from synapse.core.index import SymbolIndex
+from synapse.core.index import SymbolIndex, symbol_handle
 from synapse.core.indexing import IndexStats
 from synapse.core.lifecycle import EnsureWorkspaceResult, WorkspaceNotReadyError
 from synapse.core.models import Confidence, Relation, RelationKind, Symbol, SymbolKind
+from synapse.core.navigation import InspectRequest, OrientRequest
 from synapse.core.provenance import runtime_provenance
 from synapse.mcp import tools
 from synapse.mcp.workspace import configure_workspace
@@ -199,6 +199,7 @@ def test_symbol_lookup_tools_delegate_to_the_index(
         "items": [
             {
                 "symbol_id": "sym-1",
+                "handle": symbol_handle("sym-1"),
                 "language": "python",
                 "kind": "function",
                 "name": "helper",
@@ -213,6 +214,7 @@ def test_symbol_lookup_tools_delegate_to_the_index(
     }
     assert tools.synapse_get_definition(symbol_id="sym-1") == {
         "symbol_id": "sym-1",
+        "handle": symbol_handle("sym-1"),
         "language": "python",
         "kind": "function",
         "name": "helper",
@@ -224,6 +226,7 @@ def test_symbol_lookup_tools_delegate_to_the_index(
     }
     assert tools.synapse_get_definition(name="helper") == {
         "symbol_id": "sym-1",
+        "handle": symbol_handle("sym-1"),
         "language": "python",
         "kind": "function",
         "name": "helper",
@@ -238,6 +241,7 @@ def test_symbol_lookup_tools_delegate_to_the_index(
         "candidates": [
             {
                 "symbol_id": "sym-1",
+                "handle": symbol_handle("sym-1"),
                 "language": "python",
                 "kind": "function",
                 "name": "helper",
@@ -249,6 +253,7 @@ def test_symbol_lookup_tools_delegate_to_the_index(
             },
             {
                 "symbol_id": "sym-2",
+                "handle": symbol_handle("sym-2"),
                 "language": "python",
                 "kind": "function",
                 "name": "helper",
@@ -360,9 +365,16 @@ def test_tool_docstrings_document_contracts() -> None:
     assert "diagnosis only" in (tools.synapse_watch_status.__doc__ or "")
     assert "include_body=True" in (tools.synapse_get_symbol_context.__doc__ or "")
     assert "{found: false" in (tools.synapse_get_symbol_context.__doc__ or "")
-    query_doc = " ".join((tools.synapse_query_context.__doc__ or "").split())
-    assert "never proof of absence" in query_doc
-    assert "in|out|both" in query_doc
+    orient_doc = " ".join((tools.synapse_orient.__doc__ or "").split())
+    assert "never proof of absence" in orient_doc
+    assert "up to 12" in orient_doc
+    assert "not a natural-language question" in orient_doc
+    assert "clamped to 400-1200" in orient_doc
+    inspect_doc = " ".join((tools.synapse_inspect.__doc__ or "").split())
+    assert "1-8" in inspect_doc
+    assert "exact|scoped|unique-name|ambiguous|unresolved" in inspect_doc
+    assert "clamped to 500-4000" in inspect_doc
+    assert "not proof" in inspect_doc
 
 
 def test_workspace_root_resolves_relative_paths_from_configured_workspace(
@@ -677,46 +689,103 @@ def test_config_tool_docstrings_document_contracts() -> None:
     assert "synapse_index_workspace" in (tools.synapse_remove_ignored_directories.__doc__ or "")
 
 
-def test_synapse_query_context_delegates_to_core(
+def test_synapse_orient_delegates_to_core(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The high-level context tool stays a thin delegator returning the core string."""
+    """The orientation tool stays a thin delegator returning the core string."""
     captured: dict[str, object] = {}
 
-    def fake_query_context(index: SymbolIndex, query: ContextQuery, *, workspace_root: Path) -> str:
-        captured["query"] = query
+    def fake_orient(index: SymbolIndex, request: OrientRequest, *, workspace_root: Path) -> str:
+        captured["request"] = request
         captured["workspace_root"] = workspace_root
-        return '{"seeds":[]}'
+        return '{"matches":[]}'
 
-    monkeypatch.setattr(tools, "require_workspace_ready", lambda path: tmp_path)
-    monkeypatch.setattr(tools, "query_context", fake_query_context)
+    monkeypatch.setattr(tools, "_navigation_workspace", lambda path=".": tmp_path)
+    monkeypatch.setattr(tools, "orient_workspace", fake_orient)
 
-    result = tools.synapse_query_context(
-        "how does indexing work?",
-        symbol_ids=["sym-1"],
-        direction="out",
-        max_depth=2,
-        token_budget=1000,
-        include_source=True,
+    result = tools.synapse_orient(
+        terms=["open_repository", "app/store.py"],
+        path_scope="app",
+        token_budget=600,
     )
 
-    assert result == '{"seeds":[]}'
+    assert result == '{"matches":[]}'
     assert captured["workspace_root"] == tmp_path
-    query = captured["query"]
-    assert isinstance(query, ContextQuery)
-    assert query.question == "how does indexing work?"
-    assert query.symbol_ids == ("sym-1",)
-    assert query.direction is Direction.OUT
-    assert query.max_depth == 2
-    assert query.token_budget == 1000
-    assert query.include_source is True
+    request = captured["request"]
+    assert isinstance(request, OrientRequest)
+    assert request.terms == ("open_repository", "app/store.py")
+    assert request.path_scope == "app"
+    assert request.token_budget == 600
 
 
-def test_synapse_query_context_rejects_unknown_direction() -> None:
-    """An invalid direction fails fast with the accepted choices."""
-    with pytest.raises(ValueError, match="in, out, both"):
-        tools.synapse_query_context("question", direction="sideways")
+def test_synapse_orient_accepts_empty_terms_for_map_orientation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_orient(index: SymbolIndex, request: OrientRequest, *, workspace_root: Path) -> str:
+        captured["request"] = request
+        return "{}"
+
+    monkeypatch.setattr(tools, "_navigation_workspace", lambda path=".": tmp_path)
+    monkeypatch.setattr(tools, "orient_workspace", fake_orient)
+
+    tools.synapse_orient()
+    request = captured["request"]
+    assert isinstance(request, OrientRequest)
+    assert request.terms == ()
+
+
+def test_synapse_inspect_delegates_to_core(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The inspection tool stays a thin delegator returning the core string."""
+    captured: dict[str, object] = {}
+
+    def fake_inspect(index: SymbolIndex, request: InspectRequest, *, workspace_root: Path) -> str:
+        captured["request"] = request
+        captured["workspace_root"] = workspace_root
+        return '{"symbols":[]}'
+
+    monkeypatch.setattr(tools, "_navigation_workspace", lambda path=".": tmp_path)
+    monkeypatch.setattr(tools, "inspect_symbols", fake_inspect)
+
+    result = tools.synapse_inspect(["s_" + "A" * 22, "py:stable-id"], token_budget=3000)
+
+    assert result == '{"symbols":[]}'
+    assert captured["workspace_root"] == tmp_path
+    request = captured["request"]
+    assert isinstance(request, InspectRequest)
+    assert request.symbols == ("s_" + "A" * 22, "py:stable-id")
+    assert request.token_budget == 3000
+
+
+def test_navigation_tools_delegate_readiness_to_core(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Readiness is one core call per navigation tool; MCP keeps no decision of its own."""
+    prepared: list[Path] = []
+
+    def fake_ready(path: str | Path) -> Path:
+        prepared.append(Path(path))
+        return tmp_path
+
+    monkeypatch.setattr(tools, "_workspace_root", lambda path=".": tmp_path)
+    monkeypatch.setattr(tools, "ensure_navigation_ready", fake_ready)
+    monkeypatch.setattr(tools, "orient_workspace", lambda index, request, *, workspace_root: "{}")
+    monkeypatch.setattr(tools, "inspect_symbols", lambda index, request, *, workspace_root: "{}")
+
+    tools.synapse_orient(terms=["anything"])
+    tools.synapse_inspect(symbols=["s_" + "A" * 22])
+
+    assert prepared == [tmp_path, tmp_path]
+    # The whole decision (uninitialized, degraded, missing grammars, stale references)
+    # lives in core.lifecycle; nothing here may branch on workspace state.
+    assert not hasattr(tools, "workspace_status_payload")
 
 
 class _EmptyIndex:

@@ -13,13 +13,11 @@ def test_server_instructions_advertise_synapse_first_flow() -> None:
     instructions = mcp.instructions
 
     assert instructions is not None
-    assert "synapse_ensure_workspace" in instructions
-    assert "synapse_query_context" in instructions
-    assert "synapse_get_definition" in instructions
-    assert "synapse_find_references" in instructions
-    assert "synapse_get_symbol_context" in instructions
+    assert "synapse_orient" in instructions
+    assert "synapse_inspect" in instructions
+    assert "repository vocabulary" in instructions
     assert "never proof of absence" in instructions
-    assert "Never repeat a successful Synapse" in instructions
+    assert "initialize the workspace automatically" in instructions.lower()
 
 
 def test_server_rejects_a_missing_workspace_before_starting(

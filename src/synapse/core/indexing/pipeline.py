@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from synapse.core.index import SymbolIndex
+from synapse.core.index import SymbolIndex, refresh_repo_map
 from synapse.core.index.schema import (
     atomic_replace_database,
     cleanup_database_files,
@@ -205,6 +205,7 @@ def _index_workspace(root: Path, *, force: bool) -> IndexStats:
                 reference_extraction_fingerprint(),
                 connection=connection,
             )
+            refresh_repo_map(connection)
             current_files = index.list_indexed_files(connection=connection)
             languages = sorted({source_file.language for source_file in current_files})
             workspace_stats = index.workspace_stats(connection=connection)

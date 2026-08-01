@@ -7,7 +7,7 @@ from typing import cast
 
 import pytest
 
-from synapse.core.index import SymbolIndex
+from synapse.core.index import REPO_MAP_DERIVATION_VERSION, SymbolIndex, load_repo_map
 from synapse.core.indexing import (
     REFERENCE_FINGERPRINT_KEY,
     index_workspace,
@@ -385,3 +385,58 @@ def test_fingerprint_change_invalidates_stale_relations(
     items = rebuilt_references["items"]
     assert isinstance(items, list)
     assert items[0]["match"] == "heuristic"
+
+
+def test_index_workspace_stores_repository_map(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Full indexing materializes a versioned repository map in index_meta."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace_root = tmp_path / "workspace"
+    (workspace_root / "app").mkdir(parents=True)
+    (workspace_root / "core").mkdir()
+    (workspace_root / "app" / "main.py").write_text(
+        "from core.store import Store\n\ndef main():\n    return Store()\n",
+        encoding="utf-8",
+    )
+    (workspace_root / "core" / "store.py").write_text(
+        "class Store:\n    def get(self):\n        return 1\n",
+        encoding="utf-8",
+    )
+
+    index_workspace(workspace_root)
+
+    index = SymbolIndex(db_path(workspace_root))
+    with index.read_session() as reads:
+        repo_map = load_repo_map(reads)
+    assert repo_map is not None
+    assert repo_map.version == REPO_MAP_DERIVATION_VERSION
+    assert {area.path for area in repo_map.areas} == {"app", "core"}
+    assert any(
+        entry.name == "main" and entry.signal == "name-convention" for entry in repo_map.entrypoints
+    )
+
+
+def test_forced_reindex_ships_a_fresh_repository_map(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The map is written inside the temp database before the atomic replace."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace_root = tmp_path / "workspace"
+    (workspace_root / "app").mkdir(parents=True)
+    (workspace_root / "app" / "main.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+    index_workspace(workspace_root)
+
+    (workspace_root / "extra").mkdir()
+    (workspace_root / "extra" / "util.py").write_text(
+        "def helper():\n    return 2\n", encoding="utf-8"
+    )
+    index_workspace(workspace_root, force=True)
+
+    index = SymbolIndex(db_path(workspace_root))
+    with index.read_session() as reads:
+        repo_map = load_repo_map(reads)
+    assert repo_map is not None
+    assert {area.path for area in repo_map.areas} == {"app", "extra"}

@@ -9,6 +9,13 @@
   function: (identifier) @reference.invocation
   (#not-eq? @reference.invocation "nameof"))
 
+; A call through a receiver is an invocation, not a member read. Without this pattern
+; `r.Save(1)` and `r.Total` are both captured as member accesses, which would leave the
+; overwhelming majority of C# calls indistinguishable from field reads.
+(invocation_expression
+  function: (member_access_expression
+    name: (identifier) @reference.invocation))
+
 (member_access_expression
   name: (identifier) @reference.member_access)
 

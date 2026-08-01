@@ -248,7 +248,7 @@ def test_reference_extraction_metadata_accessors() -> None:
 
     # Python advertises structural resolution with its honest gaps.
     assert reference_extraction("python") is ReferenceExtraction.PARTIAL
-    assert reference_usage_kinds("python") == ()
+    assert reference_usage_kinds("python") == ("invocation", "base-type", "decorator")
     assert reference_limitations("python") == (
         "inherited-members",
         "union-return-types",

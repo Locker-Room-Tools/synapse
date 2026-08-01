@@ -1,4 +1,4 @@
-"""Deterministic output-budget estimation and enforcement for context results.
+"""Deterministic output-budget estimation and enforcement for navigation results.
 
 Contract: ``token_budget`` is an ESTIMATED token budget at a fixed 4 characters per
 token. The hard, tested guarantee is on characters: the final serialized result never
@@ -11,14 +11,20 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 CHARS_PER_TOKEN = 4
-MIN_TOKEN_BUDGET = 500
-DEFAULT_TOKEN_BUDGET = 4000
-MAX_TOKEN_BUDGET = 20000
+
+ORIENT_DEFAULT_TOKEN_BUDGET = 800
+ORIENT_MIN_TOKEN_BUDGET = 400
+ORIENT_MAX_TOKEN_BUDGET = 1200
+
+INSPECT_DEFAULT_TOKEN_BUDGET = 2400
+INSPECT_MIN_TOKEN_BUDGET = 500
+# Ceiling for the public MCP tool; core callers keep the full clamp range.
+PUBLIC_MAX_TOKEN_BUDGET = 4000
 
 
-def clamp_token_budget(requested: int) -> int:
-    """Clamp a caller-supplied token budget to the supported deterministic range."""
-    return min(MAX_TOKEN_BUDGET, max(MIN_TOKEN_BUDGET, requested))
+def clamp(requested: int, low: int, high: int) -> int:
+    """Clamp a caller-supplied token budget to a supported deterministic range."""
+    return min(high, max(low, requested))
 
 
 def estimate_tokens(text: str) -> int:
@@ -45,6 +51,7 @@ def enforce_budget(
     minimal: Callable[[dict[str, object]], dict[str, object]],
     *,
     token_budget: int,
+    shrink_key: str = "matches",
 ) -> str:
     """Serialize under the hard character cap, dropping low-priority items first.
 
@@ -52,9 +59,9 @@ def enforce_budget(
     that is returned, at every stage. ``assemble`` rebuilds the payload from mutable
     state after each drop and must embed the supplied truncation mapping by
     reference. When every droppable item is gone, deterministic shrink stages apply:
-    the ``minimal`` envelope, then that envelope with trailing seed entries removed
-    one by one, then a fixed tiny envelope that always fits. The result is always
-    valid JSON.
+    the ``minimal`` envelope, then that envelope with trailing ``shrink_key`` entries
+    removed one by one, then a fixed tiny envelope that always fits. The result is
+    always valid JSON.
     """
     char_budget = token_budget * CHARS_PER_TOKEN
     dropped: dict[str, int] = {}
@@ -93,9 +100,9 @@ def enforce_budget(
     final = finalize(payload, meta)
     if len(final) <= char_budget:
         return final
-    seeds = payload.get("seeds")
-    while isinstance(seeds, list) and seeds:
-        seeds.pop()
+    entries = payload.get(shrink_key)
+    while isinstance(entries, list) and entries:
+        entries.pop()
         final = finalize(payload, meta)
         if len(final) <= char_budget:
             return final

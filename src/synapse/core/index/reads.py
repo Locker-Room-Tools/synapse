@@ -5,6 +5,8 @@ from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
+from synapse.core.index.handles import symbol_handle
+from synapse.core.index.source import read_symbol_source
 from synapse.core.languages import reference_extraction as get_reference_extraction
 from synapse.core.languages import reference_limitations as get_reference_limitations
 from synapse.core.languages import reference_usage_kinds as get_reference_usage_kinds
@@ -120,6 +122,7 @@ def symbol_summary(symbol: Symbol) -> dict[str, object]:
     """Return the compact public representation for a symbol."""
     return {
         "symbol_id": symbol.id,
+        "handle": symbol_handle(symbol.id),
         "language": symbol.language,
         "kind": str(symbol.kind),
         "name": symbol.name,
@@ -233,8 +236,84 @@ def _fts_prefix_query(query: str) -> str:
     return f'"{escaped}"*'
 
 
+def _fts_name_prefix_query(query: str) -> str:
+    """Prefix query restricted to the declaration-name columns of ``symbols_fts``."""
+    escaped = query.replace('"', '""')
+    return f'{{name qualified_name}} : "{escaped}"*'
+
+
 def _escape_like(query: str) -> str:
     return query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+# SQLite prefixes FTS5 query-syntax errors with "fts5:". Schema and statement errors
+# (an ambiguous or missing column, a broken join) carry no such prefix.
+_FTS_QUERY_ERROR_PREFIX = "fts5:"
+
+
+def _fts_rows(
+    connection: sqlite3.Connection,
+    sql: str,
+    params: Sequence[object],
+) -> list[sqlite3.Row]:
+    """Run the full-text branch, tolerating only a malformed FTS query.
+
+    A caller's term reaches ``MATCH`` quoted as a phrase, but FTS5 can still reject some
+    inputs; those degrade to the substring fallback, which is the documented behaviour.
+    Anything else is a defect in this module's SQL and must surface — swallowing it once
+    left the FTS branch silently disabled while every result test kept passing.
+    """
+    try:
+        return list(connection.execute(sql, params).fetchall())
+    except sqlite3.OperationalError as exc:
+        if not str(exc).startswith(_FTS_QUERY_ERROR_PREFIX):
+            raise
+        return []
+
+
+def _path_scope_filter(
+    path_scope: str | None,
+    *,
+    column: str = "file_path",
+) -> tuple[str, list[object]]:
+    """Return the SQL predicate restricting a path column to a workspace-relative prefix.
+
+    Mirrors the navigation scope rule exactly — the path is the scope itself or lies
+    under it — so a scoped query and an in-memory scope check can never disagree. The
+    caller supplies an already-normalized relative scope.
+    """
+    if path_scope is None:
+        return "", []
+    clause = f"({column} = ? OR {column} LIKE ? ESCAPE '\\')"
+    return clause, [path_scope, f"{_escape_like(path_scope)}/%"]
+
+
+def term_is_path_like(term: str) -> bool:
+    """Whether a term is shaped like a path, and so may match a path substring."""
+    return "/" in term or "." in term
+
+
+def _path_term_filter(term: str) -> tuple[str, list[object]]:
+    """Return the SQL predicate matching one literal path term.
+
+    The rule is shape-aware, and this is its single definition: a path-shaped term
+    (containing a separator or an extension) matches an exact path, a ``/``-suffix, or a
+    substring, while a bare word matches only an exact path or a whole trailing path
+    component. Retrieval, the page total, the distinct-union count, and orientation's
+    acceptance all read it from here — previously the SQL matched the broad set while
+    orientation accepted the narrow one, so a response could report a term unmatched and
+    simultaneously claim matching files were omitted.
+
+    The exact branch binds the raw term because it is an equality test, while the LIKE
+    branches bind the escaped form.
+    """
+    escaped = _escape_like(term)
+    clauses = ["path = ?", "path LIKE ? ESCAPE '\\'"]
+    params: list[object] = [term, f"%/{escaped}"]
+    if term_is_path_like(term):
+        clauses.append("path LIKE ? ESCAPE '\\'")
+        params.append(f"%{escaped}%")
+    return " OR ".join(clauses), params
 
 
 def _name_stem(name: str) -> str:
@@ -301,32 +380,108 @@ class ReadProjections:
         limit: int = 20,
         offset: int = 0,
     ) -> tuple[list[Symbol], dict[str, object]]:
-        """Search symbols and return exact page metadata."""
+        """Search symbols by name, qualified name, or file path, with exact page metadata."""
+        return self._search_page(
+            query,
+            match_file_path=True,
+            kind=kind,
+            language=language,
+            limit=limit,
+            offset=offset,
+        )
+
+    def search_symbol_names_page(
+        self,
+        query: str,
+        *,
+        kind: str | SymbolKind | None = None,
+        language: str | None = None,
+        path_scope: str | None = None,
+        declarations_only: bool = False,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[Symbol], dict[str, object]]:
+        """Search declarations by name or qualified name only, never by file path.
+
+        ``search_symbols_page`` deliberately also matches ``file_path``, which makes it
+        a combined name-and-path channel: on a large file a single bounded page can be
+        filled entirely by path-only rows, hiding every real name match. This is the
+        name-only half; literal path matching belongs to ``files_matching_path``. The
+        reported total therefore agrees with ``symbol_name_match_count``.
+
+        ``path_scope`` and ``declarations_only`` narrow the search space *before* the page
+        bound, so out-of-scope rows and import statements can never consume the page and
+        hide a real in-scope declaration.
+        """
+        return self._search_page(
+            query,
+            match_file_path=False,
+            kind=kind,
+            language=language,
+            path_scope=path_scope,
+            declarations_only=declarations_only,
+            limit=limit,
+            offset=offset,
+        )
+
+    def _search_page(
+        self,
+        query: str,
+        *,
+        match_file_path: bool,
+        kind: str | SymbolKind | None = None,
+        language: str | None = None,
+        path_scope: str | None = None,
+        declarations_only: bool = False,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[Symbol], dict[str, object]]:
         normalized_limit, normalized_offset = normalize_pagination(limit, offset)
         fetch_limit = normalized_offset + normalized_limit
+        # Every fragment below is shared by the FTS branch, the LIKE fallback, and the
+        # COUNT. The FTS branch joins `symbols_fts`, which declares `name`,
+        # `qualified_name`, and `file_path` too, so every symbols column must be
+        # qualified or SQLite rejects the statement as ambiguous.
         filter_clauses: list[str] = []
         filter_params: list[object] = []
         if kind is not None:
-            filter_clauses.append("kind = ?")
+            filter_clauses.append("symbols.kind = ?")
             filter_params.append(str(kind))
+        if declarations_only:
+            filter_clauses.append("symbols.kind != ?")
+            filter_params.append(str(SymbolKind.IMPORT))
         if language is not None:
-            filter_clauses.append("language = ?")
+            filter_clauses.append("symbols.language = ?")
             filter_params.append(language)
+        # Bound with the rest, so the scope binds before LIMIT rather than after retrieval.
+        scope_clause, scope_params = _path_scope_filter(path_scope, column="symbols.file_path")
+        if scope_clause:
+            filter_clauses.append(scope_clause)
+            filter_params.extend(scope_params)
         ranking = """
             ORDER BY
-                CASE WHEN name = ? THEN 0 ELSE 1 END,
-                CASE WHEN qualified_name = ? THEN 0 ELSE 1 END,
-                CASE WHEN name LIKE ? THEN 0 ELSE 1 END,
-                length(name),
-                start_line,
-                file_path,
-                id
+                CASE WHEN symbols.name = ? THEN 0 ELSE 1 END,
+                CASE WHEN symbols.qualified_name = ? THEN 0 ELSE 1 END,
+                CASE WHEN symbols.name LIKE ? THEN 0 ELSE 1 END,
+                length(symbols.name),
+                symbols.start_line,
+                symbols.file_path,
+                symbols.id
         """
         ranking_params: list[object] = [query, query, f"{query}%"]
+
+        match_clauses = [
+            "symbols.name LIKE ? ESCAPE '\\'",
+            "COALESCE(symbols.qualified_name, '') LIKE ? ESCAPE '\\'",
+        ]
+        if match_file_path:
+            match_clauses.append("symbols.file_path LIKE ? ESCAPE '\\'")
+        matches = "\n                        OR ".join(match_clauses)
 
         with self._connection() as connection:
             filters = "".join(f" AND {clause}" for clause in filter_clauses)
             like = "%" + _escape_like(query) + "%"
+            like_values = [like] * len(match_clauses)
             fts_sql = f"""
                 SELECT symbols.*
                 FROM symbols_fts
@@ -335,35 +490,31 @@ class ReadProjections:
                 {ranking}
                 LIMIT ?
             """
+            fts_query = (
+                _fts_prefix_query(query) if match_file_path else _fts_name_prefix_query(query)
+            )
             fts_params = [
-                _fts_prefix_query(query),
+                fts_query,
                 *filter_params,
                 *ranking_params,
                 fetch_limit,
             ]
-            try:
-                rows = connection.execute(fts_sql, fts_params).fetchall()
-            except sqlite3.OperationalError:
-                rows = []
+            rows = _fts_rows(connection, fts_sql, fts_params)
             symbols = [_map_symbol(row) for row in rows]
 
             if len(symbols) < fetch_limit:
                 seen_ids = {symbol.id for symbol in symbols}
                 like_sql = f"""
-                    SELECT *
+                    SELECT symbols.*
                     FROM symbols
                     WHERE (
-                        name LIKE ? ESCAPE '\\'
-                        OR COALESCE(qualified_name, '') LIKE ? ESCAPE '\\'
-                        OR file_path LIKE ? ESCAPE '\\'
+                        {matches}
                     ){filters}
                     {ranking}
                     LIMIT ?
                 """
                 like_params = [
-                    like,
-                    like,
-                    like,
+                    *like_values,
                     *filter_params,
                     *ranking_params,
                     fetch_limit,
@@ -378,15 +529,13 @@ class ReadProjections:
                 SELECT COUNT(*)
                 FROM symbols
                 WHERE (
-                    name LIKE ? ESCAPE '\\'
-                    OR COALESCE(qualified_name, '') LIKE ? ESCAPE '\\'
-                    OR file_path LIKE ? ESCAPE '\\'
+                    {matches}
                 ){filters}
             """
             total = int(
                 connection.execute(
                     count_sql,
-                    [like, like, like, *filter_params],
+                    [*like_values, *filter_params],
                 ).fetchone()[0]
             )
         page_items = symbols[normalized_offset : normalized_offset + normalized_limit]
@@ -396,6 +545,70 @@ class ReadProjections:
             normalized_offset,
             len(page_items),
         )
+
+    def symbol_name_match_count(
+        self,
+        query: str,
+        *,
+        path_scope: str | None = None,
+        declarations_only: bool = False,
+    ) -> int:
+        """Count symbols whose name or qualified name contains ``query``.
+
+        Unlike ``search_symbols_page`` totals, path-only matches are excluded, so
+        the count reflects how crowded a name actually is among declarations.
+        ``path_scope`` and ``declarations_only`` must mirror whatever the paired page
+        query used, so crowding is judged against the set that page retrieves from.
+        """
+        like = "%" + _escape_like(query) + "%"
+        filters, params = self._symbol_filters(
+            path_scope=path_scope, declarations_only=declarations_only
+        )
+        with self._connection() as connection:
+            row = connection.execute(
+                rf"""
+                SELECT COUNT(*)
+                FROM symbols
+                WHERE (
+                    symbols.name LIKE ? ESCAPE '\'
+                    OR COALESCE(symbols.qualified_name, '') LIKE ? ESCAPE '\'
+                ){filters}
+                """,
+                (like, like, *params),
+            ).fetchone()
+        return int(row[0])
+
+    def declaration_count(self, *, path_scope: str | None = None) -> int:
+        """Count searchable declarations, excluding imports and optionally scoped.
+
+        This is the population the crowd threshold is measured against. It has to
+        describe the same search space as the match count it is compared with, or a
+        term that saturates a small scope inside a large workspace is never classified
+        as crowded.
+        """
+        filters, params = self._symbol_filters(path_scope=path_scope, declarations_only=True)
+        clause = filters.removeprefix(" AND ") or "1"
+        with self._connection() as connection:
+            row = connection.execute(f"SELECT COUNT(*) FROM symbols WHERE {clause}", params)
+            return int(row.fetchone()[0])
+
+    @staticmethod
+    def _symbol_filters(
+        *,
+        path_scope: str | None,
+        declarations_only: bool,
+    ) -> tuple[str, list[object]]:
+        """Return the shared ``symbols`` restrictions as an appendable AND-fragment."""
+        clauses: list[str] = []
+        params: list[object] = []
+        if declarations_only:
+            clauses.append("symbols.kind != ?")
+            params.append(str(SymbolKind.IMPORT))
+        scope_clause, scope_params = _path_scope_filter(path_scope, column="symbols.file_path")
+        if scope_clause:
+            clauses.append(scope_clause)
+            params.extend(scope_params)
+        return "".join(f" AND {clause}" for clause in clauses), params
 
     def get_symbol(self, symbol_id: str) -> Symbol | None:
         """Return one symbol by its stable identifier."""
@@ -420,6 +633,31 @@ class ReadProjections:
                     id
                 """,
                 (name, name, name, name),
+            ).fetchall()
+        return [_map_symbol(row) for row in rows]
+
+    def get_definition_nocase(self, name: str, limit: int = 25) -> list[Symbol]:
+        """Return definition candidates matching a name case-insensitively.
+
+        Lets a lowercased question term ("key") reach a capitalized declaration
+        ("Key"); ordering mirrors ``get_definition``.
+        """
+        with self._connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM symbols
+                WHERE name = ? COLLATE NOCASE OR qualified_name = ? COLLATE NOCASE
+                ORDER BY
+                    CASE WHEN qualified_name = ? COLLATE NOCASE THEN 0 ELSE 1 END,
+                    CASE WHEN name = ? COLLATE NOCASE THEN 0 ELSE 1 END,
+                    length(COALESCE(qualified_name, name)),
+                    start_line,
+                    file_path,
+                    id
+                LIMIT ?
+                """,
+                (name, name, name, name, limit),
             ).fetchall()
         return [_map_symbol(row) for row in rows]
 
@@ -542,6 +780,93 @@ class ReadProjections:
                 symbols[symbol.id] = symbol
         return symbols
 
+    def get_symbols_by_handles(self, handles: Sequence[str]) -> dict[str, Symbol]:
+        """Return indexed symbols keyed by compact handle; missing handles are omitted."""
+        symbols: dict[str, Symbol] = {}
+        for batch in _sorted_batches(handles):
+            placeholders = ", ".join("?" for _ in batch)
+            rows = self.connection.execute(
+                f"SELECT * FROM symbols WHERE handle IN ({placeholders})",
+                batch,
+            ).fetchall()
+            for row in rows:
+                symbols[str(row["handle"])] = _map_symbol(row)
+        return symbols
+
+    def files_matching_path(
+        self,
+        term: str,
+        *,
+        path_scope: str | None = None,
+        limit: int = 20,
+    ) -> tuple[list[str], dict[str, object]]:
+        """Return indexed file paths matching a literal path term, with page metadata.
+
+        Ordered by match strength: exact relative path, then path suffix
+        ("%/term"), then substring; ties break on path. The metadata carries the exact
+        total, so a caller can report how many matches the ``limit`` withheld instead of
+        mistaking the page for the whole result. ``path_scope`` is applied before the
+        limit.
+        """
+        match_clause, match_params = _path_term_filter(term)
+        scope_clause, scope_params = _path_scope_filter(path_scope, column="path")
+        scope_sql = f" AND {scope_clause}" if scope_clause else ""
+        escaped = _escape_like(term)
+        normalized_limit = max(1, limit)
+        with self._connection() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT path FROM files
+                WHERE ({match_clause}){scope_sql}
+                ORDER BY CASE
+                    WHEN path = ? THEN 0
+                    WHEN path LIKE ? ESCAPE '\\' THEN 1
+                    ELSE 2
+                END, path
+                LIMIT ?
+                """,
+                (*match_params, *scope_params, term, f"%/{escaped}", normalized_limit),
+            ).fetchall()
+            total = int(
+                connection.execute(
+                    f"SELECT COUNT(*) FROM files WHERE ({match_clause}){scope_sql}",
+                    (*match_params, *scope_params),
+                ).fetchone()[0]
+            )
+        paths = [str(row["path"]) for row in rows]
+        return paths, page_metadata(total, normalized_limit, 0, len(paths))
+
+    def count_files_matching_paths(
+        self,
+        terms: Sequence[str],
+        *,
+        path_scope: str | None = None,
+    ) -> int:
+        """Count distinct indexed files matching any of the given literal path terms.
+
+        Per-term totals cannot simply be summed, because one file may match several
+        terms. Only a distinct union over all terms gives an omission count that is
+        exactly the difference between what matched and what was returned.
+        """
+        cleaned = [term for term in dict.fromkeys(terms) if term]
+        if not cleaned:
+            return 0
+        clauses: list[str] = []
+        params: list[object] = []
+        for term in cleaned:
+            clause, term_params = _path_term_filter(term)
+            clauses.append(f"({clause})")
+            params.extend(term_params)
+        scope_clause, scope_params = _path_scope_filter(path_scope, column="path")
+        scope_sql = f" AND {scope_clause}" if scope_clause else ""
+        params.extend(scope_params)
+        with self._connection() as connection:
+            row = connection.execute(
+                f"SELECT COUNT(DISTINCT path) FROM files WHERE ({' OR '.join(clauses)}){scope_sql}",
+                params,
+            ).fetchone()
+        return int(row[0])
+
     def relations_from_symbols(
         self,
         symbol_ids: Sequence[str],
@@ -618,6 +943,35 @@ class ReadProjections:
             if symbol_id in symbols
         ]
 
+    def trusted_incoming_degrees_for_ids(self, symbol_ids: Sequence[str]) -> dict[str, int]:
+        """Exact/scoped incoming reference counts for specific symbols.
+
+        The same trust rule as ``trusted_incoming_degrees`` — heuristic popularity
+        never counts — but scoped to the given ids, so modestly referenced symbols
+        outside the workspace-wide top ranks still report their true degree.
+        """
+        counts: dict[str, int] = {}
+        for batch in _sorted_batches(symbol_ids):
+            placeholders = ", ".join("?" for _ in batch)
+            rows = self.connection.execute(
+                f"""
+                SELECT to_symbol_id, COUNT(*) AS c
+                FROM relations
+                WHERE kind = ? AND resolution IN (?, ?) AND to_symbol_id IN ({placeholders})
+                GROUP BY to_symbol_id
+                ORDER BY to_symbol_id
+                """,
+                [
+                    str(RelationKind.REFERENCES),
+                    str(ResolutionMethod.EXACT),
+                    str(ResolutionMethod.SCOPED),
+                    *batch,
+                ],
+            ).fetchall()
+            for row in rows:
+                counts[str(row["to_symbol_id"])] = int(row["c"])
+        return counts
+
     def containment_child_counts(self, limit: int) -> dict[str, int]:
         """Return per-container child counts from parser-proven containment edges."""
         normalized_limit = min(1000, max(1, limit))
@@ -683,6 +1037,84 @@ class ReadProjections:
             for row in rows:
                 imports.setdefault(str(row["from_file_path"]), []).append(str(row["to_name"]))
         return imports
+
+    def symbol_counts_by_file(self) -> dict[str, int]:
+        """Return the number of indexed symbols per file path."""
+        rows = self.connection.execute(
+            """
+            SELECT file_path, COUNT(*) AS c
+            FROM symbols
+            GROUP BY file_path
+            ORDER BY file_path
+            """
+        ).fetchall()
+        return {str(row["file_path"]): int(row["c"]) for row in rows}
+
+    def cross_file_reference_counts(self) -> list[tuple[str, str, int]]:
+        """Count exact/scoped references between distinct files, grouped by file pair.
+
+        Only syntax-proven and scope-narrowed references count — heuristic matches
+        never establish cross-file structure. The target file comes from the resolved
+        symbol row because reference relations never store a target file path.
+        Ordered by (from path, to path) so the projection is deterministic.
+        """
+        rows = self.connection.execute(
+            """
+            SELECT r.from_file_path AS from_path, s.file_path AS to_path, COUNT(*) AS c
+            FROM relations r
+            JOIN symbols s ON s.id = r.to_symbol_id
+            WHERE r.kind = ? AND r.resolution IN (?, ?) AND r.from_file_path != s.file_path
+            GROUP BY r.from_file_path, s.file_path
+            ORDER BY r.from_file_path, s.file_path
+            """,
+            [
+                str(RelationKind.REFERENCES),
+                str(ResolutionMethod.EXACT),
+                str(ResolutionMethod.SCOPED),
+            ],
+        ).fetchall()
+        return [(str(row["from_path"]), str(row["to_path"]), int(row["c"])) for row in rows]
+
+    def cross_file_reference_sites(
+        self, from_file_path: str, to_file_path: str, limit: int
+    ) -> list[tuple[str, int]]:
+        """Return example (from path, line) sites for one cross-file pair, exact first."""
+        normalized_limit = min(10, max(1, limit))
+        rows = self.connection.execute(
+            """
+            SELECT r.from_file_path AS from_path, r.start_line AS line
+            FROM relations r
+            JOIN symbols s ON s.id = r.to_symbol_id
+            WHERE r.kind = ? AND r.resolution IN (?, ?)
+                AND r.from_file_path = ? AND s.file_path = ?
+                AND r.start_line IS NOT NULL
+            ORDER BY CASE WHEN r.resolution = ? THEN 0 ELSE 1 END, r.start_line, r.id
+            LIMIT ?
+            """,
+            [
+                str(RelationKind.REFERENCES),
+                str(ResolutionMethod.EXACT),
+                str(ResolutionMethod.SCOPED),
+                from_file_path,
+                to_file_path,
+                str(ResolutionMethod.EXACT),
+                normalized_limit,
+            ],
+        ).fetchall()
+        return [(str(row["from_path"]), int(row["line"])) for row in rows]
+
+    def import_edges(self) -> list[tuple[str, str]]:
+        """Return distinct (importing file, imported dotted name) pairs, ordered."""
+        rows = self.connection.execute(
+            """
+            SELECT DISTINCT from_file_path, to_name
+            FROM relations
+            WHERE kind = ? AND to_name IS NOT NULL
+            ORDER BY from_file_path, to_name
+            """,
+            [str(RelationKind.IMPORTS)],
+        ).fetchall()
+        return [(str(row["from_file_path"]), str(row["to_name"])) for row in rows]
 
     def workspace_stats(
         self,
@@ -880,15 +1312,12 @@ class ReadProjections:
         body: str | None = None
         body_truncated = False
         if include_body and file_row is not None and file_row["project_root"] is not None:
-            absolute_path = Path(str(file_row["project_root"])) / symbol.file_path
-            if absolute_path.exists():
-                lines = absolute_path.read_text(encoding="utf-8", errors="replace").splitlines()
-                body_lines = lines[symbol.start_line - 1 : symbol.end_line]
-                normalized_max = max(1, max_body_lines)
-                if len(body_lines) > normalized_max:
-                    body_lines = body_lines[:normalized_max]
-                    body_truncated = True
-                body = "\n".join(body_lines)
+            body_slice = read_symbol_source(
+                Path(str(file_row["project_root"])), symbol, max_lines=max_body_lines
+            )
+            if body_slice is not None:
+                body = body_slice.text
+                body_truncated = body_slice.truncated
         return {
             "symbol": symbol_summary(symbol),
             "parent": symbol_summary(_map_symbol(parent_row)) if parent_row is not None else None,
@@ -964,17 +1393,47 @@ class ReadProjections:
 
     def get_references_by_name(self, name: str) -> list[Relation]:
         """Return incoming unresolved references for a symbol name."""
+        relations, _ = self.unresolved_references_by_name(name)
+        return relations
+
+    def unresolved_references_by_name(
+        self,
+        name: str,
+        *,
+        limit: int | None = None,
+    ) -> tuple[list[Relation], int]:
+        """Return bounded incoming unresolved references for a name, plus the exact total.
+
+        A common name can carry thousands of unresolved sites, so a caller that projects
+        only a handful must bound the read instead of slicing it afterwards. The total
+        stays exact regardless of the bound, so the omission can be reported precisely.
+        """
         with self._connection() as connection:
-            rows = connection.execute(
-                """
+            sql = """
                 SELECT *
                 FROM relations
                 WHERE kind = ? AND to_name = ? AND to_symbol_id IS NULL
                 ORDER BY from_file_path, id
-                """,
-                (str(RelationKind.REFERENCES), name),
-            ).fetchall()
-        return [_map_relation(row) for row in rows]
+            """
+            params: list[object] = [str(RelationKind.REFERENCES), name]
+            if limit is not None:
+                sql += " LIMIT ?"
+                params.append(max(0, limit))
+            rows = connection.execute(sql, params).fetchall()
+            relations = [_map_relation(row) for row in rows]
+            if limit is None or len(relations) < limit:
+                return relations, len(relations)
+            total = int(
+                connection.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM relations
+                    WHERE kind = ? AND to_name = ? AND to_symbol_id IS NULL
+                    """,
+                    (str(RelationKind.REFERENCES), name),
+                ).fetchone()[0]
+            )
+        return relations, total
 
     def get_file_dependencies(
         self,
@@ -1027,17 +1486,33 @@ class ReadProjections:
             ),
         }
 
-    def _languages_for_paths(self, paths: set[str]) -> list[str]:
-        if not paths:
-            return []
-        ordered_paths = sorted(paths)
-        placeholders = ", ".join("?" for _ in ordered_paths)
+    def languages_by_path(self, paths: Sequence[str]) -> dict[str, str]:
+        """Return the indexed language of each given file path; unknown paths are omitted.
+
+        Relations carry no language of their own, so evidence-coverage reporting reads
+        the language the indexer actually recorded rather than guessing from a suffix.
+        """
+        ordered_paths = sorted(set(paths))
+        if not ordered_paths:
+            return {}
+        found: dict[str, str] = {}
         with self._connection() as connection:
-            rows = connection.execute(
-                f"SELECT DISTINCT language FROM files WHERE path IN ({placeholders})",
-                ordered_paths,
-            ).fetchall()
-        return sorted(str(row["language"]) for row in rows)
+            for batch in _sorted_batches(ordered_paths):
+                placeholders = ", ".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"SELECT path, language FROM files WHERE path IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                for row in rows:
+                    found[str(row["path"])] = str(row["language"])
+        return found
+
+    def _languages_for_paths(self, paths: set[str]) -> list[str]:
+        return sorted(set(self.languages_by_path(sorted(paths)).values()))
+
+    def workspace_languages(self) -> list[str]:
+        """Return every language present in the index, sorted."""
+        return self._workspace_languages()
 
     def _workspace_languages(self) -> list[str]:
         with self._connection() as connection:

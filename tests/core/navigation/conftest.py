@@ -1,4 +1,4 @@
-"""Shared context-core test isolation."""
+"""Shared navigation-core test isolation."""
 
 from pathlib import Path
 

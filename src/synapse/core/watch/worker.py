@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
-from synapse.core.index import SymbolIndex
+from synapse.core.index import SymbolIndex, refresh_repo_map
 from synapse.core.indexing import index_source_file
 from synapse.core.indexing.crawler import hash_source
 from synapse.core.indexing.parser import FileScope, RawReference
@@ -119,6 +119,7 @@ class WatchWorker:
                 raw_references_by_file=raw_references_by_file,
                 scopes_by_file=scopes_by_file,
             )
+            refresh_repo_map(connection)
 
             current_files_list = self.index.list_indexed_files(connection=connection)
             languages = sorted({source_file.language for source_file in current_files_list})

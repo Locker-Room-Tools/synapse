@@ -1,8 +1,10 @@
 """Per-workspace initialization and readiness lifecycle."""
 
+import sqlite3
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
+from time import monotonic, sleep
 
 from synapse.core.index import SymbolIndex
 from synapse.core.indexing import index_workspace, reference_index_is_stale
@@ -10,8 +12,13 @@ from synapse.core.languages.grammar_install import install_grammars, missing_gra
 from synapse.core.provenance import runtime_provenance
 from synapse.core.watch.daemon import ensure_watch_daemon, wait_for_watch_to_stop
 from synapse.core.watch.state import pid_is_running, read_watch_status, watch_status_payload
-from synapse.core.watch.supervisor import request_watch_stop
-from synapse.core.workspace import db_path, read_metadata, require_workspace_path
+from synapse.core.watch.supervisor import WatchAlreadyRunning, request_watch_stop
+from synapse.core.workspace import (
+    db_file_path,
+    db_path,
+    read_metadata,
+    require_workspace_path,
+)
 
 
 class WorkspaceState(StrEnum):
@@ -74,7 +81,91 @@ def require_workspace_ready(workspace_path: str | Path) -> Path:
     if status["state"] != WorkspaceState.READY:
         msg = (
             f"Synapse workspace is {status['state']}. "
-            "Call synapse_ensure_workspace before using query tools."
+            "Call synapse_ensure_workspace (or a navigation tool, which initializes "
+            "automatically) before using query tools."
+        )
+        raise WorkspaceNotReadyError(msg)
+    return root
+
+
+# A lost repair race is resolved by waiting for the winner's atomic rebuild, not by
+# failing: an agent has no way to act on a lock collision it never caused.
+NAVIGATION_REPAIR_TIMEOUT_S = 120.0
+_NAVIGATION_POLL_INTERVAL_S = 0.2
+
+
+def navigation_repair_reason(workspace_path: str | Path) -> str | None:
+    """Return why a navigation call must repair this workspace, or None when it is ready.
+
+    Readiness for navigation is more than metadata plus daemon health. Schema migration
+    runs on any ``SymbolIndex`` construction, so a workspace can report READY while its
+    relations were produced under older extraction semantics; serving those forever is
+    the failure this check exists to prevent.
+
+    Strictly read-only: it must never create, migrate, or write the index, because it
+    runs while a watch daemon or a concurrent rebuild may own the database. Checks are
+    ordered cheapest-first, so a healthy workspace pays one stat, one status-file read,
+    one grammar listing, and one read-only SQLite probe.
+    """
+    root = require_workspace_path(workspace_path)
+    if not db_file_path(root).exists():
+        # Metadata can outlive a deleted cache, and the staleness probe reads such a
+        # workspace as fresh because it has no stored fingerprint to disagree with.
+        return "no-index"
+    if workspace_status_payload(root)["state"] != WorkspaceState.READY:
+        return "not-ready"
+    if missing_grammars():
+        return "missing-grammars"
+    if reference_index_is_stale(root):
+        return "stale-references"
+    return None
+
+
+def _await_concurrent_repair(root: Path) -> bool:
+    """Wait out another process's repair, reporting whether the workspace became ready."""
+    deadline = monotonic() + NAVIGATION_REPAIR_TIMEOUT_S
+    while True:
+        if navigation_repair_reason(root) is None:
+            return True
+        if monotonic() >= deadline:
+            return False
+        sleep(_NAVIGATION_POLL_INTERVAL_S)
+
+
+def ensure_navigation_ready(workspace_path: str | Path) -> Path:
+    """Return a workspace that is queryable and current, repairing it only when needed.
+
+    This is the complete readiness decision for the navigation tools, so the MCP layer
+    stays a delegator. A healthy, current workspace is never re-ensured and never
+    re-indexed. A repair runs through ``ensure_workspace``, which owns grammar
+    installation, the daemon stop, the watch lock, and the atomic rebuild.
+
+    Another process may be performing exactly that repair. Losing the lock race is not
+    an error as long as the workspace is queryable and current afterwards, so the
+    reason is probed once more before failing.
+    """
+    root = require_workspace_path(workspace_path)
+    reason = navigation_repair_reason(root)
+    if reason is None:
+        return root
+    try:
+        ensure_workspace(root)
+    except (WatchAlreadyRunning, WorkspaceNotReadyError, sqlite3.OperationalError) as exc:
+        # The winner stops the daemon, rebuilds under the watch lock, and swaps the
+        # database atomically, so the workspace reads as not-ready until it finishes.
+        if not _await_concurrent_repair(root):
+            msg = (
+                f"Synapse workspace is {reason} and a concurrent repair did not finish "
+                f"within {NAVIGATION_REPAIR_TIMEOUT_S:.0f}s ({exc}). "
+                "Retry, or call synapse_ensure_workspace."
+            )
+            raise WorkspaceNotReadyError(msg) from exc
+        return root
+    remaining = navigation_repair_reason(root)
+    if remaining is not None:
+        msg = (
+            f"Synapse workspace is still {remaining} after an automatic repair. "
+            "Call synapse_ensure_workspace or run 'synapse doctor'."
         )
         raise WorkspaceNotReadyError(msg)
     return root

@@ -92,6 +92,26 @@ _QUERY_SCRIPT = """
     print(json.dumps({"names": names}))
 """
 
+_NAVIGATE_SCRIPT = """
+    import json, os
+    from pathlib import Path
+    from synapse.core.index import SymbolIndex
+    from synapse.core.lifecycle import ensure_navigation_ready, navigation_repair_reason
+    from synapse.core.navigation import OrientRequest, orient_workspace
+    from synapse.core.workspace import db_path
+
+    workspace = Path(os.environ["SYNAPSE_TEST_WORKSPACE"])
+    root = ensure_navigation_ready(workspace)
+    wire = orient_workspace(
+        SymbolIndex(db_path(root)), OrientRequest(terms=("Thing",)), workspace_root=root
+    )
+    payload = json.loads(wire)
+    print(json.dumps({
+        "reason_after": navigation_repair_reason(root),
+        "names": [match["n"] for match in payload["matches"]],
+    }))
+"""
+
 
 def _stale_the_fingerprint(workspace: Path) -> None:
     """Rewrite the stored fingerprint so the next ensure must force a rebuild."""
@@ -222,5 +242,55 @@ def test_concurrent_ensure_calls_rebuild_once_and_leave_a_queryable_index(
             "reused",
             "repaired",
         }
+    finally:
+        _stop_daemon(workspace)
+
+
+@pytest.mark.slow
+def test_concurrent_navigation_calls_against_a_stale_workspace_converge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two navigation calls racing on a stale index both answer, neither serves stale data.
+
+    Stricter than the ensure race above: `ensure_workspace` may legitimately surface a
+    lost lock to its caller, but a navigation call must absorb it and converge, because
+    an agent has no way to act on `WatchAlreadyRunning`.
+    """
+    workspace, data_root = _make_workspace(tmp_path)
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(data_root))
+
+    index_workspace(workspace)
+    _stale_the_fingerprint(workspace)
+
+    script = textwrap.dedent(_NAVIGATE_SCRIPT)
+    env = _child_environment(workspace=workspace, data_root=data_root)
+    processes = [
+        subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        for _ in range(2)
+    ]
+    try:
+        results = [process.communicate(timeout=_PROCESS_TIMEOUT_S) for process in processes]
+        codes = [process.returncode for process in processes]
+
+        assert codes == [0, 0], f"a navigation call failed the race: {results}"
+        for stdout, _ in results:
+            verdict = json.loads(stdout.strip().splitlines()[-1])
+            # Each call repaired or waited for the repair, then answered from a
+            # workspace it had proven current.
+            assert verdict["reason_after"] is None
+            assert "Thing" in verdict["names"]
+
+        assert (
+            SymbolIndex(db_path(workspace)).get_meta(REFERENCE_FINGERPRINT_KEY)
+            == reference_extraction_fingerprint()
+        )
+        _assert_no_orphaned_lock(workspace)
     finally:
         _stop_daemon(workspace)
