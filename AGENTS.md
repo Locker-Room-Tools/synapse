@@ -22,7 +22,10 @@ This file is the contract for any human or AI agent contributing to THIS reposit
   - `core/languages` — the language seam: `registry.py`, `grammars.py`, `grammar_install.py`,
     `queries.py` (`.scm` loading).
   - `core/index` — SQLite index: `symbol_index.py` entry object over `schema.py`,
-    `writes.py`, `reads.py`.
+    `writes.py`, `reads.py`; `handles.py` (compact wire handles), `source.py`
+    (bounded source slices), `repo_map.py` (the materialized repository map).
+  - `core/navigation` — the two-call navigation contract: `orient.py`,
+    `inspection.py`, `matching.py`, `traversal.py`, `render.py`, `budget.py`.
   - `core/indexing` — the pipeline: `crawler.py` → `parser.py` → `pipeline.py` → `references.py`.
   - `core/watch` — incremental watch daemon.
   - `core/workspace.py`, `core/lifecycle.py` — flat: a universal leaf and the top-level facade.
@@ -67,37 +70,63 @@ This file is the contract for any human or AI agent contributing to THIS reposit
   truncated, ambiguous, heuristic, and unindexed results must never look like proof of
   absence or complete coverage.
 - The MCP surface is profile-tiered (`synapse serve --profile default|full`; the
-  registry lives in `mcp/profiles.py`). The default profile is the minimal coding-agent
-  surface: `synapse_ensure_workspace`, `synapse_query_context`, `synapse_get_definition`,
-  `synapse_get_symbol_context`, `synapse_find_references`. The full profile adds:
-  `synapse_index_workspace`, `synapse_search_symbols`, `synapse_get_file_outline`,
-  `synapse_get_dependencies`, `synapse_workspace_stats`, `synapse_project_map`,
-  `synapse_get_file_dependencies`, `synapse_related_symbols`, `synapse_compact_context`,
+  registry lives in `mcp/profiles.py`). The default profile is exactly the two-call
+  navigation surface: `synapse_orient`, `synapse_inspect` — both initialize the
+  workspace lazily. The full profile adds: `synapse_ensure_workspace`,
+  `synapse_index_workspace`, `synapse_search_symbols`, `synapse_get_definition`,
+  `synapse_get_file_outline`, `synapse_get_dependencies`, `synapse_workspace_stats`,
+  `synapse_project_map`, `synapse_get_file_dependencies`, `synapse_get_symbol_context`,
+  `synapse_find_references`, `synapse_related_symbols`, `synapse_compact_context`,
   `synapse_watch_status`, `synapse_get_config`, `synapse_add_ignored_directories`,
-  `synapse_remove_ignored_directories`.
-- `synapse_query_context` is the bounded, task-oriented context operation: seed
-  discovery, multi-hop traversal over stored relations, ranking, deduplication, and
-  projection run server-side in `core/context`, under one deterministic output budget
-  and one consistent read snapshot. It returns a single compact JSON string so the
-  budget applies to the exact wire payload.
+  `synapse_remove_ignored_directories` (19 tools total).
+- The navigation contract (`core/navigation`): Synapse supplies compact structural
+  evidence; the agent supplies semantic interpretation, query expansion, planning,
+  and synthesis. `synapse_orient` evaluates up to 12 agent-chosen repository terms
+  literally (exact-name, prefix/substring, literal path, trusted centrality,
+  entrypoint, repository map, plus a simple crowd penalty — no intent or cluster
+  inference) and returns ranked production-first matches with compact handles
+  (`s_` + 22 base64url chars of the stable-ID digest). Name and path retrieval are
+  separate channels, and matched files are returned explicitly (including files with
+  no declarations). `synapse_inspect` resolves 1–8 handles or stable IDs under one
+  read snapshot and returns definitions, bounded source slices, parents/children,
+  and four relation groups — `callers`, `callees`, `refs_in`, `refs_out` — with
+  stored resolution, confidence, and usage kind verbatim. Both return one
+  compact JSON string so the budget binds the exact wire payload (orient: 800
+  estimated tokens default, clamped 400–1200; inspect: 2400 default, public max
+  4000), always report `payload_complete` and bounded `coverage`, and never claim
+  task completeness.
+- Call semantics are evidence-based. `callers`/`callees` hold only sites whose stored
+  usage kind proves a call (`LanguageSpec.call_usage_kinds`; C#: `invocation`,
+  `object-creation`; Python: `invocation`). A call is never inferred from either
+  endpoint's declaration kind, so a `declared-type` or `base-type` reference is
+  neutral `refs_in`/`refs_out`, and a language advertising no call kinds returns no
+  callers or callees at all — `coverage.extraction[].call_kinds` says so.
+- Navigation readiness lives entirely in `core.lifecycle`
+  (`navigation_repair_reason`, `ensure_navigation_ready`): no index, not ready,
+  missing grammars, or a stale reference fingerprint all force a repair before the
+  call answers. The probe is read-only; `mcp` only delegates.
 
 ### Agent workflow
 
 ```
-synapse_ensure_workspace()
+translate the request into repository vocabulary (identifiers, files, paths)
 
-synapse_query_context(question=...)
-→ ranked flow with file:line evidence, confidence, and coverage
+synapse_orient(terms=[...])
+→ ranked production-first matches with compact handles, weak candidates,
+  explicit file matches, crowded/unmatched terms, and coverage
+  (no terms → repository map with areas, entrypoints, and bridges)
 
-targeted definition, reference, or source check (at most a few)
-→ verify the specific claim that still needs exact evidence
+synapse_inspect(symbols=[...selected handles...])
+→ definitions, bounded source, call-proven callers/callees plus neutral
+  refs_in/refs_out, all with stored resolution, confidence, and usage kind;
+  synthesize the answer from this evidence
 ```
 
-Start with one `synapse_query_context` call for architecture, lifecycle, impact, and
-multi-file flow questions; narrow with `symbol_ids`, `direction`, or `max_depth` rather
-than enumerating low-level tools. Stop once the task has enough evidence.
+Two calls is the normal target; a weakly matched orientation may need one more
+`synapse_orient` with better terms or a `path_scope`. Stop once the task has enough
+evidence.
 
-Avoid intermediate searches or manual `grep` when a `symbol_id` is available.
+Avoid intermediate searches or manual `grep` when a handle or `symbol_id` is available.
 Use grep or whole-file reads only for exact-text verification, unsupported syntax,
 generated files, or an explicit index-coverage gap. Do not repeat a successful Synapse
 investigation as a full shell investigation merely for reassurance.

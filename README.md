@@ -28,9 +28,9 @@
 4. Restart the agent once.
 
 Replace `codex` with `claude-code`, `cline`, `continue`, `copilot`, `cursor`, `gemini`,
-`hermes`, `kiro`, `opencode`, `qwen`, or `windsurf`. No repository files are created. On the
-first code-navigation request, the global instruction calls `synapse_ensure_workspace`, which
-initializes the local index and daemon automatically.
+`hermes`, `kiro`, `opencode`, `qwen`, or `windsurf`. No repository files are created. The
+first `synapse_orient` or `synapse_inspect` call initializes the local index and daemon
+automatically.
 
 See [Installation and lifecycle](docs/installation.md) for upgrades, custom scopes,
 troubleshooting, and uninstall instructions. See [MCP tools](docs/tools.md) for tool contracts
@@ -46,9 +46,15 @@ serving only use the local grammar cache and never download parsers implicitly.
 
 ## Available MCP tools
 
-Synapse exposes 17 deterministic MCP tools for initialization, symbol lookup, definitions, references,
-structural context, dependency navigation, project maps, indexing, and daemon health. The
-complete parameter and response reference is in [docs/tools.md](docs/tools.md).
+Synapse exposes 19 deterministic MCP tools. The default profile is exactly two:
+`synapse_orient` (ranked, production-first matches for literal repository terms, with
+compact symbol handles) and `synapse_inspect` (one-snapshot batch inspection of selected
+symbols: definitions, bounded source, call-proven callers/callees plus neutral incoming
+and outgoing references, all with stored resolution, confidence, and usage kind). Both
+initialize and refresh the workspace automatically. The full
+profile adds initialization, symbol lookup, definitions, references, structural context,
+dependency navigation, project maps, indexing, and daemon-health tools. The complete
+parameter and response reference is in [docs/tools.md](docs/tools.md).
 
 ## Configuration
 
@@ -74,9 +80,15 @@ restored ones.
 ## Watch daemon
 
 Synapse requires a healthy dependency-free polling daemon before query tools can read an
-index. `synapse_ensure_workspace` starts or repairs it lazily, and the MCP entry point restores
+index. The navigation tools (or `synapse_ensure_workspace` on the full profile) start or
+repair it lazily, and the MCP entry point restores
 it for initialized workspaces after a reboot. Logs are written under the workspace data
 directory at `logs/watch.log`, and status is written to `watch.json` in the same data directory.
+
+A running daemon is not by itself enough to answer a question. Before serving evidence the
+navigation tools also check that the index exists, the parsers are installed, and the
+stored relations were produced by the current extraction semantics — a Synapse upgrade
+therefore triggers one automatic rebuild rather than silently reusing stale relations.
 
 Use `synapse watch status --workspace . --json` to inspect `running`, `backend`, `pending`, PID,
 timestamps, errors, and `staleness_seconds`. Stop a detached daemon with

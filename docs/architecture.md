@@ -57,52 +57,87 @@ package's internal decomposition, not separate import targets.
 - **`core.workspace`**: derives per-workspace storage paths and persists workspace metadata.
 - **`core.index`**: the SQLite symbol index. `symbol_index` is the entry object; `schema`,
   `writes`, and `reads` hold schema/lifecycle, connection-explicit writes, and read projections.
+  `repo_map` materializes a deterministic repository map — bounded directory areas
+  (a trie partition with chain collapse, at most 12 areas), likely entrypoints
+  (generic naming conventions only), trusted central declarations per area
+  (exact/scoped incoming references only), and cross-area bridges (exact/scoped
+  cross-file references plus declared-import segment matches) — stored as one JSON
+  blob in `index_meta` under its own derivation-version key. It is recomputed
+  inside the write transaction after every full and incremental index run; a
+  version bump invalidates stored maps without forcing a workspace reindex, and
+  readers derive a missing map live on their snapshot without writing.
 - **`core.config`**: `settings` resolves configuration across three layers — packaged defaults, the
   global user config, and a workspace-local `.synapse/config.json` — and owns atomic writes.
   `ignores` is the shared directory ignore matcher used by both the crawler and the watch layer,
   so crawl and watch filter identically.
-- **`core.context`**: the high-level retrieval pipeline behind `synapse_query_context`:
-  Unicode-aware deterministic keyword extraction (`keywords`), seed discovery with a
-  structural fallback tier for identifier-free questions (`seeds`), bounded
-  breadth-first traversal over stored relations with cycle prevention and hub-fan-out
-  suppression (`traversal`), a deterministic output budget with explicit truncation
-  metadata (`budget`), and orchestration plus coverage assembly (`query`).
-  The whole read runs on one consistent SQLite snapshot via `SymbolIndex.read_session()`.
-  Traversal trust policy: containment and exact/scoped references are transit edges;
-  heuristic (unique-name) references stay leaf evidence and are never expanded.
-  Flows are verified evidence: only chains whose every hop is exact or scoped
-  project as flows (a heuristic relation is a hypothesis and stays visible as
-  nodes, extra edges, and coverage — never a flow), ranked by aggregate path
-  trust, then question relevance, then depth.
-  A flow must also be substantive — carry at least one reference edge or end at a
-  question-relevant symbol; pure containment descent into unmatched members projects
-  as nodes only. When no chain qualifies the flows section is omitted with
-  `coverage.projection.flows_omitted` (`no-trusted-flow` when substantive chains
-  existed but all were heuristic, `no-relevant-flow` when none was substantive)
-  instead of fronting a misleading chain.
-  The token budget is a maximum, not a target: low-relevance evidence (data-member
-  swarms beyond a per-container cap, deep heuristic leaves, extra edges repeating an
-  already-projected link) is demoted upfront as policy with explicit
-  `coverage.projection` accounting (`nodes_demoted_low_relevance`,
-  `extra_edges_deduped`), while seeds, the primary flow, unresolved gaps, and
-  coverage are preserved. The advertised token budget
-  is an estimate at 4 chars/token; the hard guarantee is a character cap of
-  `token_budget * 4` on the exact serialized result. Ranking may reorder stored facts
-  (for example demoting test paths) but never upgrades stored confidence, and
-  projected flows are marked as projections over stored edges; non-tree edges are
-  projected separately with discovered/projected/omitted accounting.
+- **`core.navigation`**: the deterministic two-call navigation contract behind
+  `synapse_orient` and `synapse_inspect`. Synapse supplies compact structural
+  evidence; the agent supplies semantic interpretation, query expansion,
+  investigation planning, and synthesis — there is no natural-language keyword,
+  intent, alignment, cluster, or adaptive-projection inference in core.
+  Modules: literal term-to-declaration matching primitives with a simple crowd
+  limit (`matching`), batched one-hop relation retrieval plus the stored-edge
+  trust policy — containment and exact/scoped references are trusted, unique-name
+  and unclassified stay heuristic, stored resolution and confidence are carried
+  verbatim (`traversal`), ranked orientation (`orient`), one-snapshot batch
+  inspection (`inspection`), shared payload plumbing — a deduplicated file table
+  rebuilt on every assembly pass and compact symbol references (`render`), and the
+  deterministic output budget with explicit truncation metadata (`budget`).
+  Every read runs on one consistent SQLite snapshot via `SymbolIndex.read_session()`.
+  Orientation evaluates up to 12 caller-supplied terms literally through
+  exact-name, prefix/substring (at snake/camel word starts), literal-path,
+  trusted-centrality, entrypoint, and repository-map signals; a term whose
+  workspace-wide declaration-match count exceeds `max(25, symbols/100)` is
+  reported as crowded and its non-exact candidates demote to weak evidence.
+  Production ranks before tests and generated code. Name retrieval and path
+  retrieval are separate channels — the name channel never matches file paths, so
+  path-only rows cannot crowd out real name matches — and matched files are
+  returned explicitly, including files with no indexed declarations, so every
+  `files` row is referenced by a payload entry. Empty terms explicitly request
+  repository-map orientation, which also projects a bounded set of trusted
+  cross-area `bridges` addressed by area index; bridge examples are the first
+  thing budget pressure removes. Inspection resolves 1–8 compact handles or
+  stable IDs, retrieves one hop of incoming/outgoing relations in batched reads,
+  groups references by far endpoint **and** call evidence, bounds source slices
+  at 40 lines and relation groups at 12 per direction with visible totals and
+  omitted counts, and surfaces unresolved references as named hypotheses rather
+  than resolved matches.
+  Call semantics are evidence-based, never inferred from a declaration kind: a
+  site is a call only when its stored `usage_kind` is one the language advertises
+  in `LanguageSpec.call_usage_kinds` (C#: `invocation`, `object-creation`;
+  Python: `invocation`). Everything else is neutral `refs_in`/`refs_out` carrying
+  its usage kind verbatim, and an endpoint with both call and non-call sites
+  splits into two groups rather than upgrading the non-call ones. Because call
+  evidence is judged against the language the indexer recorded for the file the
+  usage was written in, a language advertising no call kinds yields no callers or
+  callees at all — which `coverage.extraction[].call_kinds: []` states outright.
+  Compact handles (`s_` + 22 base64url chars of a 128-bit blake2b digest of the
+  stable ID) are stored in the index under a unique constraint — a collision
+  fails indexing explicitly — and backfilled by a schema migration; stable IDs
+  stay canonical internally.
+  Budgets are maxima, not padding targets: orientation defaults to 800 estimated
+  tokens (clamped 400–1200), inspection to 2400 (clamped 500–4000, the public
+  ceiling). The advertised token budget is an estimate at 4 chars/token; the hard
+  guarantee is a character cap of `token_budget * 4` on the exact serialized
+  result, enforced through deterministic drop steps (weakest evidence first, the
+  first-requested symbol degrades last), then a minimal envelope, then a fixed
+  truncation-only envelope. `payload_complete` reports payload truncation only;
+  coverage counts report evidence bounds; task completeness is never claimed.
 - **`mcp.server` / `mcp.tools` / `mcp.profiles`**: expose deterministic, token-frugal
   tools to agents through profile-tiered registration (`synapse serve --profile
-  default|full`). The default profile is the minimal coding-agent surface
-  (`synapse_ensure_workspace`, `synapse_query_context`, `synapse_get_definition`,
-  `synapse_get_symbol_context`, `synapse_find_references`); the full profile adds
-  (`synapse_index_workspace`, `synapse_search_symbols`, `synapse_get_file_outline`,
-  `synapse_get_dependencies`,
+  default|full`). The default profile is exactly the two-call navigation surface
+  (`synapse_orient`, `synapse_inspect`) — both delegate the whole readiness
+  decision to `core.lifecycle.ensure_navigation_ready`, which repairs a workspace
+  that has no index, is not ready, is missing grammars, or carries a stale
+  reference fingerprint. The full profile adds `synapse_ensure_workspace`,
+  `synapse_index_workspace`, `synapse_search_symbols`, `synapse_get_definition`,
+  `synapse_get_file_outline`, `synapse_get_dependencies`,
   `synapse_workspace_stats`, `synapse_project_map`, `synapse_get_file_dependencies`,
+  `synapse_get_symbol_context`, `synapse_find_references`,
   `synapse_related_symbols`, `synapse_compact_context`,
   `synapse_watch_status`, `synapse_get_config`, `synapse_add_ignored_directories`,
-  `synapse_remove_ignored_directories`).
-  `synapse_query_context` returns one compact JSON string so its token budget binds the
+  and `synapse_remove_ignored_directories` (19 tools total).
+  The navigation tools return one compact JSON string so the token budget binds the
   exact wire payload; query tools return a uniform `{found: false, ...}` envelope
   instead of `None` so not-found never serializes as an empty result.
   Relations populated during indexing are `CONTAINS` (resolved member edges), `IMPORTS`
@@ -178,6 +213,17 @@ package's internal decomposition, not separate import targets.
   lifecycle waits.
 - **`core.lifecycle`**: owns workspace state, lazy grammar/index initialization, query
   readiness, and daemon repair. CLI and MCP call the same lifecycle.
+  Navigation readiness is the complete decision, not a daemon health check:
+  `navigation_repair_reason` returns `no-index`, `not-ready`, `missing-grammars`, or
+  `stale-references`, checked cheapest-first and strictly read-only — it never
+  constructs a `SymbolIndex`, because that migrates the schema and takes a write
+  transaction against a database a daemon or a concurrent rebuild may own.
+  `ensure_navigation_ready` repairs through `ensure_workspace` only when a reason
+  exists, then re-probes before letting the call proceed. Freshness belongs in
+  readiness because schema migration alone can carry relations built under older
+  extraction semantics into a workspace that reports READY. A lost repair race
+  (`WatchAlreadyRunning`, a locked database, a daemon that would not stop) is waited
+  out to a bounded deadline rather than raised, since an agent cannot act on it.
 
 ## Configuration layering
 
@@ -200,9 +246,11 @@ The project config is meant to be committed, so the whole team indexes the same 
 
 Synapse uses five global layers to make agents reach for structural context first:
 
-1. A marker-managed global instruction requires `synapse_ensure_workspace` before code
-   navigation.
-2. MCP server instructions advertise the same bootstrap and Synapse-first flow.
+1. A marker-managed global instruction describes the two-call navigation flow
+   (translate the task into repository vocabulary → `synapse_orient` →
+   `synapse_inspect`).
+2. MCP server instructions advertise the same Synapse-first flow; no bootstrap
+   call is needed because the navigation tools initialize lazily.
 3. Entry-tool docstrings describe when to prefer structural tools over text search.
 4. The managed `synapse-code-context` skill supplies the detailed multi-tool workflow.
 5. For Claude Code, a suggest-only `PreToolUse` hook (`synapse hook claude-pre-bash`)
@@ -223,10 +271,12 @@ The supported user path is globally configured and daemon-backed per workspace:
 1. `synapse install <agent>` writes a portable user MCP entry, global instruction, and skill.
 2. A new MCP process resolves the nearest Git root and starts in bootstrap mode when no
    metadata exists.
-3. `synapse_ensure_workspace` installs parsers, builds the initial index, and starts the
-   detached polling daemon, which becomes the incremental index writer for that workspace.
-4. Initialized MCP sessions restore a missing daemon; query tools reject uninitialized or
-   degraded state instead of exposing an empty or stale index.
+3. The first navigation call (or an explicit `synapse_ensure_workspace` on the full
+   profile) installs parsers, builds the initial index, and starts the detached
+   polling daemon, which becomes the incremental index writer for that workspace.
+4. Initialized MCP sessions restore a missing daemon; navigation tools repair
+   uninitialized or degraded state lazily, while full-profile query tools reject it
+   instead of exposing an empty or stale index.
 
 Bare `synapse` displays global install help. Project setup, manual indexing, independent MCP
 config installation, and foreground watching remain explicit advanced entry points.

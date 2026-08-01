@@ -143,17 +143,19 @@ These agents were researched against official documentation and deliberately not
 
 ## First request in a repository
 
-The global instruction tells the agent to call:
+The first navigation call initializes the workspace lazily:
 
 ```text
-synapse_ensure_workspace(workspace_path=".")
+synapse_orient(terms=["..."])
 ```
 
 The MCP server resolves the nearest Git root from its current directory, or uses that
-directory when no Git root exists. Ensure
-installs any newly required grammar, creates or updates the index, starts the detached daemon,
-and returns `initialized`, `reused`, or `repaired`. Query tools reject uninitialized or
-degraded workspaces instead of creating an empty index.
+directory when no Git root exists. When the workspace is uninitialized or degraded, the
+navigation tools install any newly required grammar, create or update the index, and
+start the detached daemon before answering. On `--profile full`,
+`synapse_ensure_workspace` performs the same lifecycle explicitly, and full-profile
+query tools reject uninitialized or degraded workspaces instead of creating an empty
+index.
 
 The same lifecycle is available manually:
 
@@ -173,8 +175,9 @@ a deterministic per-workspace data directory. Multiple repositories receive inde
 indexes and daemon processes.
 
 For an initialized workspace, MCP startup restores a missing daemon before exposing query
-tools. A new workspace may start MCP without a daemon so `synapse_ensure_workspace` remains
-available. Once initialized, daemon failure is a hard error.
+tools. A new workspace may start MCP without a daemon; the navigation tools (and
+`synapse_ensure_workspace` on the full profile) initialize it on first use. Once
+initialized, daemon failure is a hard error.
 
 Manual diagnostics remain available:
 

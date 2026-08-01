@@ -6,127 +6,236 @@ tools before broad text search or reading whole files.
 ## Tool profiles
 
 The advertised tool surface is selected at server start: `synapse serve --profile default`
-(the default) exposes the minimal coding-agent set — `synapse_ensure_workspace`,
-`synapse_query_context`, `synapse_get_definition`, `synapse_get_symbol_context`, and
-`synapse_find_references` — which keeps the static `tools/list` schema cost low.
-`--profile full` additionally exposes the administrative, configuration, and primitive
-projection tools documented below. `synapse doctor` validates the default surface exactly.
+(the default) exposes exactly the two navigation tools — `synapse_orient` and
+`synapse_inspect` — which keeps the static `tools/list` schema cost minimal (measured at
+roughly 550 estimated tokens for the whole surface, gated at 700). `--profile full`
+additionally exposes `synapse_ensure_workspace` and the administrative, configuration,
+and primitive projection tools documented below (19 tools total). `synapse doctor`
+validates the default surface exactly.
 
-## High-level context query
+## The navigation contract
 
-### `synapse_query_context`
+Synapse supplies compact structural evidence; the agent supplies semantic interpretation,
+query expansion, investigation planning, and synthesis. Neither tool accepts a
+natural-language question: the agent first translates the task into likely repository
+vocabulary (identifiers, file names, path fragments), and core evaluates those terms
+literally. Both tools check readiness first and repair the workspace automatically when
+needed — see [Workspace readiness](#workspace-readiness) for exactly what "ready" means.
 
-The first call for architecture, lifecycle, impact, and multi-file execution-flow
-questions. One bounded call performs seed discovery, multi-hop traversal over stored
-relations, ranking, deduplication, and projection server-side.
+Every response distinguishes `payload_complete` (whether the serialized projection fit
+its caps and budget) from evidence coverage: `coverage.scope` names the bounded scope
+(`ranked-orientation` or `selected-symbol-one-hop`), and discovered/returned/omitted
+counts, fixed caps, missing handles, source state, and per-language extraction
+completeness stay visible. Synapse never emits task completeness — a complete payload is
+not a claim that the evidence or the final answer is complete.
 
-- Parameters: `question`, `symbol_ids=None`, `direction="both"` (`in`/`out`/`both`),
-  `max_depth=3` (clamped 1–5), `token_budget=4000` (clamped 500–20000),
-  `include_source=False`, `workspace_path="."`
-- Traversal trust policy: only containment and `exact`/`scoped` references are
-  **transit** edges. Heuristic references (`unique-name` or unclassified) are recorded
-  as **leaf evidence** — the edge and its far symbol appear with full resolution and
-  confidence metadata, but traversal never continues past them, so unrelated symbols
-  cannot be chained through a shared name. Suppressed heuristic expansion is counted
-  in `coverage.traversal.not_expanded_heuristic`.
-- Seed origin: seeds come from explicit `symbol_ids` (`explicit-symbol`), question
-  matching (`question-match`), or — when the question matches no symbol at all — a
-  bounded, deterministic **structural fallback** (`structural-fallback`).
-  `coverage.seeds` reports the origin, the `fallback_reason`, and
-  `only_test_matches: true` when every seed lives in test code.
-- Seed tiering: an exact production declaration for a token dominates — prefix and
-  term matches for that token stay visible as alternates but never become peer
-  active seeds. Multiple exact declarations (overloads, genuine ambiguity) all stay
-  active; exact test-only matches stay active but flagged. Long unmatched terms
-  (≥7 chars) retry once with a 6-char prefix, so morphological variants
-  ("registration") still reach declarations ("register_...").
-- Structural fallback ranking (documented trust semantics): a deterministic integer
-  score over 3× incoming **exact/scoped** references (heuristic unique-name
-  popularity never counts), 2× containment children, 4× file import reach (distinct
-  files whose declared import names the symbol's module), +2 public name (no
-  leading underscore), +2 shallow production path — then kind relevance and path
-  depth; alphabetical order is only the final tiebreak. Test paths are excluded and
-  a per-directory cap spreads seeds across repository areas.
-- Projection policy (`coverage.projection.policy`): queries whose seeds include
-  test code run `test-relevant` (full test evidence). Everything else runs
-  `production-focus`: projected test nodes are capped at 5, excess is demoted (and
-  counted in `coverage.projection.tests = {discovered, projected, demoted}`), and
-  budget drops remove test evidence before comparable production evidence. Test
-  evidence is never globally removed — impact queries still surface tests within
-  the cap.
-- Returns: one compact JSON **string** (a single wire representation; no duplicated
-  structured payload) with:
-  - `seeds` — ranked seed symbols with match provenance (`explicit`/`exact-name`/
-    `prefix`/`term`/`structural`) and a `test_path` marker for test code;
-  - `alternates` — ambiguity is explicit: further candidates with the total count;
-  - `nodes` — discovered symbols with `depth` and a `via` edge (stored kind,
-    direction, resolution, confidence, `file:line` site, usage kind) — stored facts,
-    verbatim;
-  - `flows` — `{ids, trust}` root-to-leaf chains projected over the BFS discovery
-    tree; only verified chains project: every hop is exact or scoped, so `trust` is
-    `exact` or `scoped` (a heuristic unique-name relation is a hypothesis and stays
-    node/edge evidence, never a flow). Flows are ranked by aggregate path trust,
-    then question relevance, then depth. When no chain qualifies the section is
-    omitted and `coverage.projection.flows_omitted` says why: `no-trusted-flow`
-    (substantive chains existed but all were heuristic) or `no-relevant-flow`
-    (no chain carried a reference edge or question-relevant leaf);
-  - `edges` — a bounded, ranked projection of discovered **non-tree** edges
-    (cross-links and cycles) with the same evidence fields;
-  - `unresolved` — seed-level references the index could not bind to one target
-    (`ambiguous`/`unresolved`), with name and `file:line` site, so gaps invite a
-    targeted `synapse_get_definition` drill-down instead of looking like absence;
-  - `imports` — file-level import facts for discovered files;
-  - `coverage` — index freshness/staleness, seed origin, per-language extraction
-    completeness and limitations, traversal guards (depth/nodes/edges/fan-out
-    suppression, remaining frontier, suppressed heuristic expansion), resolution
-    counts, and `projection.edges` accounting (`discovered` / `tree_projected` /
-    `extra_projected` / `omitted`) so returned edges are never mistaken for all
-    discovered edges;
-  - `truncation` — the applied budget, estimated tokens, and exactly what was dropped.
-- Output-size guarantee: `token_budget` is an **estimate** at a fixed 4 characters per
-  token; the hard, tested guarantee is that the returned string never exceeds the
-  **clamped** budget (500–20000) times 4 **characters** and is always valid JSON —
-  `query.token_budget` echoes the clamped value the cap applies to. Normal budget
-  pressure drops low-priority content first and preserves seeds, the primary flow,
-  and coverage while they fit; under extreme pressure the result shrinks to a
-  minimal envelope (which may trim seeds) and, as a last resort, a fixed
-  truncation-only envelope that always carries `complete: false`, so truncation can
-  never look like a complete result. Empty or truncated results are never proof of
-  absence — read `coverage`.
+Symbols are addressed by deterministic compact handles: `s_` plus 22 base64url characters
+derived from a 128-bit digest of the internal stable ID. Handles are stored under a
+unique index (a collision fails indexing explicitly and can never alias another symbol);
+stable IDs remain canonical internally and remain visible through full-profile
+primitives, which accept them interchangeably.
 
-The intended workflow is `synapse_ensure_workspace` → one `synapse_query_context` → at
-most a few targeted `synapse_get_definition` / `synapse_find_references` /
-`synapse_get_symbol_context` checks.
+### `synapse_orient`
 
-## Workspace bootstrap
+The first call for any code question: ranked, production-first orientation.
 
-### `synapse_ensure_workspace`
+- Parameters: `terms=None` (up to 12 repository terms; empty explicitly requests
+  repository-map orientation), `path_scope=None` (restrict to a workspace-relative
+  path prefix), `token_budget=800` (clamped 400–1200), `workspace_path="."`
+- Ranking signals: exact-name, name-prefix/substring (at word starts, snake and
+  camel), literal path (exact, `/`-suffix, and — for path-shaped terms — substring),
+  trusted centrality (exact/scoped incoming references, bucketed), entrypoint and
+  repository-map anchors. A simple crowd penalty keeps generic terms from
+  dominating: a term whose workspace-wide declaration-match count exceeds
+  `max(25, symbols/100)` is reported in `crowded_terms` with its count, and its
+  non-exact candidates surface only as weak candidates. There is no intent,
+  ontology, cluster, facet, or paraphrase inference.
+- Name and path are **separate retrieval channels**. The name channel matches
+  declaration names and qualified names only; it never matches file paths, so a
+  large file whose path contains the term cannot fill the bounded page and hide
+  real name matches. Literal path matching is its own channel.
+- Every narrowing binds **in the query, before the page bound** — the scope, and the
+  exclusion of import statements, which are not declarations. Out-of-scope rows and
+  imports therefore cannot consume a page and hide a real in-scope declaration. A path
+  is in scope when it is the scope itself or lies under it, so `app` does not match
+  `application/`. (The full-profile `synapse_search_symbols` is a different contract and
+  still returns imports, including for an explicit `kind="import"`.)
+- The crowd metric measures both sides against the same population: name matches among
+  **searchable declarations inside the scope**, over the count of those declarations,
+  keeping the `max(25, population / 100)` rule. A term that is generic workspace-wide but
+  rare inside the scope is not demoted, and one that saturates a small scope inside a
+  large workspace is correctly reported as crowded.
+- A path term's shape decides how it matches, and retrieval, counting, and acceptance all
+  use that one rule: a **path-shaped** term (containing `/` or `.`) matches an exact path,
+  a `/`-suffix, or a substring; a **bare** word matches only an exact path or a whole
+  trailing path component. So `handler` does not match `pkg/handler_noise_00.py`, and
+  `files_omitted` can never contradict `unmatched_terms`.
+- Response: a deduplicated `files` table (entries reference it by index — every
+  row is referenced by some entry), ranked `matches` (compact handle `h`, name
+  `n`, kind `k`, file index `f`, line `l`, match provenance `m`:
+  `exact|prefix|substring|path|map`, matched term `t`, bucketed trusted in-degree
+  `in`, entrypoint/anchor flag `ep`), `weak` candidates/hypotheses,
+  `file_matches` (bounded literal path hits: file index `f`, matching term `t`,
+  indexed declaration count `d` — `d: 0` is an explicit "matched file, nothing
+  declared in it"), `crowded_terms`, `unmatched_terms` (never silently dropped),
+  a `map` section for empty-terms orientation (bounded areas, entrypoints, and
+  `bridges`), `coverage`, `payload_complete`, and the `budget` block.
+- `map.bridges` are the trusted cross-area links from the repository map, using
+  compact area indexes into `map.areas`: `a`/`b` (area indexes), `r` (exact/scoped
+  cross-area reference count), `i` (import count), and at most one `path:line`
+  example `x`. Under budget pressure the examples drop first, then whole bridges;
+  areas and anchors are kept longer because they are what an agent addresses.
+- `coverage.caps` names the fixed bounds that shaped the answer (`names`, `paths`,
+  `matches`, `weak`, `files`), with `name_omitted` and `files_omitted` when the
+  caps actually removed something. `files_omitted` counts every distinct matching
+  file, not just the ones the path limit retrieved, and `path_capped: true` marks the
+  case where matches were never retrieved at all — distinct from budget truncation,
+  which `budget.dropped` accounts for.
+- Production ranks before tests and generated code — for both symbol matches and
+  file matches — unless tests are explicitly scoped with `path_scope`.
 
-Call this before the first code-navigation operation in a workspace.
+### `synapse_inspect`
+
+One batch inspection of the selected symbols under one read snapshot.
+
+- Parameters: `symbols` (1–8 compact handles or internal stable IDs),
+  `token_budget=2400` (clamped 500–4000), `workspace_path="."`
+- Per selected symbol: the definition (qualified name, kind, `file` index,
+  `lines`, signature), a bounded source slice (`src`, at most 40 lines, with
+  `truncated` and `shortened` flags), `parent` and `children` (capped at 12 with
+  `children_total`), and four relation groups — `callers`, `callees`, `refs_in`,
+  `refs_out` — at most 12 incoming and 12 outgoing groups (call and non-call
+  groups share that bound), each group carrying its endpoint definition and up to
+  3 sites (`more` counts the rest), every site preserving stored resolution
+  (`exact|scoped|unique-name|ambiguous|unresolved`), confidence, usage kind, and
+  location verbatim — plus unresolved incoming `hypotheses` by name with
+  `hyp_total`. `in_total`, `out_total`, and omitted counts stay visible.
+- Unknown handles or IDs are listed in `missing`, never guessed. Outgoing
+  references whose target is unresolved keep their target name and stored
+  resolution instead of a handle.
+
+#### Call semantics
+
+`callers` and `callees` contain **call-proven sites only**. A call is never inferred
+from either endpoint's declaration kind: a site counts as a call only when its stored
+`usage_kind` is one the language advertises as proving that control transfers into the
+target. Today that is `invocation` and `object-creation` for C# — `new Repo()` is a
+constructor invocation — and `invocation` for Python.
+
+Everything else is returned as **neutral evidence** in `refs_in`/`refs_out` with its
+usage kind verbatim. A C# `declared-type` reference (`void M(Repo repo)`) therefore never
+makes `M` a caller of `Repo`, and a member read (`repo.Total`) is never a call even
+though it shares the member-access syntax with one. Python base lists and bare decorator
+names are likewise neutral.
+
+If one endpoint carries both call and non-call sites, it is split into two groups; the
+non-call sites are never upgraded to join the call group.
+
+A language that advertises no call usage kinds produces **no callers or callees at all**,
+and all of its evidence lands in `refs_in`/`refs_out`. Read
+`coverage.extraction[].call_kinds`: an empty list means an empty `callers` proves
+nothing about that language.
+
+#### Coverage
+
+`coverage` reports what the returned evidence is made of:
+
+- `resolution_model: "syntactic-structural"` and `exhaustive: false`
+- `extraction` — call and extraction calibration per language, each with `completeness`
+  (`partial` by default, so an empty `limitations` list can never read as complete),
+  `call_kinds`, and `limitations`. Bounded, with `extraction_omitted`.
+
+  It normally covers the languages that actually produced the returned evidence — the
+  selected symbols' languages **and** the languages of the returned relation sites. When
+  a selected symbol has **zero incoming references** it also covers the remaining
+  workspace languages, marked `"evidence": false`, because a caller could have been
+  written in any of them and an empty caller set is only readable against their call
+  coverage. Evidence-producing languages omit the key, so a normal payload is unchanged.
+- `hypotheses_total` / `hypotheses_omitted` — exact, not a truncated list
+- source state, one cause per field and never conflated:
+  - `source_truncated` — the definition outgrew the fixed 40-line slice cap
+  - `source_shortened` — the wire budget removed lines the fixed slice would have held
+  - `source_omitted` — the budget removed the slice entirely
+  - `source_unavailable` — the indexed location cannot be read
+
+  A body that outgrew the cap *and* was then shortened by the budget appears in both of
+  the first two: two real causes, not a conflation. Entry-level `src.truncated` means
+  something deliberately different — *the text shown here is incomplete*, whatever the
+  cause — because that is what an agent reading the slice needs; `src.shortened` and the
+  coverage fields say which cause applied.
+- `relations_returned` / `relations_omitted`, `selected` / `requested`
+
+Both tools guarantee output size the same way: `token_budget` is an **estimate** at a
+fixed 4 characters per token; the hard, tested guarantee is that the returned string
+never exceeds the accepted budget times 4 **characters** and is always valid JSON.
+Normal budget pressure drops low-priority content deterministically (hypotheses and
+weak evidence first; the first-requested symbol degrades last); under extreme pressure
+the result shrinks to a minimal envelope and, as a last resort, a fixed truncation-only
+envelope that always carries `complete: false`. Empty or truncated results are never
+proof of absence — read `coverage`.
+
+The intended workflow: translate the request into repository vocabulary →
+`synapse_orient` → one `synapse_inspect` with several returned handles → synthesize with
+the model. Two calls is the normal target, not a guarantee: a weakly matched orientation
+may need one more `synapse_orient` with better terms. Use exact-text search or file
+reads only for gaps the coverage block reports.
+
+## Workspace readiness
+
+Ready means **queryable and semantically current**, not merely "a daemon is running".
+Before answering, a navigation call repairs the workspace when any of these holds:
+
+| reason | meaning |
+|---|---|
+| `no-index` | metadata exists but the SQLite index does not |
+| `not-ready` | uninitialized, initializing, or a degraded/dead daemon |
+| `missing-grammars` | a supported parser is not installed locally |
+| `stale-references` | stored relations were produced under older extraction semantics |
+
+The last one is why daemon health alone is insufficient: the reference fingerprint covers
+the schema version, the extractor version, and every packaged `.scm` query, so a
+workspace can migrate its SQLite schema — which happens on any index construction — while
+keeping relations built by an older extractor. Without this check it would serve that
+stale evidence indefinitely.
+
+The probe is read-only and never allocates the cache directory, because it runs while a
+watch daemon or a concurrent rebuild may own the database. A healthy, current workspace
+performs no ensure and no re-index. A repair goes through `ensure_workspace`, which owns
+grammar installation, the daemon stop, the watch lock, and the atomic rebuild; readiness
+is re-verified afterwards before the call proceeds. If another process wins the repair
+race, the call waits for that rebuild rather than surfacing a lock error.
+
+### `synapse_ensure_workspace` (full profile)
+
+Explicit initialization/repair for setup, diagnostics, and recovery; the navigation tools
+do this lazily on their own, so it is not part of the normal workflow.
 
 - Parameters: `workspace_path="."`
 - Returns: `workspace_path`, `action` (`initialized`, `reused`, or `repaired`),
   `initialized`, daemon health, and compact index counts
 - Installs missing grammars, initializes or updates the index, and ensures a healthy daemon
 
-All query tools reject uninitialized or degraded workspaces with an instruction to call this
-tool. This prevents an empty SQLite database from appearing to be a valid result.
+Full-profile query tools reject uninitialized or degraded workspaces with an instruction
+to initialize first. This prevents an empty SQLite database from appearing to be a valid
+result.
 
-## Canonical navigation
+## Canonical navigation (full profile)
 
 Resolve a declaration first, then reuse its stable identifier:
 
 ```text
 synapse_get_definition(name="synapse_find_references")
-→ {symbol_id, file_path, line_range, ...}
+→ {symbol_id, handle, file_path, line_range, ...}
 
 synapse_find_references(symbol_id="...")
 → {items: [...], files: [...], page: {...}}
 ```
 
-Use `synapse_search_symbols` only when the exact declaration name is unknown or multiple
-candidates need filtering. Fall back to grep or file reads when a symbol is not indexed or
-exact source text is required.
+Symbol summaries include both the internal `symbol_id` and the compact `handle`, so
+full-profile results interoperate with `synapse_inspect`. Use `synapse_search_symbols`
+only when the exact declaration name is unknown or multiple candidates need filtering.
+Fall back to grep or file reads when a symbol is not indexed or exact source text is
+required.
 
 ## Discovery and workspace overview
 
