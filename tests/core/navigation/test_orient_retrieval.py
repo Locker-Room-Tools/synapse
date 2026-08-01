@@ -744,3 +744,37 @@ def test_a_bare_term_still_matches_a_whole_path_component(tmp_path: Path) -> Non
 
     assert "pkg/handler.py" in matched
     assert "handler.py" not in payload.get("unmatched_terms", [])
+
+
+def test_a_punctuated_term_reaches_its_literal_declaration(tmp_path: Path) -> None:
+    """Orientation reachability for the FTS punctuation defect.
+
+    FTS5 tokenizes `foo-bar-NN` and `foo.bar` identically, so 30 look-alikes used to fill
+    the candidate page and leave the one real declaration unreachable — the term came
+    back unmatched even though it literally occurs in the index.
+    """
+    workspace = _workspace(tmp_path)
+    index = build_index(tmp_path)
+    add_file(
+        index,
+        "app/noise.py",
+        [
+            make_symbol(f"py:noise-{i:02d}", f"foo-bar-{i:02d}", "app/noise.py", line=i + 1)
+            for i in range(30)
+        ],
+    )
+    add_file(
+        index,
+        "app/target.py",
+        [make_symbol("py:target", "xfoo.bar_target", "app/target.py", line=1)],
+    )
+
+    payload = _orient(index, workspace, ("foo.bar",))
+    projected = [str(entry["n"]) for entry in payload["matches"]] + [
+        str(entry["n"]) for entry in payload.get("weak", [])
+    ]
+
+    assert "xfoo.bar_target" in projected
+    assert "foo.bar" not in payload.get("unmatched_terms", [])
+    # No tokenizer look-alike is projected as evidence.
+    assert not [name for name in projected if name.startswith("foo-bar-")]

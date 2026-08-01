@@ -133,6 +133,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   substring-only match — for `handler`, `[aaa_handler_bbb, xhandler]` rather than
   `[xhandler, aaa_handler_bbb]`. This is the intended "FTS prefix first, substring
   fallback" ordering; the page total keeps its exact substring semantics.
+- FTS candidates must satisfy the same literal predicate as the fallback and the count.
+  FTS5 tokenizes `.`, `-`, and `_` alike, so a search for `foo.bar` matched `foo-bar-00`
+  and thirty such look-alikes filled the page, leaving the one real match unreachable and
+  the page self-contradictory (25 rows returned against a total of 1). The literal
+  predicate is now applied inside the FTS statement — not as a Python post-filter, which
+  would let false candidates keep consuming the SQL `LIMIT` — so FTS rows are always a
+  subset of the literal result set and the fallback retains room to find mid-token
+  matches.
 - The path channel returns exact page metadata, so `files_omitted` counts every distinct
   matching file rather than only the ones the retrieval limit happened to return, and
   `path_capped` marks matches that were never retrieved at all — distinct from the budget

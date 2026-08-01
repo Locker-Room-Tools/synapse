@@ -7,8 +7,11 @@ filled entirely by path-only rows and every real name match becomes unreachable.
 
 from pathlib import Path
 
+import pytest
+
 from synapse.core.index import SymbolIndex
 from synapse.core.models import ResolutionMethod, SymbolKind
+from tests.core.index.page_assertions import assert_page_is_consistent
 from tests.core.navigation.builders import (
     add_file,
     build_index,
@@ -451,3 +454,97 @@ def test_path_term_shape_governs_retrieval_and_totals_together(tmp_path: Path) -
     assert len(shaped) == 20
     assert shaped_page["total"] == 25
     assert shaped_union == 25
+
+
+# FTS5's tokenizer treats `.`, `-`, and `_` alike, so a name spelled with any of them is
+# a candidate for a query spelled with another. The query below uses `.`, so these are
+# the spellings that tokenize identically while sharing no literal substring with it.
+@pytest.mark.parametrize("separator", ["-", "_"])
+def test_punctuation_normalized_candidates_never_fill_the_page(
+    tmp_path: Path,
+    separator: str,
+) -> None:
+    """The reported defect: 25 tokenizer look-alikes hid the one literal match.
+
+    They also made the page self-contradictory — 25 rows returned against a total of 1,
+    because retrieval and counting disagreed about what "matching" means.
+    """
+    index = build_index(tmp_path)
+    decoy = f"foo{separator}bar"
+    add_file(
+        index,
+        "app/noise.py",
+        [
+            make_symbol(f"py:noise-{i:02d}", f"{decoy}-{i:02d}", "app/noise.py", line=i + 1)
+            for i in range(30)
+        ],
+    )
+    add_file(
+        index,
+        "app/target.py",
+        [make_symbol("py:target", "xfoo.bar_target", "app/target.py", line=1)],
+    )
+
+    with index.read_session() as reads:
+        rows, page = reads.search_symbol_names_page("foo.bar", declarations_only=True, limit=25)
+
+    names = [symbol.name for symbol in rows]
+    assert names == ["xfoo.bar_target"]
+    assert not [name for name in names if name.startswith(decoy)]
+    assert page["total"] == 1
+    assert page["returned"] == 1
+    assert page["has_more"] is False
+    assert_page_is_consistent(page)
+
+
+def test_every_returned_row_contains_the_query_literally(tmp_path: Path) -> None:
+    """FTS only proposes candidates; literal containment decides what is returned."""
+    index = build_index(tmp_path)
+    add_file(
+        index,
+        "app/mixed.py",
+        [
+            make_symbol("py:hyphen", "foo-bar-00", "app/mixed.py", line=1),
+            make_symbol("py:under", "foo_bar_01", "app/mixed.py", line=2),
+            make_symbol("py:dotted", "foo.bar.02", "app/mixed.py", line=3),
+            make_symbol("py:mid", "xfoo.bar_target", "app/mixed.py", line=4),
+        ],
+    )
+
+    with index.read_session() as reads:
+        rows, page = reads.search_symbol_names_page("foo.bar", limit=25)
+
+    names = {symbol.name for symbol in rows}
+    assert names == {"foo.bar.02", "xfoo.bar_target"}
+    assert all("foo.bar" in name for name in names)
+    assert page["total"] == 2
+    assert_page_is_consistent(page)
+
+
+def test_full_search_channel_still_requires_literal_containment(tmp_path: Path) -> None:
+    """`search_symbols_page` also matches file paths — literally, never by tokenizer."""
+    index = build_index(tmp_path)
+    add_file(
+        index,
+        "app/foo-bar-noise.py",
+        [make_symbol("py:decoy", "unrelated", "app/foo-bar-noise.py", line=1)],
+    )
+    add_file(
+        index,
+        "app/foo.bar.module.py",
+        [make_symbol("py:path", "also_unrelated", "app/foo.bar.module.py", line=1)],
+    )
+    add_file(
+        index,
+        "app/named.py",
+        [make_symbol("py:named", "xfoo.bar_target", "app/named.py", line=1)],
+    )
+
+    with index.read_session() as reads:
+        rows, page = reads.search_symbols_page("foo.bar", limit=25)
+
+    # The path match qualifies because the path literally contains the query; the
+    # hyphenated decoy does not, in its name or its path.
+    assert {symbol.id for symbol in rows} == {"py:path", "py:named"}
+    assert page["total"] == 2
+    assert_page_is_consistent(page)

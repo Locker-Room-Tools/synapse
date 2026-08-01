@@ -212,3 +212,79 @@ def test_fts_helper_reraises_a_statement_error(tmp_path: Path) -> None:
             "THEN 0 ELSE 1 END",
             ('"x"*', "x"),
         )
+
+
+@pytest.fixture
+def punctuated(tmp_path: Path) -> SymbolIndex:
+    """Tokenizer look-alikes plus one literal, mid-token target."""
+    index = build_index(tmp_path)
+    add_file(
+        index,
+        "app/noise.py",
+        [
+            make_symbol(f"py:noise-{i:02d}", f"foo-bar-{i:02d}", "app/noise.py", line=i + 1)
+            for i in range(30)
+        ],
+    )
+    add_file(
+        index,
+        "app/target.py",
+        [make_symbol("py:target", "xfoo.bar_target", "app/target.py", line=1)],
+    )
+    return index
+
+
+def test_fts_returns_only_literal_compatible_candidates(punctuated: SymbolIndex) -> None:
+    """FTS5 proposes `foo-bar-*` for `foo.bar`; the literal predicate rejects them in SQL.
+
+    Rejecting them in SQL rather than in Python matters: as Python post-filtering they
+    would still consume the statement's LIMIT and hide real candidates behind them.
+    """
+    with _traced(punctuated) as (tracer, reads):
+        rows, page = reads.search_symbol_names_page("foo.bar", declarations_only=True, limit=25)
+
+    fts = _fts_statements(tracer)
+    assert len(fts) == 1, "the full-text branch must still be attempted"
+    # The statement ran; every tokenizer look-alike was excluded by the same literal
+    # predicate the count uses, so it contributed nothing.
+    assert fts[0][1] == 0
+    assert [symbol.name for symbol in rows] == ["xfoo.bar_target"]
+    assert page["returned"] == 1
+    assert page["total"] == 1
+
+
+def test_fallback_recovers_the_mid_token_literal_target(punctuated: SymbolIndex) -> None:
+    """With the false candidates gone, the fallback has room to find the real match."""
+    with _traced(punctuated) as (tracer, reads):
+        rows, _ = reads.search_symbol_names_page("foo.bar", declarations_only=True, limit=25)
+
+    assert _like_statements(tracer), "the substring fallback must run"
+    assert {symbol.name for symbol in rows} == {"xfoo.bar_target"}
+
+
+def test_literal_predicate_does_not_disturb_token_prefix_ordering(
+    indexed: SymbolIndex,
+) -> None:
+    """A genuine token-prefix match satisfies the literal predicate, so FTS keeps it first."""
+    with _traced(indexed) as (tracer, reads):
+        rows, _ = reads.search_symbol_names_page("handler", limit=10)
+
+    fts = _fts_statements(tracer)
+    assert fts[0][1] > 0, "token-prefix matches must survive the literal predicate"
+    names = [symbol.name for symbol in rows]
+    # `xhandler` is mid-token, so only the fallback finds it and it lands after the
+    # FTS-supplied prefix matches.
+    assert names.index("handler_target") < names.index("xhandler")
+
+
+def test_every_fts_row_contains_the_query_literally(punctuated: SymbolIndex) -> None:
+    """The invariant behind the fix: FTS rows are a subset of the literal result set."""
+    with _traced(punctuated) as (tracer, reads):
+        reads.search_symbol_names_page("foo", declarations_only=True, limit=50)
+        fts_rows = _fts_statements(tracer)[0][1]
+        literal, _ = reads.search_symbol_names_page("foo", declarations_only=True, limit=50)
+
+    # "foo" is a token prefix of every decoy and a literal substring of all of them too,
+    # so here FTS may legitimately fill the page — and each row still contains "foo".
+    assert fts_rows > 0
+    assert all("foo" in symbol.name for symbol in literal)

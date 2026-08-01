@@ -482,11 +482,19 @@ class ReadProjections:
             filters = "".join(f" AND {clause}" for clause in filter_clauses)
             like = "%" + _escape_like(query) + "%"
             like_values = [like] * len(match_clauses)
+            # FTS5 only proposes candidates: its tokenizer treats `.`, `-`, and `_` as
+            # separators, so `foo-bar-00` matches a search for `foo.bar`. The same
+            # literal predicate the fallback and the COUNT use is applied here, in SQL
+            # rather than in Python, because a post-filter would let those false
+            # candidates keep consuming the LIMIT and hide real matches behind them.
             fts_sql = f"""
                 SELECT symbols.*
                 FROM symbols_fts
                 JOIN symbols ON symbols.rowid = symbols_fts.rowid
-                WHERE symbols_fts MATCH ?{filters}
+                WHERE symbols_fts MATCH ?
+                  AND (
+                        {matches}
+                  ){filters}
                 {ranking}
                 LIMIT ?
             """
@@ -495,6 +503,7 @@ class ReadProjections:
             )
             fts_params = [
                 fts_query,
+                *like_values,
                 *filter_params,
                 *ranking_params,
                 fetch_limit,
