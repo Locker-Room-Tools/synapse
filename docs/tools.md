@@ -39,9 +39,11 @@ primitives, which accept them interchangeably.
 
 The first call for any code question: ranked, production-first orientation.
 
-- Parameters: `terms=None` (up to 12 repository terms; empty explicitly requests
-  repository-map orientation), `path_scope=None` (restrict to a workspace-relative
-  path prefix), `token_budget=800` (clamped 400–1200), `workspace_path="."`
+- Parameters: `terms=None` (4–8 discriminative repository terms normally, 12 maximum;
+  empty explicitly requests repository-map orientation), `path_scope=None` (restrict
+  to a workspace-relative path prefix), `workspace_path="."`. The response is bounded
+  at the server default of 800 estimated tokens; the MCP surface exposes no budget
+  override (`OrientRequest.token_budget` remains configurable for core callers).
 - Ranking signals: exact-name, name-prefix/substring (at word starts, snake and
   camel), literal path (exact, `/`-suffix, and — for path-shaped terms — substring),
   trusted centrality (exact/scoped incoming references, bucketed), entrypoint and
@@ -98,8 +100,10 @@ The first call for any code question: ranked, production-first orientation.
 
 One batch inspection of the selected symbols under one read snapshot.
 
-- Parameters: `symbols` (1–8 compact handles or internal stable IDs),
-  `token_budget=2400` (clamped 500–4000), `workspace_path="."`
+- Parameters: `symbols` (1–8 compact handles or internal stable IDs; normally select
+  2–4 covering different task facets), `workspace_path="."`. The response is bounded
+  at the server default of 2400 estimated tokens; the MCP surface exposes no budget
+  override (`InspectRequest.token_budget` remains configurable for core callers).
 - Per selected symbol: the definition (qualified name, kind, `file` index,
   `lines`, signature), a bounded source slice (`src`, at most 40 lines, with
   `truncated` and `shortened` flags), `parent` and `children` (capped at 12 with
@@ -165,9 +169,11 @@ nothing about that language.
   coverage fields say which cause applied.
 - `relations_returned` / `relations_omitted`, `selected` / `requested`
 
-Both tools guarantee output size the same way: `token_budget` is an **estimate** at a
-fixed 4 characters per token; the hard, tested guarantee is that the returned string
-never exceeds the accepted budget times 4 **characters** and is always valid JSON.
+Both tools guarantee output size the same way: the applied `token_budget` is an
+**estimate** at a fixed 4 characters per token; the hard, tested guarantee is that the
+returned string never exceeds the accepted budget times 4 **characters** and is always
+valid JSON. The MCP tools always apply the core defaults — an agent cannot raise the
+budget, so a gap is closed with a narrower targeted call rather than a bigger payload.
 Normal budget pressure drops low-priority content deterministically (hypotheses and
 weak evidence first; the first-requested symbol degrades last); under extreme pressure
 the result shrinks to a minimal envelope and, as a last resort, a fixed truncation-only

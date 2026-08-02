@@ -20,6 +20,19 @@ def test_server_instructions_advertise_synapse_first_flow() -> None:
     assert "initialize the workspace automatically" in instructions.lower()
 
 
+def test_server_instructions_carry_the_orchestration_contract() -> None:
+    """The handshake states facet planning, small selection, gap closure, and stopping."""
+    instructions = " ".join((mcp.instructions or "").split())
+
+    assert "evidence facets" in instructions
+    assert "4-8 discriminative terms" in instructions
+    assert "2-4 handles" in instructions
+    assert "no budget parameter to raise" in instructions
+    assert "verified, partial, or missing" in instructions
+    assert "stop once every requested facet" in instructions
+    assert "broad repository search" in instructions
+
+
 def test_server_rejects_a_missing_workspace_before_starting(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

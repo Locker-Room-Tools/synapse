@@ -92,9 +92,10 @@ This file is the contract for any human or AI agent contributing to THIS reposit
   and four relation groups — `callers`, `callees`, `refs_in`, `refs_out` — with
   stored resolution, confidence, and usage kind verbatim. Both return one
   compact JSON string so the budget binds the exact wire payload (orient: 800
-  estimated tokens default, clamped 400–1200; inspect: 2400 default, public max
-  4000), always report `payload_complete` and bounded `coverage`, and never claim
-  task completeness.
+  estimated tokens, inspect: 2400), always report `payload_complete` and bounded
+  `coverage`, and never claim task completeness. The MCP tools expose no
+  `token_budget` parameter — the core requests stay configurable, but an agent
+  cannot enlarge a navigation payload, so gaps are closed with narrower calls.
 - Call semantics are evidence-based. `callers`/`callees` hold only sites whose stored
   usage kind proves a call (`LanguageSpec.call_usage_kinds`; C#: `invocation`,
   `object-creation`; Python: `invocation`). A call is never inferred from either
@@ -109,22 +110,27 @@ This file is the contract for any human or AI agent contributing to THIS reposit
 ### Agent workflow
 
 ```
-translate the request into repository vocabulary (identifiers, files, paths)
+list the evidence facets the task needs, then translate them into repository
+vocabulary (identifiers, files, paths)
 
-synapse_orient(terms=[...])
+synapse_orient(terms=[...])            # 4–8 discriminative terms, 12 maximum
 → ranked production-first matches with compact handles, weak candidates,
   explicit file matches, crowded/unmatched terms, and coverage
   (no terms → repository map with areas, entrypoints, and bridges)
 
-synapse_inspect(symbols=[...selected handles...])
+synapse_inspect(symbols=[...])         # normally 2–4 facet-diverse handles
 → definitions, bounded source, call-proven callers/callees plus neutral
   refs_in/refs_out, all with stored resolution, confidence, and usage kind;
   synthesize the answer from this evidence
+
+mark each facet verified / partial / missing, then stop
 ```
 
 Two calls is the normal target; a weakly matched orientation may need one more
-`synapse_orient` with better terms or a `path_scope`. Stop once the task has enough
-evidence.
+`synapse_orient` with better terms or a `path_scope`. Stop once every requested facet is
+verified or explicitly reported partial or missing. The canonical detailed workflow is
+the managed skill `src/synapse/skills/synapse-code-context/SKILL.md`; the server
+handshake and adapter snippets are deliberately short pointers to it.
 
 Avoid intermediate searches or manual `grep` when a handle or `symbol_id` is available.
 Use grep or whole-file reads only for exact-text verification, unsupported syntax,

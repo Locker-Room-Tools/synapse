@@ -22,8 +22,6 @@ from synapse.core.lifecycle import (
     require_workspace_ready,
 )
 from synapse.core.navigation import (
-    INSPECT_DEFAULT_TOKEN_BUDGET,
-    ORIENT_DEFAULT_TOKEN_BUDGET,
     InspectRequest,
     OrientRequest,
     inspect_symbols,
@@ -152,48 +150,44 @@ def synapse_ensure_workspace(workspace_path: str = ".") -> dict[str, object]:
 def synapse_orient(
     terms: list[str] | None = None,
     path_scope: str | None = None,
-    token_budget: int = ORIENT_DEFAULT_TOKEN_BUDGET,
     workspace_path: str = ".",
 ) -> str:
     """Start here for any code question: ranked matches for literal repository terms.
 
-    Pass up to 12 identifiers, file names, or path fragments in the repository's
-    own vocabulary (translate the task into likely code terms first — not a
-    natural-language question). Empty terms return a repository-map orientation
-    (areas, entrypoints, anchors). Returns production-first ranked matches with
-    compact handles for synapse_inspect, weak candidates, crowded/unmatched
-    terms, and coverage counts. Initializes the workspace automatically.
-    token_budget is an estimate at 4 chars/token, clamped to 400-1200. Empty
-    results are never proof of absence — check coverage and unmatched_terms.
+    Pass 4-8 discriminative identifiers, file names, or path fragments (up to 12)
+    in the repository's own vocabulary — translate the task into likely code terms
+    first, not a natural-language question. Empty terms return a repository-map
+    orientation (areas, entrypoints, anchors). Returns production-first ranked
+    matches with compact handles for synapse_inspect, weak candidates,
+    crowded/unmatched terms, and coverage counts. Initializes the workspace
+    automatically. The response is bounded server-side; unmatched terms are a
+    reason to refine terms once, not to start searching. Empty results are never
+    proof of absence — check coverage and unmatched_terms.
     """
     root = _navigation_workspace(workspace_path)
-    request = OrientRequest(
-        terms=tuple(terms or ()),
-        path_scope=path_scope,
-        token_budget=token_budget,
-    )
+    request = OrientRequest(terms=tuple(terms or ()), path_scope=path_scope)
     return orient_workspace(SymbolIndex(db_path(root)), request, workspace_root=root)
 
 
 @tool(ToolProfile.DEFAULT, structured_output=False)
 def synapse_inspect(
     symbols: list[str],
-    token_budget: int = INSPECT_DEFAULT_TOKEN_BUDGET,
     workspace_path: str = ".",
 ) -> str:
-    """Inspect 1-8 selected symbols in one call using handles from synapse_orient.
+    """Inspect selected symbols in one call using handles from synapse_orient.
 
-    Accepts compact handles (s_...) or stable symbol ids. Returns per symbol: the
-    definition with signature and file:line, a bounded source slice (<=40 lines),
-    parent and children, and grouped callers/callees/other references carrying
-    stored resolution (exact|scoped|unique-name|ambiguous|unresolved), confidence,
-    and usage kind verbatim, plus unresolved hypotheses. Totals and omitted counts
-    stay visible; unknown inputs are listed in missing. token_budget is an
-    estimate at 4 chars/token, clamped to 500-4000. A complete payload is not
+    Accepts 1-8 compact handles (s_...) or stable symbol ids; normally select 2-4
+    that cover different facets of the task. Returns per symbol: the definition
+    with signature and file:line, a bounded source slice (<=40 lines), parent and
+    children, and grouped callers/callees/other references carrying stored
+    resolution (exact|scoped|unique-name|ambiguous|unresolved), confidence, and
+    usage kind verbatim, plus unresolved hypotheses. Totals and omitted counts
+    stay visible; unknown inputs are listed in missing. The response is bounded
+    server-side; treat the returned source as read. A complete payload is not
     proof the evidence or answer is complete — check coverage.
     """
     root = _navigation_workspace(workspace_path)
-    request = InspectRequest(symbols=tuple(symbols), token_budget=token_budget)
+    request = InspectRequest(symbols=tuple(symbols))
     return inspect_symbols(SymbolIndex(db_path(root)), request, workspace_root=root)
 
 

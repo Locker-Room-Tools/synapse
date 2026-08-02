@@ -9,6 +9,7 @@ import json
 
 import anyio
 from mcp.server.fastmcp import FastMCP
+from mcp.types import Tool
 
 from synapse.core.navigation import estimate_tokens
 from synapse.mcp.profiles import ToolProfile
@@ -17,10 +18,14 @@ from synapse.mcp.server import register_tools
 SCHEMA_TOKEN_BUDGET = 700
 
 
-def _default_schema() -> tuple[int, str]:
+def _default_tools() -> list[Tool]:
     server = FastMCP("schema-probe")
     register_tools(server, ToolProfile.DEFAULT)
-    tools = anyio.run(server.list_tools)
+    return list(anyio.run(server.list_tools))
+
+
+def _default_schema() -> tuple[int, str]:
+    tools = _default_tools()
     serialized = json.dumps(
         [
             {
@@ -44,3 +49,14 @@ def test_default_schema_is_exactly_two_tools_within_budget() -> None:
         f"default tool schema is {estimate_tokens(serialized)} estimated tokens; "
         f"budget is {SCHEMA_TOKEN_BUDGET}"
     )
+
+
+def test_navigation_schema_offers_no_budget_override() -> None:
+    """No token_budget knob is advertised, so it cannot be reflexively maximized."""
+    tools = _default_tools()
+
+    assert {tool.name for tool in tools} == {"synapse_orient", "synapse_inspect"}
+    for tool in tools:
+        properties = tool.inputSchema.get("properties", {})
+        assert "token_budget" not in properties, f"{tool.name} still exposes token_budget"
+        assert "token_budget" not in (tool.description or "")

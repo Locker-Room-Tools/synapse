@@ -10,7 +10,12 @@ from synapse.core.index import SymbolIndex, symbol_handle
 from synapse.core.indexing import IndexStats
 from synapse.core.lifecycle import EnsureWorkspaceResult, WorkspaceNotReadyError
 from synapse.core.models import Confidence, Relation, RelationKind, Symbol, SymbolKind
-from synapse.core.navigation import InspectRequest, OrientRequest
+from synapse.core.navigation import (
+    INSPECT_DEFAULT_TOKEN_BUDGET,
+    ORIENT_DEFAULT_TOKEN_BUDGET,
+    InspectRequest,
+    OrientRequest,
+)
 from synapse.core.provenance import runtime_provenance
 from synapse.mcp import tools
 from synapse.mcp.workspace import configure_workspace
@@ -367,13 +372,15 @@ def test_tool_docstrings_document_contracts() -> None:
     assert "{found: false" in (tools.synapse_get_symbol_context.__doc__ or "")
     orient_doc = " ".join((tools.synapse_orient.__doc__ or "").split())
     assert "never proof of absence" in orient_doc
+    assert "4-8 discriminative" in orient_doc
     assert "up to 12" in orient_doc
     assert "not a natural-language question" in orient_doc
-    assert "clamped to 400-1200" in orient_doc
+    assert "bounded server-side" in orient_doc
     inspect_doc = " ".join((tools.synapse_inspect.__doc__ or "").split())
     assert "1-8" in inspect_doc
+    assert "normally select 2-4" in inspect_doc
     assert "exact|scoped|unique-name|ambiguous|unresolved" in inspect_doc
-    assert "clamped to 500-4000" in inspect_doc
+    assert "bounded server-side" in inspect_doc
     assert "not proof" in inspect_doc
 
 
@@ -707,7 +714,6 @@ def test_synapse_orient_delegates_to_core(
     result = tools.synapse_orient(
         terms=["open_repository", "app/store.py"],
         path_scope="app",
-        token_budget=600,
     )
 
     assert result == '{"matches":[]}'
@@ -716,7 +722,7 @@ def test_synapse_orient_delegates_to_core(
     assert isinstance(request, OrientRequest)
     assert request.terms == ("open_repository", "app/store.py")
     assert request.path_scope == "app"
-    assert request.token_budget == 600
+    assert request.token_budget == ORIENT_DEFAULT_TOKEN_BUDGET
 
 
 def test_synapse_orient_accepts_empty_terms_for_map_orientation(
@@ -753,14 +759,14 @@ def test_synapse_inspect_delegates_to_core(
     monkeypatch.setattr(tools, "_navigation_workspace", lambda path=".": tmp_path)
     monkeypatch.setattr(tools, "inspect_symbols", fake_inspect)
 
-    result = tools.synapse_inspect(["s_" + "A" * 22, "py:stable-id"], token_budget=3000)
+    result = tools.synapse_inspect(["s_" + "A" * 22, "py:stable-id"])
 
     assert result == '{"symbols":[]}'
     assert captured["workspace_root"] == tmp_path
     request = captured["request"]
     assert isinstance(request, InspectRequest)
     assert request.symbols == ("s_" + "A" * 22, "py:stable-id")
-    assert request.token_budget == 3000
+    assert request.token_budget == INSPECT_DEFAULT_TOKEN_BUDGET
 
 
 def test_navigation_tools_delegate_readiness_to_core(

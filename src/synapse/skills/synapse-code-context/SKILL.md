@@ -7,33 +7,122 @@ description: Navigate and understand codebases with fresh Synapse structural con
 
 # Synapse Code Context
 
-Use Synapse as the first source of code structure. Two bounded calls answer most code
+Use Synapse as the first source of code structure, and as a replacement for initial
+shell exploration rather than an addition to it. Two bounded calls answer most code
 questions: one orientation, one batch inspection. Both initialize the workspace
 automatically — no setup call is needed.
 
-## Workflow
+Synapse supplies deterministic structural evidence. You supply the planning, the
+semantic interpretation, and the synthesis.
 
-1. Translate the user's request into likely repository vocabulary: concrete identifiers,
-   file names, and path fragments (translate non-English task words into probable code
-   terms). This translation is your job — Synapse evaluates the terms literally.
-2. Call `synapse_orient(terms=[...])` with up to 12 terms, or with no terms for a
-   repository-map orientation (areas, entrypoints, anchors). The response ranks
-   production code first and returns compact handles (`s_...`), match provenance
-   (`exact|prefix|substring|path|map`), weak candidates, crowded terms (too generic to
-   rank) and unmatched terms, plus coverage counts. Scope with `path_scope` when the
-   area is known.
-3. Select the handles the task needs and call `synapse_inspect(symbols=[...])` once with
-   up to 8 of them. Each symbol returns its definition with `file:line`, a bounded
-   source slice, parent/children, and four relation groups — `callers`, `callees`,
-   `refs_in`, `refs_out` — carrying stored resolution
-   (`exact|scoped|unique-name|ambiguous|unresolved`), confidence, and usage kind
-   verbatim, plus unresolved hypotheses.
-4. Synthesize the answer yourself from that evidence. Two calls is the normal target;
-   a weakly matched orientation may need one more `synapse_orient` with better terms.
-5. Read the `coverage` and `budget` blocks: empty or truncated results are never proof
-   of absence, and a complete payload is not a claim that the evidence is complete. Use
-   grep or file reads only for exact text, generated files, unsupported syntax, or gaps
-   the coverage block reports.
+## 1. Plan the evidence facets first
+
+Before retrieving anything, turn the task into a short internal checklist of the concrete
+facts the answer needs — for example: entrypoint, configuration, policy, connection,
+registration, invocation, persistence, error handling, invalidation.
+
+Keep the checklist small and specific to the request. It is your planning device, not a
+Synapse parameter: nothing about it is sent to the server.
+
+## 2. Orient with bounded repository vocabulary
+
+Call `synapse_orient(terms=[...])` with 4-8 discriminative identifiers, file names, or
+path fragments. The contract allows 12; more terms usually means vaguer terms.
+
+- Terms must come from the request, from known language/framework vocabulary, or from
+  names a previous orientation returned. Never invent a plausible symbol and then present
+  it as if the repository contained it.
+- Call it with no terms only for a genuinely broad architecture question; that returns a
+  repository-map orientation (areas, entrypoints, anchors).
+- Use `path_scope` only once the task or returned evidence establishes the subsystem. Do
+  not narrow away a cross-cutting facet just because one directory matched strongly.
+- The response ranks production code first and returns compact handles (`s_...`), match
+  provenance (`exact|prefix|substring|path|map`), weak candidates, crowded terms (too
+  generic to rank), unmatched terms, matched files, and coverage counts.
+
+If the orientation is weak, crowded, or misses a facet on your checklist, one refined
+`synapse_orient` (better terms or a `path_scope`) is the correct next step. Unmatched
+terms alone are not a reason to start a shell search.
+
+## 3. Inspect a small, facet-diverse selection
+
+Call `synapse_inspect(symbols=[...])` once. Normally select 2-4 handles, not the maximum
+of eight. Choose them to cover *different* facets rather than four views of one thing:
+
+- the entrypoint or boundary;
+- the central implementation;
+- a bridge into another area;
+- the runtime operation the task asks about.
+
+Prefer production declarations over tests unless the task is explicitly about test
+behaviour. Each symbol returns its definition with `file:line`, a bounded source slice,
+parent and children, and four relation groups — `callers`, `callees`, `refs_in`,
+`refs_out` — carrying stored resolution (`exact|scoped|unique-name|ambiguous|unresolved`),
+confidence, and usage kind verbatim, plus unresolved hypotheses.
+
+A second inspection is justified only when a *named* facet is still missing and the
+orientation already supplied a relevant handle for it. It must not repeat handles from
+the first call.
+
+## 4. Keep an evidence ledger
+
+After inspection, mark every facet on your checklist:
+
+- `verified` — supported by returned source or a correctly calibrated relation;
+- `partial` — relevant evidence exists, but a specific fact is truncated, unsupported, or
+  unresolved;
+- `missing` — no relevant indexed evidence came back.
+
+Treat returned source slices as read. Do not reread the same file ranges to feel more
+certain or to restate line citations you already have.
+
+Read relation trust conservatively:
+
+- `exact` and `scoped` are index-local syntactic and structural evidence, not compiler or
+  runtime proof;
+- `unique-name` is heuristic;
+- `ambiguous` and `unresolved` are hypotheses, not confirmed relations;
+- empty `callers`/`callees` proves only that no indexed call site was established under
+  the reported language coverage.
+
+## 5. Close only explicit gaps
+
+Grep, ripgrep, and file reads are permitted when they close a facet you recorded as
+`partial` or `missing`, such as:
+
+- a source slice truncates the exact implementation the answer needs;
+- generated or unsupported syntax falls outside index coverage;
+- an exact string or configuration value is required;
+- evidence names a required cross-cutting file that has no usable declaration handle.
+
+`payload_complete: false`, an omitted relation count, or a non-exhaustive coverage model
+is not by itself permission to search broadly. It matters only when the omitted evidence
+could change a facet you actually need.
+
+After a successful inspection:
+
+- do not run repository-wide `rg`, `grep`, `find`, or file enumeration;
+- do not reread every file the payload named;
+- do not repeat the whole Synapse investigation with shell tools for reassurance;
+- use the narrowest exact read that closes the recorded gap.
+
+## 6. Stop deliberately
+
+Stop exploring once every requested facet is either verified or explicitly reported as
+partial or missing. Do not pursue exhaustive repository coverage the task never asked
+for.
+
+The final answer must keep three things apart: verified facts, calibrated structural
+inference, and missing evidence.
+
+## Response bounds
+
+Both tools bound their own responses server-side and always report `payload_complete` and
+`coverage`; there is no budget parameter to raise. Close a gap with a narrower, targeted
+call — not with a bigger payload.
+
+Empty or truncated results are never proof of absence, and a complete payload is not a
+claim that the evidence is complete.
 
 ## Reading callers and callees
 

@@ -117,7 +117,9 @@ package's internal decomposition, not separate import targets.
   stay canonical internally.
   Budgets are maxima, not padding targets: orientation defaults to 800 estimated
   tokens (clamped 400–1200), inspection to 2400 (clamped 500–4000, the public
-  ceiling). The advertised token budget is an estimate at 4 chars/token; the hard
+  ceiling). Core callers choose a budget; the MCP tools deliberately do not
+  expose one, so an agent cannot maximize it. The token budget is an estimate
+  at 4 chars/token; the hard
   guarantee is a character cap of `token_budget * 4` on the exact serialized
   result, enforced through deterministic drop steps (weakest evidence first, the
   first-requested symbol degrades last), then a minimal envelope, then a fixed
