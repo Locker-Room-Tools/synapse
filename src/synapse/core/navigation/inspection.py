@@ -40,6 +40,14 @@ from synapse.core.navigation.traversal import edge_sort_key, one_hop
 
 MAX_SYMBOLS = 8
 MAX_SOURCE_LINES = 40
+# A continuation is the call's explicit ask and carries no relations, children,
+# hypotheses, or head source, so it may spend most of the response budget: up to
+# 256 lines before wire enforcement, degraded by deterministic halving to the
+# same 10-line floor as head source, then honest omission. Passing a token alone
+# maximizes the window; mixing it with fresh handles shares the budget and may
+# shorten or omit it (the token stays valid — resend it alone for the full window).
+MAX_CONTINUATION_LINES = 256
+CONTINUATION_FLOOR_LINES = 10
 MAX_GROUPS_PER_DIRECTION = 12
 MAX_SITES_PER_GROUP = 3
 MAX_CHILDREN = 12
@@ -112,7 +120,7 @@ class _Continuation:
     start_line: int
     src: SourceSlice
     content_hash: str
-    src_max: int = MAX_SOURCE_LINES
+    src_max: int = MAX_CONTINUATION_LINES
     dropped: bool = False
 
 
@@ -441,7 +449,7 @@ def _build_selected(
             workspace_root,
             symbol,
             start_line=parsed.start_line,
-            max_lines=MAX_SOURCE_LINES,
+            max_lines=MAX_CONTINUATION_LINES,
             content_hash=content_hash,
         )
         if verified.stale:
@@ -736,10 +744,20 @@ def _drop_symbol(item: _Selected) -> bool:
 
 
 def _halve_continuation(item: _Continuation) -> bool:
-    if item.dropped or item.src_max <= 10:
+    if item.dropped or item.src_max <= CONTINUATION_FLOOR_LINES:
         return False
-    item.src_max //= 2
+    item.src_max = max(CONTINUATION_FLOOR_LINES, item.src_max // 2)
     return True
+
+
+def _continuation_halving_steps() -> int:
+    """How many halvings reach the floor from the ceiling — never assume a count."""
+    steps = 0
+    size = MAX_CONTINUATION_LINES
+    while size > CONTINUATION_FLOOR_LINES:
+        size = max(CONTINUATION_FLOOR_LINES, size // 2)
+        steps += 1
+    return steps
 
 
 def _drop_continuation(item: _Continuation) -> bool:
@@ -785,8 +803,8 @@ def _drop_steps(selected: list[_Selected], continuations: list[_Continuation]) -
         steps.append(_step("source", item, _halve_source))
         steps.append(_step("source", item, _halve_source))
     for cont in reverse_continuations:
-        steps.append(DropStep("continuation", partial(_halve_continuation, cont)))
-        steps.append(DropStep("continuation", partial(_halve_continuation, cont)))
+        for _ in range(_continuation_halving_steps()):
+            steps.append(DropStep("continuation", partial(_halve_continuation, cont)))
     for item in reverse:
         for _ in range(max(0, len(item.callees) - REDUCED_GROUPS)):
             steps.append(

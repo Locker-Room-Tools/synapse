@@ -188,7 +188,9 @@ def synapse_inspect(
     stay visible; unknown inputs are listed in missing. When src is truncated,
     src.next is a continuation token: pass it as a symbols entry in a follow-up
     call to get the next bounded window (continuations, never repeating returned
-    lines); stale or invalid tokens are listed in continuation_rejected. The
+    lines); passing a token alone returns the largest window, mixing it with
+    handles may shorten it; stale or invalid tokens are listed in
+    continuation_rejected. The
     response is bounded server-side; treat the returned source as read. A
     complete payload is not proof the evidence or answer is complete — check
     coverage.

@@ -128,9 +128,17 @@ unreturned line. Passing that token as a `symbols` entry in a follow-up call
 returns the next bounded window under `continuations` — never repeating
 already-returned lines — as `{h, f, lines, more, text, next?}`; `more` says
 whether stored body remains and `next` is the only valid follow-up position.
-Windows are clipped to the symbol's stored span and capped at 40 lines (halved
-under payload pressure like ordinary source; a window dropped by the budget is
-counted in `coverage.continuation_omitted` and the agent still holds the token).
+Windows are clipped to the symbol's stored span and capped at 256 lines — a
+continuation is the call's explicit ask and carries no relations, children,
+hypotheses, or head source, so a **continuation-only** request can spend most of
+the response budget on source and typically returns the whole remaining body in
+one call. Under payload pressure a window degrades by deterministic halving down
+to the same 10-line floor as head source, and `next` always names the first line
+after what was *actually* returned, so shortened windows chain without overlap
+or gaps. Mixing a token with fresh handles shares the budget and may shorten or
+omit the continuation (counted in `coverage.continuation_omitted`); the token is
+stateless and stays valid — resend it alone for the largest window. Ordinary
+head slices remain capped at 40 lines.
 
 Tokens are validated, never trusted. The 64-bit fingerprint binds each token to
 the symbol's stored span, the **exact window start line**, and the file's stored

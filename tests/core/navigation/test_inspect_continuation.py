@@ -112,7 +112,8 @@ def test_windows_walk_the_whole_symbol_without_overlap(tmp_path: Path) -> None:
     assert windows[-1][1] == LONG_END
 
 
-def test_second_window_starts_where_the_first_stopped(tmp_path: Path) -> None:
+def test_continuation_only_call_returns_the_whole_remaining_body(tmp_path: Path) -> None:
+    """A continuation-only request spends its budget on source: 80 lines, one call."""
     index, workspace, _ = _long_symbol_index(tmp_path)
     payload = _inspect(index, workspace, (symbol_handle(LONG_ID),))
     token = payload["symbols"][0]["src"]["next"]
@@ -121,8 +122,9 @@ def test_second_window_starts_where_the_first_stopped(tmp_path: Path) -> None:
     continuations = follow_up["continuations"]
     assert len(continuations) == 1  # duplicate tokens collapse deterministically
     continuation = continuations[0]
-    assert continuation["lines"] == [LONG_START + 40, LONG_START + 79]
-    assert continuation["more"] is True
+    assert continuation["lines"] == [LONG_START + 40, LONG_END]
+    assert continuation["more"] is False
+    assert "next" not in continuation
     head_text = payload["symbols"][0]["src"]["text"]
     assert not set(head_text.splitlines()) & set(continuation["text"].splitlines())
     coverage = follow_up["coverage"]
@@ -230,11 +232,85 @@ def test_missing_source_file_rejects_the_token_honestly(tmp_path: Path) -> None:
     assert rejected == [{"token": token, "reason": "source-unavailable"}]
 
 
-def test_multi_symbol_pressure_degrades_continuations_honestly(tmp_path: Path) -> None:
-    """Under a tight budget the payload stays capped and every loss is reported."""
-    index, workspace, content_hash = _long_symbol_index(tmp_path)
+WIDE_ID = "py:wide"
+WIDE_FILE = "app/wide.py"
+WIDE_START = 5
+WIDE_END = 300  # 296 body lines, each ~200 chars: one window can never fit whole
+
+
+def _write_wide_source(workspace: Path, file_path: str, line_count: int, width: int) -> str:
+    absolute = workspace / file_path
+    absolute.parent.mkdir(parents=True, exist_ok=True)
+    filler = "x" * width
+    absolute.write_text(
+        "\n".join(f"{filler} line {i}" for i in range(1, line_count + 1)), encoding="utf-8"
+    )
+    return hash_source(absolute.read_bytes())
+
+
+def _wide_symbol() -> Symbol:
+    return make_symbol(WIDE_ID, "render_all", WIDE_FILE, line=WIDE_START, end_line=WIDE_END)
+
+
+def _wide_symbol_index(tmp_path: Path, width: int = 190) -> tuple[SymbolIndex, Path, str]:
+    workspace = _workspace(tmp_path)
+    index = build_index(tmp_path)
+    content_hash = _write_wide_source(workspace, WIDE_FILE, 320, width)
+    add_file(index, WIDE_FILE, [_wide_symbol()], content_hash=content_hash)
+    return index, workspace, content_hash
+
+
+def _wide_token(content_hash: str, start: int = WIDE_START + 40) -> str:
+    return continuation_token(
+        symbol_handle(WIDE_ID), start, source_fingerprint(_wide_symbol(), start, content_hash)
+    )
+
+
+def test_long_lines_force_halving_and_next_tracks_the_returned_end(tmp_path: Path) -> None:
+    """~200-char lines cannot fit 256 at the default budget: halve, then chain cleanly."""
+    index, workspace, content_hash = _wide_symbol_index(tmp_path)
+    token = _wide_token(content_hash)
+    result = inspect_symbols(index, InspectRequest(symbols=(token,)), workspace_root=workspace)
+    assert len(result) <= 2400 * CHARS_PER_TOKEN
+    payload = json.loads(result)
+    continuation = payload["continuations"][0]
+    start, end = continuation["lines"]
+    returned = end - start + 1
+    assert start == WIDE_START + 40
+    assert returned < 256  # halved at least once
+    assert returned in (128, 64, 32, 16, 10)  # only deterministic halving sizes
+    assert continuation["more"] is True
+    assert payload["budget"]["dropped"]["continuation"] >= 1
+    follow = parse_continuation(continuation["next"])
+    assert follow is not None
+    assert follow.start_line == end + 1  # next tracks the returned end, not the request
+
+    second = _inspect(index, workspace, (continuation["next"],))
+    second_start = second["continuations"][0]["lines"][0]
+    assert second_start == end + 1  # no overlap, no gap after shrinking
+
+
+def test_continuation_only_payload_can_approach_the_hard_cap(tmp_path: Path) -> None:
+    """With ~33-char lines the full 256-line window fits just under 9,600 chars."""
+    index, workspace, content_hash = _wide_symbol_index(tmp_path, width=25)
+    token = _wide_token(content_hash)
+    result = inspect_symbols(index, InspectRequest(symbols=(token,)), workspace_root=workspace)
+    assert len(result) <= 2400 * CHARS_PER_TOKEN
+    assert len(result) > 8000  # most of the budget went to source
+    payload = json.loads(result)
+    continuation = payload["continuations"][0]
+    # 45..300 is exactly 256 lines: the full window, terminating on the stored end.
+    assert continuation["lines"] == [WIDE_START + 40, WIDE_END]
+    assert continuation["more"] is False
+    assert "next" not in continuation
+    assert payload["budget"]["complete"] is True
+
+
+def test_mixed_token_and_handles_shortens_and_solo_resend_maximizes(tmp_path: Path) -> None:
+    """Mixing shares the budget: the window shrinks but stays honest and chainable."""
+    index, workspace, content_hash = _wide_symbol_index(tmp_path)
     others = []
-    for i in range(2):
+    for i in range(3):
         other_id = f"py:other-{i}"
         other_file = f"app/other_{i}.py"
         others.append(other_id)
@@ -245,10 +321,42 @@ def test_multi_symbol_pressure_degrades_continuations_honestly(tmp_path: Path) -
             [make_symbol(other_id, f"worker_{i}", other_file, line=1, end_line=60)],
             content_hash=other_hash,
         )
+    token = _wide_token(content_hash)
 
-    token = continuation_token(
-        symbol_handle(LONG_ID), 45, source_fingerprint(_long_symbol(), 45, content_hash)
-    )
+    mixed = _inspect(index, workspace, (token, *map(symbol_handle, others)))
+    solo = _inspect(index, workspace, (token,))
+
+    assert mixed["coverage"]["continuation_requested"] == 1
+    mixed_conts = mixed.get("continuations")
+    solo_lines = solo["continuations"][0]["lines"]
+    solo_size = solo_lines[1] - solo_lines[0] + 1
+    if mixed_conts:
+        start, end = mixed_conts[0]["lines"]
+        assert end - start + 1 <= solo_size  # never larger than the solo window
+        assert end - start + 1 < 256
+    else:
+        assert mixed["coverage"]["continuation_omitted"] == 1
+    # The token survives shortening/omission unchanged and keeps working alone.
+    assert solo_lines[0] == WIDE_START + 40
+    assert solo["continuations"][0]["more"] is True
+
+
+def test_tight_budget_omits_the_continuation_honestly(tmp_path: Path) -> None:
+    """At the minimum budget a wide continuation cannot fit at all: omit and report."""
+    index, workspace, content_hash = _wide_symbol_index(tmp_path)
+    others = []
+    for i in range(2):
+        other_id = f"py:tiny-{i}"
+        other_file = f"app/tiny_{i}.py"
+        others.append(other_id)
+        other_hash = _write_source(workspace, other_file, 60)
+        add_file(
+            index,
+            other_file,
+            [make_symbol(other_id, f"job_{i}", other_file, line=1, end_line=60)],
+            content_hash=other_hash,
+        )
+    token = _wide_token(content_hash)
     token_budget = 500
     result = inspect_symbols(
         index,
@@ -265,10 +373,105 @@ def test_multi_symbol_pressure_degrades_continuations_honestly(tmp_path: Path) -
     continuations = payload.get("continuations")
     if continuations:
         start, end = continuations[0]["lines"]
-        assert end - start + 1 <= 40  # halving under pressure only ever shrinks
+        assert end - start + 1 <= 16  # at or near the floor
     else:
         assert coverage["continuation_omitted"] == 1
     assert payload["budget"]["complete"] is False
+
+
+def test_remaining_217_lines_return_in_one_continuation_only_call(tmp_path: Path) -> None:
+    """The T3 shape: head plus a 217-line tail must cost exactly one follow-up."""
+    workspace = _workspace(tmp_path)
+    index = build_index(tmp_path)
+    tall_id, tall_file = "py:tall", "app/tall.py"
+    tall = make_symbol(tall_id, "run_everything", tall_file, line=5, end_line=261)
+    content_hash = _write_source(workspace, tall_file, 270)
+    add_file(index, tall_file, [tall], content_hash=content_hash)
+
+    payload = _inspect(index, workspace, (symbol_handle(tall_id),))
+    src = payload["symbols"][0]["src"]
+    assert src["lines"] == [5, 44]  # normal head stays capped at 40 lines
+    follow_up = _inspect(index, workspace, (src["next"],))
+    continuation = follow_up["continuations"][0]
+    assert continuation["lines"] == [45, 261]  # all 217 remaining lines at once
+    assert continuation["more"] is False
+    assert "next" not in continuation
+
+
+def test_body_beyond_the_ceiling_needs_exactly_two_windows(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    index = build_index(tmp_path)
+    huge_id, huge_file = "py:huge", "app/huge.py"
+    huge = make_symbol(huge_id, "run_forever", huge_file, line=5, end_line=340)
+    content_hash = _write_source(workspace, huge_file, 350)
+    add_file(index, huge_file, [huge], content_hash=content_hash)
+
+    payload = _inspect(index, workspace, (symbol_handle(huge_id),))
+    token = payload["symbols"][0]["src"]["next"]
+    first = _inspect(index, workspace, (token,))["continuations"][0]
+    assert first["lines"] == [45, 45 + 255]  # full 256-line window
+    assert first["more"] is True
+    second = _inspect(index, workspace, (first["next"],))["continuations"][0]
+    assert second["lines"] == [301, 340]
+    assert second["more"] is False
+
+
+def test_halving_walks_the_full_ladder_to_the_floor() -> None:
+    from synapse.core.index import SourceSlice
+    from synapse.core.navigation.inspection import (
+        CONTINUATION_FLOOR_LINES,
+        MAX_CONTINUATION_LINES,
+        _Continuation,
+        _continuation_halving_steps,
+        _halve_continuation,
+    )
+
+    item = _Continuation(
+        token="c_x",
+        symbol=_long_symbol(),
+        handle=symbol_handle(LONG_ID),
+        start_line=45,
+        src=SourceSlice(start_line=45, end_line=124, text="", truncated=False),
+        content_hash="h",
+    )
+    sizes = [item.src_max]
+    while _halve_continuation(item):
+        sizes.append(item.src_max)
+    assert sizes == [256, 128, 64, 32, 16, 10]
+    assert sizes[0] == MAX_CONTINUATION_LINES
+    assert sizes[-1] == CONTINUATION_FLOOR_LINES
+    # The drop-step generator provisions exactly this many halvings.
+    assert _continuation_halving_steps() == len(sizes) - 1
+
+
+def test_next_token_is_correct_at_every_halving_size(tmp_path: Path) -> None:
+    from synapse.core.index import SourceSlice
+    from synapse.core.navigation.inspection import _Continuation, _continuation_entry
+    from synapse.core.navigation.render import FileTable
+
+    tall = make_symbol("py:unit-tall", "unit_tall", "app/unit.py", line=5, end_line=344)
+    body_lines = [f"line {i}" for i in range(45, 45 + 300)]
+    src = SourceSlice(start_line=45, end_line=45 + 299, text="\n".join(body_lines), truncated=True)
+    for size in (256, 128, 64, 32, 16, 10):
+        item = _Continuation(
+            token="c_x",
+            symbol=tall,
+            handle=symbol_handle(tall.id),
+            start_line=45,
+            src=src,
+            content_hash="h",
+            src_max=size,
+        )
+        entry = _continuation_entry(item, FileTable())
+        lines = entry["lines"]
+        assert isinstance(lines, list)
+        assert lines == [45, 45 + size - 1]
+        assert entry["more"] is True
+        token = entry["next"]
+        assert isinstance(token, str)
+        parsed = parse_continuation(token)
+        assert parsed is not None
+        assert parsed.start_line == lines[1] + 1
 
 
 def test_payload_without_tokens_is_unchanged(tmp_path: Path) -> None:
