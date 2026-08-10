@@ -378,7 +378,8 @@ def test_tool_docstrings_document_contracts() -> None:
     assert "bounded server-side" in orient_doc
     inspect_doc = " ".join((tools.synapse_inspect.__doc__ or "").split())
     assert "1-8" in inspect_doc
-    assert "normally select 2-4" in inspect_doc
+    assert "normally 2-3" in inspect_doc
+    assert "relation handles" in inspect_doc
     assert "exact|scoped|unique-name|ambiguous|unresolved" in inspect_doc
     assert "bounded server-side" in inspect_doc
     assert "not proof" in inspect_doc

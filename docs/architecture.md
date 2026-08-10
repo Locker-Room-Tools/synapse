@@ -104,8 +104,9 @@ package's internal decomposition, not separate import targets.
   than resolved matches.
   Call semantics are evidence-based, never inferred from a declaration kind: a
   site is a call only when its stored `usage_kind` is one the language advertises
-  in `LanguageSpec.call_usage_kinds` (C#: `invocation`, `object-creation`;
-  Python: `invocation`). Everything else is neutral `refs_in`/`refs_out` carrying
+  in `LanguageSpec.call_usage_kinds` (C#, TypeScript, TSX, and JavaScript:
+  `invocation`, `object-creation`; Python: `invocation`). Everything else is
+  neutral `refs_in`/`refs_out` carrying
   its usage kind verbatim, and an endpoint with both call and non-call sites
   splits into two groups rather than upgrading the non-call ones. Because call
   evidence is judged against the language the indexer recorded for the file the
@@ -121,9 +122,10 @@ package's internal decomposition, not separate import targets.
   expose one, so an agent cannot maximize it. The token budget is an estimate
   at 4 chars/token; the hard
   guarantee is a character cap of `token_budget * 4` on the exact serialized
-  result, enforced through deterministic drop steps (weakest evidence first, the
-  first-requested symbol degrades last), then a minimal envelope, then a fixed
-  truncation-only envelope. `payload_complete` reports payload truncation only;
+  result, enforced through deterministic drop steps (weakest evidence first;
+  caller/callee groups shrink to a compact navigation set before any selected
+  source is removed; the first-requested symbol degrades last), then a minimal
+  envelope, then a fixed truncation-only envelope. `payload_complete` reports payload truncation only;
   coverage counts report evidence bounds; task completeness is never claimed.
 - **`mcp.server` / `mcp.tools` / `mcp.profiles`**: expose deterministic, token-frugal
   tools to agents through profile-tiered registration (`synapse serve --profile

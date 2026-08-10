@@ -33,11 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   symbol summaries include the handle alongside the canonical `symbol_id`.
 - Per-language `call_usage_kinds` on `LanguageSpec`, with `call_usage_kinds()` and
   `is_call_usage()` accessors: the single place where usage-kind vocabulary becomes call
-  semantics. C# proves a call with `invocation` and `object-creation`; Python with
-  `invocation`.
+  semantics. C#, TypeScript, TSX, and JavaScript prove a call with `invocation` and
+  `object-creation`; Python with `invocation`.
 - Python reference queries now label their four captures (`invocation` for direct and
   attribute calls, `base-type` for superclasses, `decorator` for bare decorator names).
   The captured spans are unchanged — only the previously absent `usage_kind` is new.
+- TypeScript, TSX, and JavaScript reference queries label their three call captures
+  (`invocation` for direct and member calls, `object-creation` for `new` expressions;
+  spans unchanged), and the three languages advertise honest `reference_limitations`:
+  `dynamic-dispatch`, `member-call-receiver-types`, `import-alias-relations`,
+  `local-variables`, `configuration-strings`, `non-call-references`.
+- Named TypeScript, TSX, and JavaScript generator declarations (`function*`,
+  `async function*`, exported or not) are indexed as normalized functions.
 - C# reference queries capture invocations through a receiver
   (`repository.Save(1)`), which were previously indistinguishable from a member read.
 - Name-only symbol retrieval (`search_symbol_names_page`), indexed-language lookup by
@@ -168,10 +175,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   binding's proof; `self`/`cls` counts only structurally. Annotation-position proofs are
   unchanged. New documented limitation: `unindexed-import-shadows`.
 - The managed skill, adapter instruction snippets, MCP server instructions, Claude hook
-  reminder, and documentation are rewritten around the two-call workflow: translate the
-  request into repository vocabulary -> `synapse_orient` -> one `synapse_inspect` ->
-  synthesize; exact-text reads only for reported gaps.
-- `SCHEMA_VERSION` is 5 and `REFERENCE_EXTRACTOR_VERSION` is 6. Existing workspaces
+  reminder, and documentation are rewritten around the bounded navigation lifecycle:
+  translate the request into repository vocabulary -> `synapse_orient` ->
+  `synapse_inspect` with 2-3 initial facet-diverse anchors -> follow 1-2 returned
+  relation handles for still-open facets -> one bounded gap-closing attempt per
+  partial/missing facet (a relation handle, a refined orientation, or one facet-scoped
+  shell fallback) -> report each facet verified or unresolved. Two calls remain the
+  common fast path, not a cap.
+- `SCHEMA_VERSION` is 5 and `REFERENCE_EXTRACTOR_VERSION` is 7. Existing workspaces
   perform one fingerprint-forced rebuild on the next navigation call, `ensure_workspace`,
   or `synapse index`.
 - Query tools that previously returned `null`/empty content for a missing symbol or file

@@ -8,12 +8,22 @@ description: Navigate and understand codebases with fresh Synapse structural con
 # Synapse Code Context
 
 Use Synapse as the first source of code structure, and as a replacement for initial
-shell exploration rather than an addition to it. Two bounded calls answer most code
-questions: one orientation, one batch inspection. Both initialize the workspace
-automatically — no setup call is needed.
+shell exploration rather than an addition to it. Two calls remain the common fast
+path, not a cap; up to four bounded calls can be appropriate for a cross-cutting
+task. Both tools initialize the workspace automatically — no setup call is needed.
 
 Synapse supplies deterministic structural evidence. You supply the planning, the
-semantic interpretation, and the synthesis.
+semantic interpretation, and the synthesis. The lifecycle:
+
+```text
+plan evidence facets
+  -> orient
+  -> inspect 2-3 initial facet-diverse anchors
+  -> follow 1-2 returned relation handles for still-open facets
+  -> if necessary, refine orientation or use one facet-scoped shell fallback
+  -> verify or report the facet unresolved
+  -> synthesize and stop
+```
 
 ## 1. Plan the evidence facets first
 
@@ -23,6 +33,17 @@ registration, invocation, persistence, error handling, invalidation.
 
 Keep the checklist small and specific to the request. It is your planning device, not a
 Synapse parameter: nothing about it is sent to the server.
+
+For a cross-cutting lifecycle question, plan an anchor set that covers three distinct
+altitudes:
+
+1. the subsystem implementation;
+2. the host or composition-root integration;
+3. a generic dispatcher, executor, or policy boundary.
+
+This applies equally to plugin systems, queues, transports, DI containers, and
+framework adapters: the interesting behavior usually lives where a generic mechanism
+executes a specific implementation.
 
 ## 2. Orient with bounded repository vocabulary
 
@@ -46,8 +67,9 @@ terms alone are not a reason to start a shell search.
 
 ## 3. Inspect a small, facet-diverse selection
 
-Call `synapse_inspect(symbols=[...])` once. Normally select 2-4 handles, not the maximum
-of eight. Choose them to cover *different* facets rather than four views of one thing:
+Call `synapse_inspect(symbols=[...])` with 2-3 initial facet-diverse anchors, not the
+maximum of eight. Choose them to cover *different* facets rather than several views of
+one thing:
 
 - the entrypoint or boundary;
 - the central implementation;
@@ -60,11 +82,15 @@ parent and children, and four relation groups — `callers`, `callees`, `refs_in
 `refs_out` — carrying stored resolution (`exact|scoped|unique-name|ambiguous|unresolved`),
 confidence, and usage kind verbatim, plus unresolved hypotheses.
 
-A second inspection is justified only when a *named* facet is still missing and the
-orientation already supplied a relevant handle for it. It must not repeat handles from
-the first call.
+## 4. Follow returned relation handles
 
-## 4. Keep an evidence ledger
+For a facet still open after the initial anchors, follow 1-2 returned relation handles
+in a follow-up `synapse_inspect`. The handle may come from the original
+orientation or from a previous inspection relation: every resolved
+`callers`/`callees`/`refs_in`/`refs_out` endpoint carries a compact handle (`h`) that is
+a first-class inspection input. Do not resubmit handles you already inspected.
+
+## 5. Keep an attempt-aware evidence ledger
 
 After inspection, mark every facet on your checklist:
 
@@ -72,6 +98,13 @@ After inspection, mark every facet on your checklist:
 - `partial` — relevant evidence exists, but a specific fact is truncated, unsupported, or
   unresolved;
 - `missing` — no relevant indexed evidence came back.
+
+`verified` closes the facet. `partial` or `missing` is not a terminal state: make one
+bounded gap-closing attempt — a returned relation handle, one refined orientation, or
+one facet-scoped shell fallback — after which the facet is verified or unresolved.
+Report unresolved evidence honestly. Do not mark a facet `missing` and stop without
+trying an available relation handle or one justified fallback; conversely, do not
+repeat attempts after the bounded close fails.
 
 Treat returned source slices as read. Do not reread the same file ranges to feel more
 certain or to restate line citations you already have.
@@ -85,32 +118,43 @@ Read relation trust conservatively:
 - empty `callers`/`callees` proves only that no indexed call site was established under
   the reported language coverage.
 
-## 5. Close only explicit gaps
+## 6. One disciplined shell fallback
 
-Grep, ripgrep, and file reads are permitted when they close a facet you recorded as
-`partial` or `missing`, such as:
+One narrowly scoped search or file read, tied to a named open facet, is justified when
+any of these holds:
 
-- a source slice truncates the exact implementation the answer needs;
-- generated or unsupported syntax falls outside index coverage;
-- an exact string or configuration value is required;
-- evidence names a required cross-cutting file that has no usable declaration handle.
+- dynamic dispatch cannot be established from the indexed AST evidence;
+- the needed fact is a local variable or exact configuration string;
+- a returned source slice is truncated or budget-shortened;
+- coverage explicitly names the required unsupported semantics;
+- no usable relation handle was returned.
+
+Restrict the fallback with a discriminative expression and the narrowest known path,
+for example:
+
+```bash
+rg -n 'runToolUse|checkPermissions|tool\.call' src/relevant-area/
+```
+
+Continue a truncated file read from the first line not already returned; do not reread
+the prefix merely to recover context already present in the transcript.
+
+What stays out of bounds:
+
+- a broad shell search before using Synapse;
+- do not repeat the complete investigation with shell tools for reassurance;
+- do not read every file the payload named;
+- do not use shell output to silently strengthen ambiguous or heuristic relations.
 
 `payload_complete: false`, an omitted relation count, or a non-exhaustive coverage model
 is not by itself permission to search broadly. It matters only when the omitted evidence
 could change a facet you actually need.
 
-After a successful inspection:
+## 7. Stop deliberately
 
-- do not run repository-wide `rg`, `grep`, `find`, or file enumeration;
-- do not reread every file the payload named;
-- do not repeat the whole Synapse investigation with shell tools for reassurance;
-- use the narrowest exact read that closes the recorded gap.
-
-## 6. Stop deliberately
-
-Stop exploring once every requested facet is either verified or explicitly reported as
-partial or missing. Do not pursue exhaustive repository coverage the task never asked
-for.
+Stop once every requested facet is verified or explicitly reported unresolved after its
+one bounded close attempt. Do not pursue exhaustive repository coverage the task never
+asked for.
 
 The final answer must keep three things apart: verified facts, calibrated structural
 inference, and missing evidence.

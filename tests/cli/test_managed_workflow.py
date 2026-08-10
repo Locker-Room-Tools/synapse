@@ -23,11 +23,55 @@ SKILL_CONTRACT: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("navigation tools", ("synapse_orient", "synapse_inspect")),
     ("facet planning", ("evidence facets", "checklist")),
     ("bounded orientation", ("4-8 discriminative", "The contract allows 12")),
-    ("small facet-diverse selection", ("2-4 handles", "not the maximum")),
+    ("initial facet-diverse anchors", ("2-3 initial facet-diverse anchors", "not the maximum")),
+    (
+        "relation-handle follow-up",
+        ("1-2 returned relation handles", "orientation or from a previous inspection relation"),
+    ),
+    (
+        "cross-cutting selection",
+        (
+            "subsystem implementation",
+            "composition-root integration",
+            "dispatcher, executor, or policy boundary",
+        ),
+    ),
     ("evidence ledger", ("`verified`", "`partial`", "`missing`")),
-    ("no reread", ("Treat returned source slices as read", "Do not reread")),
-    ("no broad re-search", ("do not run repository-wide", "narrowest exact read")),
-    ("stop rule", ("Stop exploring once every requested facet",)),
+    (
+        "attempt-aware transition",
+        (
+            "one bounded gap-closing attempt",
+            "verified or unresolved",
+            "Report unresolved evidence honestly",
+        ),
+    ),
+    (
+        "fallback conditions",
+        (
+            "dynamic dispatch",
+            "local variable or exact configuration string",
+            "truncated or budget-shortened",
+            "no usable relation handle",
+        ),
+    ),
+    ("fallback scoping", ("discriminative expression", "narrowest known path")),
+    (
+        "no reread",
+        (
+            "Treat returned source slices as read",
+            "Do not reread",
+            "first line not already returned",
+        ),
+    ),
+    (
+        "no duplicate investigation",
+        (
+            "broad shell search before",
+            "repeat the complete investigation",
+            "silently strengthen ambiguous",
+        ),
+    ),
+    ("no call-count mandate", ("common fast path, not a cap", "up to four bounded calls")),
     ("default budget", ("no budget parameter to raise",)),
 )
 
@@ -35,7 +79,9 @@ SNIPPET_CONTRACT: tuple[str, ...] = (
     "synapse_orient",
     "synapse_inspect",
     "4-8 discriminative",
-    "2-4 handles",
+    "2-3 initial facet-diverse anchors",
+    "1-2 returned relation handles",
+    "common fast path, not a cap",
     "no budget parameter to raise",
     "never proof of absence",
     "named partial/missing facet",
@@ -124,3 +170,12 @@ def test_always_on_surfaces_treat_returned_source_as_read() -> None:
             for phrase in ("broad repository search", "repeat the whole investigation")
         )
         assert forbids_rerun, f"{name} does not forbid re-running the investigation"
+
+
+def test_no_surface_mandates_a_single_inspection_or_exact_call_count() -> None:
+    """The bounded lifecycle replaced the one-inspection, two-call ceiling everywhere."""
+    surfaces = {**_always_on_surfaces(), "packaged SKILL.md": _packaged_skill()}
+    for name, text in surfaces.items():
+        normalized = _normalized(text)
+        assert "synapse_inspect once" not in normalized, name
+        assert "exactly two" not in normalized.lower(), name

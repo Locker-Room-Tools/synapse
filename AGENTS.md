@@ -97,8 +97,9 @@ This file is the contract for any human or AI agent contributing to THIS reposit
   `token_budget` parameter — the core requests stay configurable, but an agent
   cannot enlarge a navigation payload, so gaps are closed with narrower calls.
 - Call semantics are evidence-based. `callers`/`callees` hold only sites whose stored
-  usage kind proves a call (`LanguageSpec.call_usage_kinds`; C#: `invocation`,
-  `object-creation`; Python: `invocation`). A call is never inferred from either
+  usage kind proves a call (`LanguageSpec.call_usage_kinds`; C#, TypeScript, TSX, and
+  JavaScript: `invocation`, `object-creation`; Python: `invocation`). A call is never
+  inferred from either
   endpoint's declaration kind, so a `declared-type` or `base-type` reference is
   neutral `refs_in`/`refs_out`, and a language advertising no call kinds returns no
   callers or callees at all — `coverage.extraction[].call_kinds` says so.
@@ -118,19 +119,21 @@ synapse_orient(terms=[...])            # 4–8 discriminative terms, 12 maximum
   explicit file matches, crowded/unmatched terms, and coverage
   (no terms → repository map with areas, entrypoints, and bridges)
 
-synapse_inspect(symbols=[...])         # normally 2–4 facet-diverse handles
+synapse_inspect(symbols=[...])         # 2–3 initial facet-diverse anchors
 → definitions, bounded source, call-proven callers/callees plus neutral
   refs_in/refs_out, all with stored resolution, confidence, and usage kind;
-  synthesize the answer from this evidence
+  follow 1–2 returned relation handles for facets still open
 
-mark each facet verified / partial / missing, then stop
+mark each facet verified / partial / missing; give a partial/missing facet one
+bounded close attempt, then report it verified or unresolved
 ```
 
-Two calls is the normal target; a weakly matched orientation may need one more
-`synapse_orient` with better terms or a `path_scope`. Stop once every requested facet is
-verified or explicitly reported partial or missing. The canonical detailed workflow is
-the managed skill `src/synapse/skills/synapse-code-context/SKILL.md`; the server
-handshake and adapter snippets are deliberately short pointers to it.
+Two calls remain the common fast path, not a cap; a weakly matched orientation may need
+one more `synapse_orient` with better terms or a `path_scope`, and a follow-up
+`synapse_inspect` may reuse relation handles from a previous inspection. Stop once every
+requested facet is verified or explicitly reported unresolved. The canonical detailed
+workflow is the managed skill `src/synapse/skills/synapse-code-context/SKILL.md`; the
+server handshake and adapter snippets are deliberately short pointers to it.
 
 Avoid intermediate searches or manual `grep` when a handle or `symbol_id` is available.
 Use grep or whole-file reads only for exact-text verification, unsupported syntax,

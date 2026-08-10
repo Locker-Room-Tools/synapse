@@ -100,8 +100,9 @@ The first call for any code question: ranked, production-first orientation.
 
 One batch inspection of the selected symbols under one read snapshot.
 
-- Parameters: `symbols` (1–8 compact handles or internal stable IDs; normally select
-  2–4 covering different task facets), `workspace_path="."`. The response is bounded
+- Parameters: `symbols` (1–8 compact handles or internal stable IDs; normally 2–3
+  initial facet-diverse anchors, with follow-ups reusing relation handles),
+  `workspace_path="."`. The response is bounded
   at the server default of 2400 estimated tokens; the MCP surface exposes no budget
   override (`InspectRequest.token_budget` remains configurable for core callers).
 - Per selected symbol: the definition (qualified name, kind, `file` index,
@@ -123,8 +124,8 @@ One batch inspection of the selected symbols under one read snapshot.
 `callers` and `callees` contain **call-proven sites only**. A call is never inferred
 from either endpoint's declaration kind: a site counts as a call only when its stored
 `usage_kind` is one the language advertises as proving that control transfers into the
-target. Today that is `invocation` and `object-creation` for C# — `new Repo()` is a
-constructor invocation — and `invocation` for Python.
+target. Today that is `invocation` and `object-creation` for C#, TypeScript, TSX, and
+JavaScript — `new Repo()` is a constructor invocation — and `invocation` for Python.
 
 Everything else is returned as **neutral evidence** in `refs_in`/`refs_out` with its
 usage kind verbatim. A C# `declared-type` reference (`void M(Repo repo)`) therefore never
@@ -175,16 +176,20 @@ returned string never exceeds the accepted budget times 4 **characters** and is 
 valid JSON. The MCP tools always apply the core defaults — an agent cannot raise the
 budget, so a gap is closed with a narrower targeted call rather than a bigger payload.
 Normal budget pressure drops low-priority content deterministically (hypotheses and
-weak evidence first; the first-requested symbol degrades last); under extreme pressure
-the result shrinks to a minimal envelope and, as a last resort, a fixed truncation-only
-envelope that always carries `complete: false`. Empty or truncated results are never
+weak evidence first, then caller/callee groups shrink to a compact navigation set —
+keeping at least one relation group per direction when evidence exists — before any
+selected symbol's source is removed; the first-requested symbol degrades last); under
+extreme pressure the result shrinks to a minimal envelope and, as a last resort, a
+fixed truncation-only envelope that always carries `complete: false`. Empty or truncated results are never
 proof of absence — read `coverage`.
 
 The intended workflow: translate the request into repository vocabulary →
-`synapse_orient` → one `synapse_inspect` with several returned handles → synthesize with
-the model. Two calls is the normal target, not a guarantee: a weakly matched orientation
-may need one more `synapse_orient` with better terms. Use exact-text search or file
-reads only for gaps the coverage block reports.
+`synapse_orient` → `synapse_inspect` with 2-3 facet-diverse anchors → follow 1-2
+returned relation handles for facets still open → synthesize with the model. Two calls
+remain the common fast path, not a cap: a weakly matched orientation may need one more
+`synapse_orient`, and a follow-up `synapse_inspect` may reuse relation handles from a
+previous inspection. Use exact-text search or file reads only for gaps the coverage
+block reports.
 
 ## Workspace readiness
 

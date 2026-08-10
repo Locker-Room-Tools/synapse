@@ -26,10 +26,12 @@ def test_server_instructions_carry_the_orchestration_contract() -> None:
 
     assert "evidence facets" in instructions
     assert "4-8 discriminative terms" in instructions
-    assert "2-4 handles" in instructions
+    assert "2-3 initial facet-diverse anchors" in instructions
+    assert "1-2 returned relation handles" in instructions
     assert "no budget parameter to raise" in instructions
     assert "verified, partial, or missing" in instructions
-    assert "stop once every requested facet" in instructions
+    assert "one bounded close attempt" in instructions
+    assert "verified or unresolved" in instructions
     assert "broad repository search" in instructions
 
 

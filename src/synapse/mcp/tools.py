@@ -174,10 +174,11 @@ def synapse_inspect(
     symbols: list[str],
     workspace_path: str = ".",
 ) -> str:
-    """Inspect selected symbols in one call using handles from synapse_orient.
+    """Inspect selected symbols using handles from synapse_orient or returned relations.
 
-    Accepts 1-8 compact handles (s_...) or stable symbol ids; normally select 2-4
-    that cover different facets of the task. Returns per symbol: the definition
+    Accepts 1-8 compact handles (s_...) or stable symbol ids; normally 2-3
+    facet-diverse anchors, then follow-ups may reuse relation handles. Returns
+    per symbol: the definition
     with signature and file:line, a bounded source slice (<=40 lines), parent and
     children, and grouped callers/callees/other references carrying stored
     resolution (exact|scoped|unique-name|ambiguous|unresolved), confidence, and
