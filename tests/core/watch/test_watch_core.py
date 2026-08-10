@@ -143,6 +143,21 @@ def test_event_normalizer_and_crawler_filter_identically(
     assert normalized == crawled
 
 
+def test_event_normalizer_applies_file_patterns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Watch filters file patterns too, not just the directories on the way to a file."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    workspace_root = tmp_path / "workspace"
+    (workspace_root / "src").mkdir(parents=True)
+    (workspace_root / ".synapseignore").write_text("*.min.js\n", encoding="utf-8")
+    normalizer = EventNormalizer(workspace_root)
+
+    assert normalizer.normalize_path(workspace_root / "src" / "app.min.js") is None
+    assert normalizer.normalize_path(workspace_root / "src" / "app.js") == "src/app.js"
+
+
 def test_coalescing_buffer_batches_latest_intent() -> None:
     """Debounce coalescing keeps the last path intent and emits bounded batches."""
     buffer = CoalescingBuffer(debounce_ms=100, max_latency_ms=1_000, batch_size=10)

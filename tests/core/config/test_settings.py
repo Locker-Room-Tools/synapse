@@ -7,16 +7,27 @@ import pytest
 
 from synapse.core.config import (
     ConfigScope,
+    IgnoreSource,
     active_ignore_matcher,
     config_file_path,
+    global_ignore_path,
     load_default_ignored_directories,
     load_effective_config,
     load_project_config,
     load_user_config,
     project_config_path,
+    synapseignore_path,
     write_global_ignored_directories,
     write_project_ignored_directories,
 )
+
+
+def _workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Return an isolated workspace root with an isolated global config directory."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir(exist_ok=True)
+    return workspace_root
 
 
 def test_config_file_path_uses_xdg_config_home(
@@ -169,7 +180,7 @@ def test_load_effective_config_reports_every_contributing_layer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Each effective entry names the layers it comes from, not a single winner."""
+    """Every rule names the layer it came from, and layers stay in evaluation order."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     workspace_root = tmp_path / "workspace"
     workspace_root.mkdir()
@@ -177,12 +188,21 @@ def test_load_effective_config_reports_every_contributing_layer(
     write_project_ignored_directories(workspace_root, {"generated", "src/vendor"})
 
     config = load_effective_config(workspace_root)
-    sources = {entry.value: entry.sources for entry in config.ignored_directories}
+    scopes = {rule.pattern: rule.scope for rule in config.ignore_rules}
 
-    assert sources[".git"] == (ConfigScope.BUILT_IN,)
-    assert sources["global-only"] == (ConfigScope.GLOBAL,)
-    assert sources["src/vendor"] == (ConfigScope.PROJECT,)
-    assert sources["generated"] == (ConfigScope.GLOBAL, ConfigScope.PROJECT)
+    assert [layer.scope for layer in config.layers] == [
+        ConfigScope.BUILT_IN,
+        ConfigScope.GLOBAL,
+        ConfigScope.PROJECT,
+    ]
+    assert scopes[".git/"] is ConfigScope.BUILT_IN
+    assert scopes["global-only/"] is ConfigScope.GLOBAL
+    assert scopes["/src/vendor/"] is ConfigScope.PROJECT
+    # The same entry in two layers stays two rules; only order decides which one wins.
+    assert [rule.scope for rule in config.ignore_rules if rule.pattern == "generated/"] == [
+        ConfigScope.GLOBAL,
+        ConfigScope.PROJECT,
+    ]
     assert config.project_config_exists is True
 
 
@@ -302,3 +322,145 @@ def test_write_ignored_directories_rejects_non_object_payloads(tmp_path: Path) -
 
     with pytest.raises(ValueError, match="must be a JSON object"):
         write_project_ignored_directories(tmp_path, {"generated"})
+
+
+def test_synapseignore_supersedes_project_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ignore file replaces the legacy JSON entries and says which ones it shadowed."""
+    workspace_root = _workspace(tmp_path, monkeypatch)
+    write_project_ignored_directories(workspace_root, {"legacy"})
+    synapseignore_path(workspace_root).write_text("*.min.js\n", encoding="utf-8")
+
+    with pytest.warns(UserWarning, match="supersedes ignored_directories"):
+        config = load_effective_config(workspace_root)
+
+    project = config.layer(ConfigScope.PROJECT)
+    assert project.source is IgnoreSource.IGNORE_FILE
+    assert project.shadowed_json_entries == ("legacy",)
+    assert [rule.pattern for rule in project.rules] == ["*.min.js"]
+
+    matcher = config.matcher()
+    assert matcher.ignores_child((), "app.min.js", is_dir=False)
+    assert not matcher.ignores_child((), "legacy", is_dir=True)
+
+
+def test_project_json_still_works_without_an_ignore_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Existing workspaces keep behaving exactly as before this change.
+
+    Every entry form is exercised with a name the built-in defaults do not already cover, so
+    the assertions are about the project layer rather than about the built-ins.
+    """
+    workspace_root = _workspace(tmp_path, monkeypatch)
+    write_project_ignored_directories(workspace_root, {"artifacts", "/staging", "src/generated"})
+
+    config = load_effective_config(workspace_root)
+    matcher = config.matcher()
+
+    assert config.layer(ConfigScope.PROJECT).source is IgnoreSource.JSON
+    # Bare name: any depth.
+    assert matcher.ignores_child((), "artifacts")
+    assert matcher.ignores_child(("pkg", "vendor"), "artifacts")
+    # Leading slash: root only.
+    assert matcher.ignores_child((), "staging")
+    assert not matcher.ignores_child(("pkg",), "staging")
+    # Multi-segment: implicitly anchored.
+    assert matcher.ignores_child(("src",), "generated")
+    assert not matcher.ignores_child(("pkg", "src"), "generated")
+    # Directory-only, so a file of the same name is untouched.
+    assert not matcher.ignores_child((), "artifacts", is_dir=False)
+
+
+def test_watch_config_survives_a_superseded_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only ignored_directories is superseded; the rest of the config file still applies."""
+    workspace_root = _workspace(tmp_path, monkeypatch)
+    config_file_path().parent.mkdir(parents=True, exist_ok=True)
+    config_file_path().write_text(json.dumps({"watch": {"poll_interval_s": 11}}), encoding="utf-8")
+    synapseignore_path(workspace_root).write_text("dist/\n", encoding="utf-8")
+
+    config = load_effective_config(workspace_root)
+
+    assert config.watch.poll_interval_s == 11
+    assert config.layer(ConfigScope.PROJECT).shadowed_json_entries == ()
+
+
+def test_project_layer_can_reinclude_a_builtin_but_never_git(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ordering lets a later layer negate an earlier one; '.git' is the single exception."""
+    workspace_root = _workspace(tmp_path, monkeypatch)
+    synapseignore_path(workspace_root).write_text("!node_modules/\n!.git/\n", encoding="utf-8")
+
+    matcher = load_effective_config(workspace_root).matcher()
+
+    assert not matcher.ignores_child((), "node_modules")
+    assert matcher.ignores_child((), ".git")
+
+
+def test_project_layer_can_negate_a_global_rule(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A workspace can opt out of one of the user's own global rules."""
+    workspace_root = _workspace(tmp_path, monkeypatch)
+    global_ignore_path().parent.mkdir(parents=True, exist_ok=True)
+    global_ignore_path().write_text("cache/\n", encoding="utf-8")
+    synapseignore_path(workspace_root).write_text("!cache/\n", encoding="utf-8")
+
+    matcher = load_effective_config(workspace_root).matcher()
+
+    assert not matcher.ignores_child(("pkg",), "cache")
+
+
+def test_unusable_lines_are_reported_without_disarming_the_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A typo skips one line and is reported; the surrounding rules still apply."""
+    workspace_root = _workspace(tmp_path, monkeypatch)
+    synapseignore_path(workspace_root).write_text("dist/\n[unterminated\nlogs/\n", encoding="utf-8")
+
+    config = load_effective_config(workspace_root)
+
+    assert [(problem.line, problem.text) for problem in config.ignore_problems] == [
+        (2, "[unterminated")
+    ]
+    assert config.matcher().ignores_child((), "logs")
+
+
+def test_empty_ignore_file_is_still_the_authoritative_project_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A comment-only file contributes no rules but still supersedes the JSON entries."""
+    workspace_root = _workspace(tmp_path, monkeypatch)
+    write_project_ignored_directories(workspace_root, {"legacy"})
+    synapseignore_path(workspace_root).write_text("# nothing here\n", encoding="utf-8")
+
+    with pytest.warns(UserWarning, match="supersedes ignored_directories"):
+        config = load_effective_config(workspace_root)
+
+    assert config.layer(ConfigScope.PROJECT).rules == ()
+    assert not config.matcher().ignores_child((), "legacy")
+
+
+def test_active_ignore_matcher_degrades_when_the_ignore_file_is_unreadable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable project layer warns and falls back to the layers that did load."""
+    workspace_root = _workspace(tmp_path, monkeypatch)
+    synapseignore_path(workspace_root).mkdir()
+
+    with pytest.warns(UserWarning, match="Failed to load project config"):
+        matcher = active_ignore_matcher(workspace_root)
+
+    assert matcher.ignores_child((), "node_modules")

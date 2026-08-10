@@ -6,6 +6,8 @@ from enum import StrEnum
 from pathlib import Path
 from time import monotonic, sleep
 
+from synapse.core.config import IgnoreWriteResult
+from synapse.core.config.ignore_presets import bootstrap_project_ignores
 from synapse.core.index import SymbolIndex
 from synapse.core.indexing import index_workspace, reference_index_is_stale
 from synapse.core.languages.grammar_install import install_grammars, missing_grammars
@@ -46,6 +48,8 @@ class EnsureWorkspaceResult:
     # Identity of the Synapse serving this call, so a stale globally-installed build
     # is visible rather than mistaken for the checkout under development.
     runtime: dict[str, object]
+    # Set only when first-run initialization created a .synapseignore in the repository.
+    ignore_bootstrap: dict[str, object] | None = None
 
     def to_payload(self) -> dict[str, object]:
         """Return the MCP/CLI response shape."""
@@ -212,6 +216,9 @@ def ensure_workspace(
             msg = f"Watch daemon did not stop for {root}."
             raise WorkspaceNotReadyError(msg)
 
+    # Seed ignore rules before the first crawl, so the initial index already honors them.
+    bootstrap = bootstrap_project_ignores(root) if not initialized_before else None
+
     if should_index:
         indexed = index_workspace(root, force=force_index)
         index_payload: dict[str, object] = {
@@ -248,4 +255,12 @@ def ensure_workspace(
         },
         index=index_payload,
         runtime=runtime_provenance().to_payload(),
+        ignore_bootstrap=_bootstrap_payload(bootstrap),
     )
+
+
+def _bootstrap_payload(result: IgnoreWriteResult | None) -> dict[str, object] | None:
+    """Report a generated .synapseignore, since it is a write into the user's repository."""
+    if result is None:
+        return None
+    return {"path": str(result.path), "patterns": len(result.added)}

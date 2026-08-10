@@ -1,0 +1,8 @@
+.ipynb_checkpoints/
+checkpoints/
+wandb/
+mlruns/
+*.ckpt
+*.safetensors
+*.onnx
+*.pt

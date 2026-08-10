@@ -1,0 +1,6 @@
+.eggs/
+.nox/
+htmlcov/
+site-packages/
+.ipynb_checkpoints/
+*.egg-info/

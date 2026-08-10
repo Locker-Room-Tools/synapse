@@ -11,6 +11,7 @@ from synapse import __version__
 from synapse.cli import doctor as cli_doctor
 from synapse.cli import main as cli_main
 from synapse.cli.doctor import DoctorReport
+from synapse.core.config import global_ignore_path
 from synapse.core.indexing import IndexStats
 from synapse.mcp.profiles import ToolProfile
 
@@ -516,7 +517,7 @@ def test_config_ignored_dirs_preserves_watch_settings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Config rewrites update ignored directories without dropping watch tunables."""
+    """Adopting the global ignore file leaves the rest of the config file alone."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     config_path = tmp_path / "xdg" / "synapse" / "config.json"
     config_path.parent.mkdir(parents=True)
@@ -538,4 +539,4 @@ def test_config_ignored_dirs_preserves_watch_settings(
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     assert exit_code == 0
     assert payload["watch"] == {"poll_interval_s": 2}
-    assert payload["ignored_directories"] == ["generated"]
+    assert "generated" in global_ignore_path().read_text(encoding="utf-8")

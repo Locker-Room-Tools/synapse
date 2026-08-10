@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from synapse.core import lifecycle
+from synapse.core.config import ignore_presets
 from synapse.core.indexing import IndexStats
 from synapse.core.lifecycle import WorkspaceNotReadyError, WorkspaceState
 from synapse.core.watch.state import WatchStatus
@@ -303,3 +304,132 @@ def test_ensure_workspace_forces_reindex_on_stale_fingerprint(
     assert calls == ["stop-daemon", "wait-stop", ("index", True), "ensure-daemon"]
     assert result.action == "repaired"
     assert result.index == {"files": 2, "symbols": 5, "languages": ["csharp"]}
+
+
+def _stub_initialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    order: list[str] | None = None,
+) -> None:
+    """Stub a first-run ensure_workspace down to just the bootstrap decision."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(lifecycle, "read_metadata", lambda path: None)
+    monkeypatch.setattr(lifecycle, "missing_grammars", lambda: ())
+    monkeypatch.setattr(
+        lifecycle, "read_watch_status", lambda path: _watch_status(path, running=False)
+    )
+    monkeypatch.setattr(
+        lifecycle, "ensure_watch_daemon", lambda path: _watch_status(path, running=True, pid=1)
+    )
+
+    def fake_index(path: Path, *, force: bool = False) -> IndexStats:
+        if order is not None:
+            order.append("index")
+        return IndexStats(str(path), 1, 0, 0, 0, 1, 2, ["python"])
+
+    monkeypatch.setattr(lifecycle, "index_workspace", fake_index)
+
+
+def test_first_init_creates_a_synapseignore_from_detected_ecosystems(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recognizable workspace gets ignore rules before its very first crawl."""
+    order: list[str] = []
+    _stub_initialization(tmp_path, monkeypatch, order)
+    (tmp_path / "package.json").write_text("{}\n", encoding="utf-8")
+
+    result = lifecycle.ensure_workspace(tmp_path)
+
+    ignore_file = tmp_path / ".synapseignore"
+    assert ignore_file.exists()
+    assert "*.min.js" in ignore_file.read_text(encoding="utf-8")
+    assert result.ignore_bootstrap == {"path": str(ignore_file), "patterns": 7}
+    # The file must exist before the first index, or the first crawl ignores nothing.
+    assert order == ["index"]
+
+
+def test_first_init_never_overwrites_an_existing_synapseignore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once the file exists it belongs to the repository, not to Synapse."""
+    _stub_initialization(tmp_path, monkeypatch)
+    (tmp_path / "package.json").write_text("{}\n", encoding="utf-8")
+    (tmp_path / ".synapseignore").write_text("# mine\n", encoding="utf-8")
+
+    result = lifecycle.ensure_workspace(tmp_path)
+
+    assert (tmp_path / ".synapseignore").read_text(encoding="utf-8") == "# mine\n"
+    assert result.ignore_bootstrap is None
+
+
+def test_first_init_writes_nothing_when_no_ecosystem_is_detected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unrecognizable workspace gets no file rather than an empty one."""
+    _stub_initialization(tmp_path, monkeypatch)
+
+    result = lifecycle.ensure_workspace(tmp_path)
+
+    assert not (tmp_path / ".synapseignore").exists()
+    assert result.ignore_bootstrap is None
+
+
+@pytest.mark.parametrize("opt_out", ["env", "config"])
+def test_first_init_honors_the_bootstrap_opt_out(
+    opt_out: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both opt-outs suppress the write without affecting anything else."""
+    _stub_initialization(tmp_path, monkeypatch)
+    (tmp_path / "package.json").write_text("{}\n", encoding="utf-8")
+    if opt_out == "env":
+        monkeypatch.setenv("SYNAPSE_NO_IGNORE_BOOTSTRAP", "1")
+    else:
+        config_path = tmp_path / ".synapse" / "config.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text('{"auto_ignore_bootstrap": false}', encoding="utf-8")
+
+    result = lifecycle.ensure_workspace(tmp_path)
+
+    assert not (tmp_path / ".synapseignore").exists()
+    assert result.ignore_bootstrap is None
+
+
+def test_bootstrap_failure_warns_but_still_indexes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read-only checkout must still be indexable; the bootstrap is best-effort."""
+    _stub_initialization(tmp_path, monkeypatch)
+    (tmp_path / "package.json").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(ignore_presets, "write_ignore_file", _raise_permission_error)
+
+    with pytest.warns(UserWarning, match="Could not create"):
+        result = lifecycle.ensure_workspace(tmp_path)
+
+    assert result.action == "initialized"
+    assert result.ignore_bootstrap is None
+
+
+def _raise_permission_error(*args: object, **kwargs: object) -> None:
+    raise PermissionError("read-only file system")
+
+
+def test_repair_does_not_bootstrap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a first-run initialization may write into the repository."""
+    _stub_initialization(tmp_path, monkeypatch)
+    (tmp_path / "package.json").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(lifecycle, "read_metadata", lambda path: {"initialized": True})
+
+    result = lifecycle.ensure_workspace(tmp_path, force=True)
+
+    assert result.action == "repaired"
+    assert not (tmp_path / ".synapseignore").exists()
+    assert result.ignore_bootstrap is None

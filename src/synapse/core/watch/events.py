@@ -53,7 +53,7 @@ class EventNormalizer:
         except ValueError:
             return None
 
-        if self.matcher.ignores_relative_path(relative.parts[:-1]):
+        if self.matcher.ignores_relative_path(relative.parts, is_dir=False):
             return None
         current = self.root
         for part in relative.parts[:-1]:

@@ -29,6 +29,7 @@ from synapse.cli.claude_hooks import (
 from synapse.cli.config import build_config_parser
 from synapse.cli.doctor import format_report, has_failures, report_to_json, run_doctor
 from synapse.cli.grammars import LanguagePackError, install_grammars, missing_grammars
+from synapse.cli.ignore import build_ignore_parser
 from synapse.cli.installer import (
     config_has_mcp_server,
     install_mcp_server,
@@ -733,6 +734,8 @@ def build_parser() -> ArgumentParser:
     doctor_parser.add_argument("--scope", choices=("project", "user"))
     doctor_parser.add_argument("--json", action="store_true")
     doctor_parser.set_defaults(func=_handle_doctor)
+
+    build_ignore_parser(subparsers)
 
     config_parser = subparsers.add_parser("config", help="Manage Synapse configuration")
     config_subparsers = config_parser.add_subparsers(dest="config_command")

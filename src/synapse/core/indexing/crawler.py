@@ -20,6 +20,8 @@ def iter_source_files(root: Path) -> Iterator[Path]:
             name for name in dir_names if not matcher.ignores_child(parent_parts, name)
         )
         for file_name in sorted(file_names):
+            if matcher.ignores_child(parent_parts, file_name, is_dir=False):
+                continue
             path = Path(current_root) / file_name
             if detect_language(path) is None:
                 continue

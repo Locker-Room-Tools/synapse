@@ -1,0 +1,7 @@
+.pnpm-store/
+.yarn/
+.turbo/
+.parcel-cache/
+storybook-static/
+*.min.js
+*.bundle.js

@@ -446,6 +446,7 @@ version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "mcp" },
+    { name = "pathspec" },
     { name = "pydantic-settings" },
     { name = "ruamel-yaml" },
     { name = "tree-sitter" },
@@ -464,6 +465,7 @@ dev = [
 requires-dist = [
     { name = "mcp", specifier = ">=1.28.1,<2" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11" },
+    { name = "pathspec", specifier = ">=1.1.1" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.1.0" },
