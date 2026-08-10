@@ -21,58 +21,68 @@ from synapse.mcp.instructions import SERVER_INSTRUCTIONS
 
 SKILL_CONTRACT: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("navigation tools", ("synapse_orient", "synapse_inspect")),
-    ("facet planning", ("evidence facets", "checklist")),
-    ("bounded orientation", ("4-8 discriminative", "The contract allows 12")),
-    ("initial facet-diverse anchors", ("2-3 initial facet-diverse anchors", "not the maximum")),
+    ("default workflow", ("plan → orient → inspect", "close gaps → synthesize")),
+    ("fact planning", ("few concrete facts", "different relevant architectural layers")),
     (
-        "relation-handle follow-up",
-        ("1-2 returned relation handles", "orientation or from a previous inspection relation"),
-    ),
-    (
-        "cross-cutting selection",
+        "bounded orientation",
         (
-            "subsystem implementation",
-            "composition-root integration",
-            "dispatcher, executor, or policy boundary",
+            "4–8 discriminative terms",
+            "don't invent repository symbols",
+            "don't path-scope prematurely",
+            "refine once",
         ),
     ),
-    ("evidence ledger", ("`verified`", "`partial`", "`missing`")),
     (
-        "attempt-aware transition",
+        "diverse production anchors",
         (
-            "one bounded gap-closing attempt",
-            "verified or unresolved",
-            "Report unresolved evidence honestly",
+            "2–3 diverse production anchors",
+            "Prefer production symbols unless tests are relevant",
+        ),
+    ),
+    (
+        "relation follow-up",
+        ("specific open fact", "Do not inspect the same handle twice"),
+    ),
+    (
+        "bounded gap closing",
+        (
+            "verified",
+            "unresolved",
+            "one targeted closing attempt",
+            "Then stop investigating that fact",
         ),
     ),
     (
         "fallback conditions",
         (
-            "dynamic dispatch",
-            "local variable or exact configuration string",
-            "truncated or budget-shortened",
-            "no usable relation handle",
-        ),
-    ),
-    ("fallback scoping", ("discriminative expression", "narrowest known path")),
-    (
-        "no reread",
-        (
-            "Treat returned source slices as read",
-            "Do not reread",
-            "first line not already returned",
+            "truncated source slice",
+            "exact configuration string or local value",
+            "generated files or unsupported syntax",
+            "dynamic-dispatch gap",
         ),
     ),
     (
-        "no duplicate investigation",
+        "shell limits",
         (
-            "broad shell search before",
-            "repeat the complete investigation",
-            "silently strengthen ambiguous",
+            "start with broad grep",
+            "reproduce the whole investigation",
+            "upgrade heuristic relations into proven relations",
         ),
     ),
-    ("no call-count mandate", ("common fast path, not a cap", "up to four bounded calls")),
-    ("default budget", ("no budget parameter to raise",)),
+    (
+        "evidence semantics",
+        (
+            "`exact`/`scoped` = structural evidence",
+            "`unique-name` = heuristic",
+            "`ambiguous`/`unresolved` = hypothesis",
+            "empty relations != proof of absence",
+            "references/evidence-semantics.md",
+        ),
+    ),
+    (
+        "stop states",
+        ("verified evidence", "structural inference", "unresolved evidence"),
+    ),
 )
 
 SNIPPET_CONTRACT: tuple[str, ...] = (
@@ -87,8 +97,6 @@ SNIPPET_CONTRACT: tuple[str, ...] = (
     "named partial/missing facet",
 )
 
-MAX_SNIPPET_RATIO = 0.4
-
 
 def _normalized(text: str) -> str:
     return " ".join(text.split())
@@ -96,6 +104,10 @@ def _normalized(text: str) -> str:
 
 def _packaged_skill() -> str:
     return (SYNAPSE_SKILL / "SKILL.md").read_text(encoding="utf-8")
+
+
+def _packaged_reference() -> str:
+    return (SYNAPSE_SKILL / "references" / "evidence-semantics.md").read_text(encoding="utf-8")
 
 
 def _always_on_surfaces() -> dict[str, str]:
@@ -114,8 +126,25 @@ def _assert_describes_skill_contract(text: str, source: str) -> None:
 
 
 def test_packaged_skill_describes_the_orchestration_workflow() -> None:
-    """The canonical skill is the detailed workflow every managed surface points to."""
+    """The canonical skill carries the concise orchestration workflow."""
     _assert_describes_skill_contract(_packaged_skill(), "packaged SKILL.md")
+
+
+def test_packaged_reference_calibrates_evidence_semantics() -> None:
+    """Detailed coverage and call semantics stay available outside the core workflow."""
+    reference = _normalized(_packaged_reference())
+
+    for phrase in (
+        "index-local syntactic and structural evidence",
+        "callers",
+        "callees",
+        "refs_in",
+        "refs_out",
+        "coverage.extraction[].call_kinds",
+        "payload_complete",
+        "not proof of absence",
+    ):
+        assert phrase in reference
 
 
 @pytest.mark.parametrize("agent", ["codex", "claude-code"])
@@ -127,8 +156,12 @@ def test_installed_skill_describes_the_orchestration_workflow(
     result = install_global_skill(agent)
 
     installed = (result.path / "SKILL.md").read_text(encoding="utf-8")
+    installed_reference = (result.path / "references" / "evidence-semantics.md").read_text(
+        encoding="utf-8"
+    )
     assert MANAGED_SKILL_MARKER in installed
     _assert_describes_skill_contract(installed, f"installed SKILL.md for {agent}")
+    assert installed_reference == _packaged_reference()
 
 
 def test_reinstall_replaces_stale_managed_skill_content(isolated_home: Path) -> None:
@@ -146,18 +179,12 @@ def test_reinstall_replaces_stale_managed_skill_content(isolated_home: Path) -> 
     assert (target / "SKILL.md").read_text(encoding="utf-8") == _packaged_skill()
 
 
-def test_always_on_surfaces_share_the_contract_without_restating_it() -> None:
-    """Snippets and the handshake stay short pointers, not copies of the skill."""
-    skill = _packaged_skill()
-
+def test_always_on_surfaces_share_the_navigation_contract() -> None:
+    """Snippets and the handshake retain the minimum always-on navigation contract."""
     for name, text in _always_on_surfaces().items():
         normalized = _normalized(text)
         for phrase in SNIPPET_CONTRACT:
             assert phrase in normalized, f"{name} is missing {phrase!r}"
-        assert len(text) <= len(skill) * MAX_SNIPPET_RATIO, (
-            f"{name} is {len(text)} chars against a {len(skill)}-char skill; "
-            "always-on surfaces must stay materially shorter"
-        )
 
 
 def test_always_on_surfaces_treat_returned_source_as_read() -> None:

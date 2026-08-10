@@ -93,9 +93,9 @@ def test_global_instruction_and_skill_are_idempotent(
     assert "<!-- SYNAPSE MANAGED SKILL -->" in skill_text
     assert "synapse_orient" in skill_text
     assert "synapse_inspect" in skill_text
-    assert "repository vocabulary" in skill_text
-    assert "never proof" in skill_text
-    assert "do not imitate those operations manually" in skill_text
+    assert "Default workflow" in skill_text
+    assert "empty relations != proof of absence" in skill_text
+    assert (skill.path / "references" / "evidence-semantics.md").exists()
 
 
 def test_global_skill_refuses_unmanaged_conflict_without_force(
@@ -117,11 +117,12 @@ def test_global_skill_refuses_unmanaged_conflict_without_force(
 
 @pytest.mark.parametrize("agent", ["codex", "claude-code", "opencode"])
 def test_global_skill_files_are_agent_specific(isolated_home: Path, agent: str) -> None:
-    """Only Codex receives the OpenAI skill metadata alongside SKILL.md."""
+    """All agents receive references; only Codex receives OpenAI metadata."""
     install_global_skill(agent)
 
     target = resolve_global_skill_path(agent)
     assert (target / "SKILL.md").exists()
+    assert (target / "references" / "evidence-semantics.md").exists()
     if agent == "codex":
         assert (target / "agents" / "openai.yaml").exists()
     else:

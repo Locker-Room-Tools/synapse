@@ -11,7 +11,11 @@ from synapse.cli.adapters.registry import get_adapter
 SKILLS_ROOT = resources.files("synapse") / "skills"
 SYNAPSE_SKILL = SKILLS_ROOT / "synapse-code-context"
 
-MANAGED_SKILL_RELATIVE_PATHS: tuple[str, ...] = ("SKILL.md", "agents/openai.yaml")
+MANAGED_SKILL_RELATIVE_PATHS: tuple[str, ...] = (
+    "SKILL.md",
+    "agents/openai.yaml",
+    "references/evidence-semantics.md",
+)
 MANAGED_SKILL_MARKER = "<!-- SYNAPSE MANAGED SKILL -->"
 
 

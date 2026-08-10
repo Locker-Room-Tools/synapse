@@ -42,7 +42,11 @@ ADAPTERS: dict[str, AgentAdapter] = {
             PathSpec("~/.codex/AGENTS.md", "CODEX_HOME", "~/.codex/")
         ),
         global_skill=PathSpec("~/.codex/skills/synapse-code-context", "CODEX_HOME", "~/.codex/"),
-        skill_files=("SKILL.md", "agents/openai.yaml"),
+        skill_files=(
+            "SKILL.md",
+            "agents/openai.yaml",
+            "references/evidence-semantics.md",
+        ),
         warn_legacy_user_config=True,
     ),
     "opencode": AgentAdapter(

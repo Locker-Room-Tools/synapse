@@ -91,7 +91,10 @@ class AgentAdapter:
     global_instructions: InstructionTarget | None = None
     project_skill: PathSpec | None = None
     global_skill: PathSpec | None = None
-    skill_files: tuple[str, ...] = ("SKILL.md",)
+    skill_files: tuple[str, ...] = (
+        "SKILL.md",
+        "references/evidence-semantics.md",
+    )
     supports_hook: bool = False
     warn_legacy_user_config: bool = False
 
