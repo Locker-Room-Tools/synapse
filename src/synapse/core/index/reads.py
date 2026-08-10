@@ -1535,6 +1535,27 @@ class ReadProjections:
                     found[str(row["path"])] = str(row["language"])
         return found
 
+    def content_hashes_by_path(self, paths: Sequence[str]) -> dict[str, str]:
+        """Return the stored content hash of each given file path; unknown paths are omitted.
+
+        Source-continuation tokens embed this hash, so a token issued before a
+        re-index is rejected as stale instead of silently serving drifted lines.
+        """
+        ordered_paths = sorted(set(paths))
+        if not ordered_paths:
+            return {}
+        found: dict[str, str] = {}
+        with self._connection() as connection:
+            for batch in _sorted_batches(ordered_paths):
+                placeholders = ", ".join("?" for _ in batch)
+                rows = connection.execute(
+                    f"SELECT path, content_hash FROM files WHERE path IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                for row in rows:
+                    found[str(row["path"])] = str(row["content_hash"])
+        return found
+
     def _languages_for_paths(self, paths: set[str]) -> list[str]:
         return sorted(set(self.languages_by_path(sorted(paths)).values()))
 

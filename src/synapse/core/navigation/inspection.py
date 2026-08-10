@@ -11,6 +11,7 @@ from synapse.core.index import (
     SymbolIndex,
     is_symbol_handle,
     read_symbol_source,
+    read_verified_source_window,
     symbol_handle,
 )
 from synapse.core.languages import (
@@ -27,6 +28,12 @@ from synapse.core.navigation.budget import (
     DropStep,
     clamp,
     enforce_budget,
+)
+from synapse.core.navigation.continuation import (
+    continuation_token,
+    looks_like_continuation,
+    parse_continuation,
+    source_fingerprint,
 )
 from synapse.core.navigation.render import FileTable, symbol_ref
 from synapse.core.navigation.traversal import edge_sort_key, one_hop
@@ -91,6 +98,21 @@ class _Selected:
     out_total: int = 0
     hypotheses: list[Relation] = field(default_factory=list)
     hypotheses_total: int = 0
+    dropped: bool = False
+    content_hash: str = ""
+
+
+@dataclass(slots=True)
+class _Continuation:
+    """One validated source-continuation request and its bounded window."""
+
+    token: str
+    symbol: Symbol
+    handle: str
+    start_line: int
+    src: SourceSlice
+    content_hash: str
+    src_max: int = MAX_SOURCE_LINES
     dropped: bool = False
 
 
@@ -223,6 +245,38 @@ def _extraction_entry(language: str, produced_evidence: bool) -> dict[str, objec
     return entry
 
 
+def _shown_source_end(start_line: int, text: str, max_lines: int) -> tuple[list[str], int]:
+    """The lines actually shown under the current per-symbol cap, and their end line."""
+    shown = text.splitlines()[:max_lines]
+    return shown, start_line + len(shown) - 1
+
+
+def _next_token(handle: str, symbol: Symbol, shown_end: int, content_hash: str) -> str | None:
+    """Continuation for the first unshown line, or None at the stored span's end."""
+    if shown_end >= symbol.end_line:
+        return None
+    start_line = shown_end + 1
+    fingerprint = source_fingerprint(symbol, start_line, content_hash)
+    return continuation_token(handle, start_line, fingerprint)
+
+
+def _continuation_entry(item: _Continuation, files: FileTable) -> dict[str, object]:
+    shown, end_line = _shown_source_end(item.start_line, item.src.text, item.src_max)
+    more = item.src.truncated or len(shown) < len(item.src.text.splitlines())
+    entry: dict[str, object] = {
+        "h": item.handle,
+        "f": files.index(item.symbol.file_path),
+        "lines": [item.start_line, end_line],
+        "more": more,
+        "text": "\n".join(shown),
+    }
+    if more:
+        token = _next_token(item.handle, item.symbol, end_line, item.content_hash)
+        if token is not None:
+            entry["next"] = token
+    return entry
+
+
 def _kept_site_count(selected: _Selected) -> int:
     kept = 0
     for group_list in (
@@ -249,6 +303,10 @@ class _Evidence:
     languages: list[str]
     evidence_languages: frozenset[str]
     languages_omitted: int
+    continuations: list[_Continuation]
+    # (token, reason) pairs; reasons: invalid, unknown-symbol, stale, out-of-range,
+    # source-unavailable.
+    rejected_continuations: list[tuple[str, str]]
 
 
 def _build_selected(
@@ -256,13 +314,18 @@ def _build_selected(
     request_keys: tuple[str, ...],
     workspace_root: Path,
 ) -> _Evidence:
-    handles = [key for key in request_keys if is_symbol_handle(key)]
-    stable_ids = [key for key in request_keys if not is_symbol_handle(key)]
+    continuation_keys: list[str] = []
+    for key in request_keys:
+        if looks_like_continuation(key) and key not in continuation_keys:
+            continuation_keys.append(key)
+    plain_keys = [key for key in request_keys if not looks_like_continuation(key)]
+    handles = [key for key in plain_keys if is_symbol_handle(key)]
+    stable_ids = [key for key in plain_keys if not is_symbol_handle(key)]
     by_handle = reads.get_symbols_by_handles(handles) if handles else {}
     by_id = reads.get_symbols_by_ids(stable_ids) if stable_ids else {}
     resolved: dict[str, Symbol] = {}
     missing: list[str] = []
-    for key in request_keys:
+    for key in plain_keys:
         symbol = by_handle.get(key) if is_symbol_handle(key) else by_id.get(key)
         if symbol is None:
             if key not in missing:
@@ -341,6 +404,65 @@ def _build_selected(
         )
         selected.append(item)
 
+    parsed_by_key = {key: parse_continuation(key) for key in continuation_keys}
+    continuation_handles = sorted(
+        {parsed.handle for parsed in parsed_by_key.values() if parsed is not None}
+    )
+    continuation_symbols = (
+        reads.get_symbols_by_handles(continuation_handles) if continuation_handles else {}
+    )
+    hash_paths = {item.symbol.file_path for item in selected}
+    hash_paths.update(symbol.file_path for symbol in continuation_symbols.values())
+    content_hashes = reads.content_hashes_by_path(sorted(hash_paths)) if hash_paths else {}
+    for item in selected:
+        item.content_hash = content_hashes.get(item.symbol.file_path, "")
+
+    continuations: list[_Continuation] = []
+    rejected: list[tuple[str, str]] = []
+    for key in continuation_keys:
+        parsed = parsed_by_key[key]
+        if parsed is None:
+            rejected.append((key, "invalid"))
+            continue
+        symbol = continuation_symbols.get(parsed.handle)
+        if symbol is None:
+            rejected.append((key, "unknown-symbol"))
+            continue
+        content_hash = content_hashes.get(symbol.file_path, "")
+        if parsed.fingerprint != source_fingerprint(symbol, parsed.start_line, content_hash):
+            rejected.append((key, "stale"))
+            continue
+        # The head slice always starts at the definition, so a valid continuation
+        # begins strictly after it and inside the stored span.
+        if not symbol.start_line < parsed.start_line <= symbol.end_line:
+            rejected.append((key, "out-of-range"))
+            continue
+        verified = read_verified_source_window(
+            workspace_root,
+            symbol,
+            start_line=parsed.start_line,
+            max_lines=MAX_SOURCE_LINES,
+            content_hash=content_hash,
+        )
+        if verified.stale:
+            # The file changed on disk after indexing: serving this window would
+            # splice a newer file version onto a head slice from the older one.
+            rejected.append((key, "stale"))
+            continue
+        if verified.slice is None:
+            rejected.append((key, "source-unavailable"))
+            continue
+        continuations.append(
+            _Continuation(
+                token=key,
+                symbol=symbol,
+                handle=parsed.handle,
+                start_line=parsed.start_line,
+                src=verified.slice,
+                content_hash=content_hash,
+            )
+        )
+
     evidence_languages = {item.symbol.language for item in selected}
     evidence_languages.update(site_languages.values())
     ordered = sorted(evidence_languages)
@@ -360,6 +482,8 @@ def _build_selected(
         languages=ordered[:MAX_EXTRACTION_LANGUAGES],
         evidence_languages=frozenset(evidence_languages),
         languages_omitted=max(0, len(ordered) - MAX_EXTRACTION_LANGUAGES),
+        continuations=continuations,
+        rejected_continuations=rejected,
     )
 
 
@@ -385,6 +509,9 @@ def inspect_symbols(
         evidence = _build_selected(reads, request.symbols, workspace_root)
     selected = evidence.selected
     missing = evidence.missing
+    continuations = evidence.continuations
+    rejected_continuations = evidence.rejected_continuations
+    continuation_requested = len(continuations) + len(rejected_continuations)
 
     def _symbol_entry(item: _Selected, files: FileTable) -> dict[str, object]:
         symbol = item.symbol
@@ -420,6 +547,10 @@ def inspect_symbols(
             }
             if _src_shortened(item):
                 src["shortened"] = True
+            if src["truncated"]:
+                token = _next_token(item.handle, symbol, end_line, item.content_hash)
+                if token is not None:
+                    src["next"] = token
             entry["src"] = src
         elif item.src_missing:
             entry["src_unavailable"] = True
@@ -454,8 +585,17 @@ def inspect_symbols(
         active = [item for item in selected if not item.dropped]
         symbol_entries = [_symbol_entry(item, files) for item in active]
         payload: dict[str, object] = {"files": files.paths(), "symbols": symbol_entries}
+        active_continuations = [item for item in continuations if not item.dropped]
+        if active_continuations:
+            payload["continuations"] = [
+                _continuation_entry(item, files) for item in active_continuations
+            ]
         if missing:
             payload["missing"] = list(missing)
+        if rejected_continuations:
+            payload["continuation_rejected"] = [
+                {"token": token, "reason": reason} for token, reason in rejected_continuations
+            ]
         relations_returned = sum(_kept_site_count(item) for item in active)
         relations_total = sum(item.in_total + item.out_total for item in selected)
         hypotheses_total = sum(item.hypotheses_total for item in active)
@@ -474,6 +614,11 @@ def inspect_symbols(
         if hypotheses_total:
             coverage["hypotheses_total"] = hypotheses_total
             coverage["hypotheses_omitted"] = max(0, hypotheses_total - hypotheses_returned)
+        if continuation_requested:
+            coverage["continuation_requested"] = continuation_requested
+            continuation_omitted = sum(1 for item in continuations if item.dropped)
+            if continuation_omitted:
+                coverage["continuation_omitted"] = continuation_omitted
         for key, handles in (
             ("source_truncated", [i.handle for i in active if _src_truncated(i)]),
             ("source_shortened", [i.handle for i in active if _src_shortened(i)]),
@@ -505,10 +650,17 @@ def inspect_symbols(
             }
             for item in selected
         ]
+        minimal_coverage: dict[str, object] = {
+            "scope": "selected-symbol-one-hop",
+            "requested": len(request.symbols),
+        }
+        if continuation_requested:
+            minimal_coverage["continuation_requested"] = continuation_requested
+            minimal_coverage["continuation_omitted"] = len(continuations)
         payload: dict[str, object] = {
             "files": files.paths(),
             "symbols": entries,
-            "coverage": {"scope": "selected-symbol-one-hop", "requested": len(request.symbols)},
+            "coverage": minimal_coverage,
             "payload_complete": False,
             "budget": meta,
         }
@@ -516,7 +668,7 @@ def inspect_symbols(
             payload["missing"] = list(missing)
         return payload
 
-    steps = _drop_steps(selected)
+    steps = _drop_steps(selected, continuations)
     return enforce_budget(assemble, steps, minimal, token_budget=token_budget, shrink_key="symbols")
 
 
@@ -583,7 +735,21 @@ def _drop_symbol(item: _Selected) -> bool:
     return True
 
 
-def _drop_steps(selected: list[_Selected]) -> list[DropStep]:
+def _halve_continuation(item: _Continuation) -> bool:
+    if item.dropped or item.src_max <= 10:
+        return False
+    item.src_max //= 2
+    return True
+
+
+def _drop_continuation(item: _Continuation) -> bool:
+    if item.dropped:
+        return False
+    item.dropped = True
+    return True
+
+
+def _drop_steps(selected: list[_Selected], continuations: list[_Continuation]) -> list[DropStep]:
     """Deterministic degradation order; earlier-requested symbols degrade last.
 
     Selected-symbol source outranks redundant relation groups: hypotheses and excess
@@ -591,9 +757,15 @@ def _drop_steps(selected: list[_Selected]) -> list[DropStep]:
     to `REDUCED_GROUPS` and further to the `FLOOR_CALL_GROUPS` navigation set before any
     selected source is removed. Whole-source drops stay last so a pathological request
     near the symbol maximum still degrades honestly instead of exceeding the cap.
+
+    Continuation windows are the explicit ask of their request, so they halve only
+    after every full symbol's source has halved, and a whole continuation drops only
+    after whole sources — the agent still holds the token and loses no position,
+    while a dropped source has no recovery path inside the surface.
     """
     steps: list[DropStep] = []
     reverse = list(reversed(selected))
+    reverse_continuations = list(reversed(continuations))
 
     def _step(category: str, item: _Selected, apply: Callable[[_Selected], bool]) -> DropStep:
         return DropStep(category, partial(apply, item))
@@ -612,6 +784,9 @@ def _drop_steps(selected: list[_Selected]) -> list[DropStep]:
     for item in reverse:
         steps.append(_step("source", item, _halve_source))
         steps.append(_step("source", item, _halve_source))
+    for cont in reverse_continuations:
+        steps.append(DropStep("continuation", partial(_halve_continuation, cont)))
+        steps.append(DropStep("continuation", partial(_halve_continuation, cont)))
     for item in reverse:
         for _ in range(max(0, len(item.callees) - REDUCED_GROUPS)):
             steps.append(
@@ -634,6 +809,8 @@ def _drop_steps(selected: list[_Selected]) -> list[DropStep]:
             )
     for item in reverse:
         steps.append(_step("source", item, _drop_source))
+    for cont in reverse_continuations:
+        steps.append(DropStep("continuation", partial(_drop_continuation, cont)))
     for item in reverse[:-1]:
         steps.append(_step("symbol", item, _drop_symbol))
     return steps

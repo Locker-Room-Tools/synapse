@@ -6,6 +6,9 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from synapse.core.config import active_ignore_matcher
+
+# Canonical definition lives beside the verified window reads it must agree with.
+from synapse.core.index.source import hash_source as hash_source
 from synapse.core.languages import detect_language
 
 
@@ -36,8 +39,3 @@ def hash_file(path: Path) -> str:
         while chunk := file_handle.read(8192):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def hash_source(source_bytes: bytes) -> str:
-    """Return the content hash for source bytes already loaded for parsing."""
-    return hashlib.sha256(source_bytes).hexdigest()

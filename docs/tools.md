@@ -119,6 +119,34 @@ One batch inspection of the selected symbols under one read snapshot.
   references whose target is unresolved keep their target name and stored
   resolution instead of a handle.
 
+#### Source continuation
+
+When a returned `src` is incomplete (`truncated: true`), it carries `next`: a
+deterministic continuation token
+(`c_<handle digest>@<start_line>:<16-hex fingerprint>`) naming the first
+unreturned line. Passing that token as a `symbols` entry in a follow-up call
+returns the next bounded window under `continuations` — never repeating
+already-returned lines — as `{h, f, lines, more, text, next?}`; `more` says
+whether stored body remains and `next` is the only valid follow-up position.
+Windows are clipped to the symbol's stored span and capped at 40 lines (halved
+under payload pressure like ordinary source; a window dropped by the budget is
+counted in `coverage.continuation_omitted` and the agent still holds the token).
+
+Tokens are validated, never trusted. The 64-bit fingerprint binds each token to
+the symbol's stored span, the **exact window start line**, and the file's stored
+content hash — editing any component, including only the line, invalidates it,
+so the only acceptable positions are the ones the server issued. Before a window
+is served, the on-disk bytes are re-hashed against the stored content hash under
+a single read, so a file edited after indexing is rejected as `stale` rather
+than splicing a newer file version onto an older head slice. It is an integrity
+check against drift, not authentication: no secrets, no persisted token state.
+Rejections are explicit in `continuation_rejected` with reasons
+`invalid | unknown-symbol | stale | out-of-range | source-unavailable`; a
+rejected token never appears in `missing`. `coverage.continuation_requested`
+counts the tokens in the request. Ordinary inspections without tokens are
+byte-identical to the previous contract except for the `next` field on
+already-incomplete sources.
+
 #### Call semantics
 
 `callers` and `callees` contain **call-proven sites only**. A call is never inferred

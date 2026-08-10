@@ -34,7 +34,14 @@ from synapse.core.index.repo_map import (
     refresh_repo_map,
 )
 from synapse.core.index.schema import SCHEMA, SCHEMA_VERSION
-from synapse.core.index.source import SourceSlice, read_symbol_source
+from synapse.core.index.source import (
+    SourceSlice,
+    VerifiedWindow,
+    hash_source,
+    read_source_window,
+    read_symbol_source,
+    read_verified_source_window,
+)
 from synapse.core.index.symbol_index import SymbolIndex
 from synapse.core.workspace import DEFAULT_DB_NAME
 
@@ -57,11 +64,15 @@ __all__ = [
     "RepoMap",
     "SourceSlice",
     "SymbolIndex",
+    "VerifiedWindow",
     "compute_repo_map",
     "handle_completeness_reason",
+    "hash_source",
     "repair_symbol_handles",
     "is_symbol_handle",
+    "read_source_window",
     "read_symbol_source",
+    "read_verified_source_window",
     "symbol_handle",
     "import_matches_file",
     "import_segments",
