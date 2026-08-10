@@ -33,9 +33,10 @@ from synapse.core.models import (
     SymbolKind,
 )
 
-# Bump whenever Python-side reference-extraction or resolution semantics change;
-# feeds the index-content fingerprint that invalidates stale relation rows.
-REFERENCE_EXTRACTOR_VERSION = 6
+# Bump whenever shared reference-extraction or resolution semantics change for any
+# language (query capture labels, usage-kind mapping, or call classification); feeds
+# the index-content fingerprint that invalidates stale relation rows.
+REFERENCE_EXTRACTOR_VERSION = 7
 
 
 @dataclass(slots=True)

@@ -221,6 +221,98 @@ def test_python_reference_spans_are_unchanged_by_labelling(tmp_path: Path) -> No
     assert all(reference.usage_kind is not None for reference in references)
 
 
+# TypeScript, TSX, and JavaScript share one relabelled query pair: the same three
+# call captures, so one sample table covers all three language ids.
+TS_JS_USAGE_KIND_SAMPLES: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "invocation",
+        "function caller() { return helper(); }\n",
+        "helper",
+        "caller",
+    ),
+    (
+        "invocation",
+        "function caller(repo) { return repo.save(1); }\n",
+        "save",
+        "repo",
+    ),
+    (
+        "object-creation",
+        "function caller() { return new Gadget(); }\n",
+        "Gadget",
+        "caller",
+    ),
+)
+
+TS_JS_LANGUAGES: tuple[tuple[str, str], ...] = (
+    ("typescript", ".ts"),
+    ("tsx", ".tsx"),
+    ("javascript", ".js"),
+)
+
+
+@pytest.mark.parametrize(("language", "extension"), TS_JS_LANGUAGES)
+@pytest.mark.parametrize(
+    ("usage_kind", "source", "expected", "not_expected"),
+    TS_JS_USAGE_KIND_SAMPLES,
+    ids=[f"{sample[0]}-{sample[2]}" for sample in TS_JS_USAGE_KIND_SAMPLES],
+)
+def test_every_advertised_ts_js_usage_kind_has_a_positive_and_negative_case(
+    tmp_path: Path,
+    language: str,
+    extension: str,
+    usage_kind: str,
+    source: str,
+    expected: str,
+    not_expected: str,
+) -> None:
+    """Each advertised usage kind captures its target and nothing adjacent to it."""
+    file_path = tmp_path / f"{usage_kind.replace('-', '_')}_{expected}{extension}"
+    file_path.write_text(source, encoding="utf-8")
+
+    symbols = parse_file(file_path, language, workspace_root=tmp_path)
+    references = extract_references(file_path, language, symbols, workspace_root=tmp_path)
+    by_name = {reference.name: reference for reference in references}
+
+    assert expected in by_name
+    assert by_name[expected].usage_kind == usage_kind
+    assert not_expected not in by_name
+
+
+@pytest.mark.parametrize("language", [pair[0] for pair in TS_JS_LANGUAGES])
+def test_advertised_and_produced_ts_js_usage_kinds_agree(language: str) -> None:
+    """The shared sample table covers exactly the usage kinds each language advertises."""
+    covered = {sample[0] for sample in TS_JS_USAGE_KIND_SAMPLES}
+    assert covered == set(get_reference_usage_kinds(language))
+
+
+def test_typescript_reference_spans_are_unchanged_by_labelling(tmp_path: Path) -> None:
+    """Labelling the existing captures must not change which usages are extracted.
+
+    The three TypeScript/JavaScript patterns were relabelled, not rewritten, so recall
+    is unaffected; only `usage_kind` moved from None to a real id.
+    """
+    source = (
+        "function build(repo) {\n"
+        "    const w = new Gadget();\n"
+        "    helper();\n"
+        "    return repo.save(w);\n"
+        "}\n"
+    )
+    file_path = tmp_path / "spans.ts"
+    file_path.write_text(source, encoding="utf-8")
+
+    symbols = parse_file(file_path, "typescript", workspace_root=tmp_path)
+    references = extract_references(file_path, "typescript", symbols, workspace_root=tmp_path)
+
+    assert {(reference.name, reference.start_line) for reference in references} == {
+        ("Gadget", 2),
+        ("helper", 3),
+        ("save", 4),
+    }
+    assert all(reference.usage_kind is not None for reference in references)
+
+
 def test_call_proven_usage_kinds_are_a_subset_of_advertised_kinds() -> None:
     """A language can only prove a call with a kind its query actually captures."""
     for language in LANGUAGES:
@@ -238,8 +330,18 @@ def test_call_proven_usage_kinds_are_a_subset_of_advertised_kinds() -> None:
         ("csharp", "member-access", False),
         ("csharp", "nameof", False),
         ("csharp", "declared-type", False),
+        ("typescript", "invocation", True),
+        ("typescript", "object-creation", True),
+        ("tsx", "invocation", True),
+        ("tsx", "object-creation", True),
+        ("javascript", "invocation", True),
+        ("javascript", "object-creation", True),
+        # TS/JS advertise no neutral kinds, so anything else proves nothing.
+        ("typescript", "member-access", False),
+        ("javascript", "member-access", False),
         # No language proves a call from an unlabelled site or an unknown language.
         ("python", None, False),
+        ("typescript", None, False),
         (None, "invocation", False),
         ("go", "invocation", False),
     ],

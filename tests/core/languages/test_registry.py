@@ -263,6 +263,21 @@ def test_reference_extraction_metadata_accessors() -> None:
     assert python_syntax.receiver_field == "object"
     assert python_syntax.self_receivers == ("self", "cls")
 
+    # TypeScript, TSX, and JavaScript share one relabelled call-only query, so all
+    # three advertise the same call-proven kinds and the same honest gaps.
+    for language in ("javascript", "typescript", "tsx"):
+        assert reference_extraction(language) is ReferenceExtraction.PARTIAL
+        assert reference_usage_kinds(language) == ("invocation", "object-creation")
+        assert reference_limitations(language) == (
+            "dynamic-dispatch",
+            "member-call-receiver-types",
+            "import-alias-relations",
+            "local-variables",
+            "configuration-strings",
+            "non-call-references",
+        )
+        assert reference_syntax(language) is None
+
     # Languages without explicit metadata stay partial with no advertised kinds.
     assert reference_extraction("ruby") is ReferenceExtraction.PARTIAL
     assert reference_usage_kinds("ruby") == ()
@@ -293,3 +308,15 @@ def test_csharp_reference_syntax_names_only_installed_grammar_nodes() -> None:
     query = load_query("csharp", "references")
     for usage_kind in reference_usage_kinds("csharp"):
         assert f"@reference.{usage_kind.replace('-', '_')}" in query
+
+
+def test_ts_js_advertised_usage_kinds_are_backed_by_query_captures() -> None:
+    """Every advertised TS/JS usage kind is a labelled capture in the packaged query.
+
+    `tsx` resolves through the TypeScript query directory, so asserting it here
+    proves the sharing rather than assuming it.
+    """
+    for language in ("javascript", "typescript", "tsx"):
+        query = load_query(language, "references")
+        for usage_kind in reference_usage_kinds(language):
+            assert f"@reference.{usage_kind.replace('-', '_')}" in query, language

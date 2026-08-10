@@ -269,3 +269,95 @@ def test_stored_resolution_and_confidence_survive_the_call_split(
     for site in sites:
         assert site["res"] in {"exact", "scoped", "unique-name", "ambiguous", "unresolved"}
         assert site["conf"] in {"high", "medium", "low"}
+
+
+def _ts_js_files(extension: str) -> dict[str, str]:
+    return {
+        f"app/worker{extension}": "export class Worker {\n    run() { return 1; }\n}\n",
+        f"app/stream{extension}": "export async function* streamItems() { yield 1; }\n",
+        f"app/build{extension}": (
+            "function build() {\n"
+            "    const w = new Worker();\n"
+            "    streamItems();\n"
+            "    return w;\n"
+            "}\n"
+        ),
+        f"app/registry{extension}": "export class Registry {\n    run() { return 2; }\n}\n",
+        f"app/dispatch{extension}": "function dispatch(x) {\n    return x.run();\n}\n",
+    }
+
+
+TS_JS = (("typescript", ".ts"), ("javascript", ".js"))
+
+
+@pytest.mark.parametrize(("language", "extension"), TS_JS)
+def test_ts_js_direct_generator_call_is_a_call(
+    tmp_path: Path,
+    language: str,
+    extension: str,
+) -> None:
+    """A direct call to an indexed generator carries usage_kind=invocation."""
+    workspace, index = _indexed(tmp_path, _ts_js_files(extension))
+    entry = _inspect(workspace, index, "streamItems")
+
+    assert "build" in _names(entry, "callers")
+    assert _uses(entry, "callers") == {"invocation"}
+
+
+@pytest.mark.parametrize(("language", "extension"), TS_JS)
+def test_ts_js_object_creation_is_a_call(
+    tmp_path: Path,
+    language: str,
+    extension: str,
+) -> None:
+    """`new Worker()` transfers control into the constructor."""
+    workspace, index = _indexed(tmp_path, _ts_js_files(extension))
+    entry = _inspect(workspace, index, "Worker")
+
+    assert "object-creation" in _uses(entry, "callers")
+
+
+@pytest.mark.parametrize(("language", "extension"), TS_JS)
+def test_ts_js_unique_name_call_is_not_promoted(
+    tmp_path: Path,
+    language: str,
+    extension: str,
+) -> None:
+    """Without a structural resolver, name-only evidence stays `unique-name`."""
+    workspace, index = _indexed(tmp_path, _ts_js_files(extension))
+    entry = _inspect(workspace, index, "streamItems")
+
+    sites = [site for group in entry["callers"] for site in group["sites"]]
+    assert sites
+    for site in sites:
+        assert site["res"] == "unique-name"
+
+
+@pytest.mark.parametrize(("language", "extension"), TS_JS)
+def test_ts_js_untyped_member_call_never_fabricates_an_exact_edge(
+    tmp_path: Path,
+    language: str,
+    extension: str,
+) -> None:
+    """`x.run()` with two same-named methods must stay ambiguous or unresolved.
+
+    The invariant is placement-independent: wherever the dynamic-dispatch site
+    surfaces (a caller group of either candidate or a hypothesis), it may never be
+    stored as `exact` or `scoped`, because the receiver type was never proven.
+    """
+    workspace, index = _indexed(tmp_path, _ts_js_files(extension))
+    with index.read_session() as reads:
+        candidates = [s for s in reads.get_definition("run") if s.name == "run"]
+    assert len(candidates) == 2, "both same-named methods must be indexed"
+
+    for candidate in candidates:
+        result = inspect_symbols(
+            index,
+            InspectRequest(symbols=(symbol_handle(candidate.id),), token_budget=4000),
+            workspace_root=workspace,
+        )
+        entry = json.loads(result)["symbols"][0]
+        for key in ("callers", "refs_in"):
+            for group in entry.get(key) or []:
+                for site in group["sites"]:
+                    assert site["res"] not in {"exact", "scoped"}, (key, group.get("n"))

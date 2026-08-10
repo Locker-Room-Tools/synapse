@@ -441,6 +441,18 @@ LANGUAGES: dict[str, LanguageSpec] = {
         tree_sitter_name="javascript",
         extensions=(".js", ".jsx", ".mjs", ".cjs"),
         query_dir="javascript",
+        # The query captures only call syntax, so both advertised kinds prove a call;
+        # every other reference stays an advertised limitation, not a neutral kind.
+        reference_usage_kinds=("invocation", "object-creation"),
+        call_usage_kinds=("invocation", "object-creation"),
+        reference_limitations=(
+            "dynamic-dispatch",
+            "member-call-receiver-types",
+            "import-alias-relations",
+            "local-variables",
+            "configuration-strings",
+            "non-call-references",
+        ),
     ),
     "julia": LanguageSpec(
         id="julia",
@@ -622,6 +634,18 @@ LANGUAGES: dict[str, LanguageSpec] = {
         tree_sitter_name="typescript",
         extensions=(".ts", ".mts", ".cts"),
         query_dir="typescript",
+        # The query captures only call syntax, so both advertised kinds prove a call;
+        # every other reference stays an advertised limitation, not a neutral kind.
+        reference_usage_kinds=("invocation", "object-creation"),
+        call_usage_kinds=("invocation", "object-creation"),
+        reference_limitations=(
+            "dynamic-dispatch",
+            "member-call-receiver-types",
+            "import-alias-relations",
+            "local-variables",
+            "configuration-strings",
+            "non-call-references",
+        ),
     ),
     "verilog": LanguageSpec(
         id="verilog",
@@ -648,6 +672,17 @@ LANGUAGES: dict[str, LanguageSpec] = {
         tree_sitter_name="tsx",
         extensions=(".tsx",),
         query_dir="typescript",
+        # TSX shares the TypeScript queries, so it advertises the same coverage.
+        reference_usage_kinds=("invocation", "object-creation"),
+        call_usage_kinds=("invocation", "object-creation"),
+        reference_limitations=(
+            "dynamic-dispatch",
+            "member-call-receiver-types",
+            "import-alias-relations",
+            "local-variables",
+            "configuration-strings",
+            "non-call-references",
+        ),
     ),
     "vue": LanguageSpec(
         id="vue",

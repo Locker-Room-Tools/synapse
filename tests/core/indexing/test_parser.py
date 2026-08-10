@@ -1250,6 +1250,30 @@ def test_parse_file_extracts_tsx_symbols(tmp_path: Path) -> None:
     assert all(symbol.id.startswith("tsx:") for symbol in symbols)
 
 
+def test_parse_file_extracts_generator_declarations(tmp_path: Path) -> None:
+    """Named generators index as functions in TypeScript, TSX, and JavaScript.
+
+    Sync and async generators share one grammar node, and export wrapping changes
+    neither the indexed name, the kind, the language id, nor the source range.
+    """
+    source = "export async function* streamItems() { yield 1; }\nfunction* pageIds() { yield 2; }\n"
+    for language, file_name in (
+        ("typescript", "gen.ts"),
+        ("tsx", "gen.tsx"),
+        ("javascript", "gen.js"),
+    ):
+        file_path = tmp_path / file_name
+        file_path.write_text(source, encoding="utf-8")
+
+        symbols = parse_file(file_path, language, workspace_root=tmp_path)
+        by_name = {symbol.name: symbol for symbol in symbols}
+
+        assert by_name["streamItems"].kind == "function", language
+        assert by_name["pageIds"].kind == "function", language
+        assert by_name["streamItems"].id == f"{language}:{file_name}:function:streamItems:1"
+        assert by_name["pageIds"].id == f"{language}:{file_name}:function:pageIds:2"
+
+
 def test_build_relations_emits_contains_and_imports(tmp_path: Path) -> None:
     """Relations mirror container links (CONTAINS) and imports (IMPORTS)."""
     file_path = tmp_path / "sample.py"
