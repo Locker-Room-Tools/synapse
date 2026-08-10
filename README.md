@@ -58,21 +58,38 @@ parameter and response reference is in [docs/tools.md](docs/tools.md).
 
 ## Configuration
 
-Synapse reads configuration from three layers, unioned together:
+Ignore rules come from three layers, applied in order — **the last matching rule wins**, so a
+later layer can re-include what an earlier one ignored:
 
 | Layer | Location | Written by |
 | --- | --- | --- |
-| built-in defaults | packaged with Synapse | not editable |
-| global user config | `~/.config/synapse/config.json` | `synapse config ignored-dirs ... --scope global` |
-| project config | `<workspace>/.synapse/config.json` | agents over MCP, or `synapse config ignored-dirs ...` |
+| built-in defaults | packaged with Synapse | negate a rule to turn it off |
+| global | `~/.config/synapse/ignore` | `synapse ignore add ... --scope global` |
+| project | `<workspace>/.synapseignore` | `synapse ignore ...`, or agents over MCP |
 
-`ignored_directories` accepts a bare name matched at any depth (`node_modules`), a
-root-anchored name (`/build`), or a workspace-relative path (`src/generated`). Globs,
-absolute paths, and `..` segments are rejected.
+`.synapseignore` uses **gitignore syntax** — bare names (`node_modules`), directory-only rules
+(`build/`), root anchoring (`/dist`), globs (`*.min.js`, `docs/**`), `#` comments, and `!`
+negation. Absolute paths and `..` segments are rejected. `.git` is always ignored.
 
-Agents configure Synapse through `synapse_get_config`, `synapse_add_ignored_directories`, and
-`synapse_remove_ignored_directories`, which always write the project layer. `.synapse/config.json`
-is **meant to be committed** so the whole team indexes the same tree.
+```bash
+synapse ignore init --node --dotnet
+```
+
+`init` seeds the file from ecosystem templates; run `synapse ignore presets` to see all 14 and
+which ones your workspace matches. With no flags it detects them from marker files. Synapse also
+creates the file automatically the first time it initializes a recognizable workspace — it never
+touches an existing one, and you can opt out with `SYNAPSE_NO_IGNORE_BOOTSTRAP=1` or
+`"auto_ignore_bootstrap": false` in `.synapse/config.json`.
+
+`.synapseignore` is a plain, flat file with no managed sections. It is **meant to be committed**
+so the whole team indexes the same tree; Synapse only ever appends to it or removes an exact line.
+
+`synapse ignore list` prints every effective rule in order with its layer, file, and line.
+Removing a rule that comes from a lower layer appends a negation rather than failing.
+
+Earlier versions kept an `ignored_directories` list in `config.json`. That still works, but an
+ignore file supersedes it, and the first write migrates the entries across; `synapse ignore
+migrate` does it explicitly. `watch.*` settings stay in `config.json` and are unaffected.
 
 A change needs no reindex: the next watch sweep purges newly-ignored files and picks up
 restored ones.

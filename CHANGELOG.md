@@ -14,6 +14,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   supplies structural evidence; the agent supplies interpretation and synthesis.
 
 ### Added
+- `.synapseignore`: a portable, committed, plain-text ignore file at the workspace root using
+  **gitignore syntax** — globs (`*.min.js`, `docs/**`), directory-only rules (`build/`), root
+  anchoring (`/dist`), `#` comments, and `!` negation. Patterns are compiled with `pathspec`
+  but the ordered rule list is Synapse's own, so every rule reports its layer, file, and line.
+  The global layer gains the same treatment at `~/.config/synapse/ignore`.
+- Ignore rules are now **ordered, last-match-wins** instead of a union, so a later layer can
+  re-include what an earlier one ignored (`!node_modules/` turns off a built-in). `.git` is
+  pinned and cannot be re-included. Paths are decided component by component from the root
+  down, exactly as git decides them, which keeps `os.walk` pruning correct under negation and
+  makes a negation beneath an ignored directory inert — the same behavior git has.
+- File-level ignoring. The crawler previously pruned directories only; `*.min.js` and
+  `*.generated.cs` now work, and the watch layer checks the full relative path rather than
+  just the directories leading to a file.
+- `synapse ignore init|add|remove|list|migrate|presets` with 14 ecosystem templates (node,
+  dotnet, java, python, go, rust, swift, android, php, ruby, unity, ml, terraform, editors).
+  `init` detects ecosystems from marker files at the root or one level down.
+- First-run bootstrap: `ensure_workspace` creates `.synapseignore` from the detected
+  ecosystems before the first crawl, reported in `EnsureWorkspaceResult.ignore_bootstrap`. It
+  never touches an existing file, writes nothing when nothing is detected, and degrades to a
+  warning on any filesystem error. Opt out with `SYNAPSE_NO_IGNORE_BOOTSTRAP=1` or
+  `"auto_ignore_bootstrap": false`.
+- `pathspec` is now a runtime dependency. It is used only to compile patterns to regexes — no
+  filesystem access — so the local-first guarantee is unchanged.
 - `synapse_orient`: ranked, production-first orientation over up to 12 agent-chosen
   literal repository terms (exact-name, prefix/substring at snake and camel word starts,
   literal path, trusted centrality, entrypoint, and repository-map signals, with a simple
@@ -78,6 +101,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Pods`.
 
 ### Changed
+- **Breaking:** an ignore file supersedes that layer's `ignored_directories` in `config.json`.
+  The superseded entries are warned about and reported as `shadowed_project_json`, never
+  silently dropped, and the first write migrates them across. `synapse ignore migrate` does it
+  explicitly. `watch.*` settings are unaffected.
+- **Breaking:** `synapse_get_config`'s `options.ignored_directories` — including its
+  `effective` list of `{value, sources}` — is replaced by `options.ignore_rules`, an ordered
+  list bounded by `rules_total`/`rules_complete`, plus `skipped_lines` and
+  `shadowed_project_json`. Under negation there is no flat set of ignored paths, and emitting
+  one would be a false completeness claim. The `IgnoredDirectoryEntry` dataclass is removed.
+- **Breaking:** removing a built-in or globally-inherited ignore no longer raises. Both
+  `synapse_remove_ignored_directories` and the CLI now append a negation and report it in
+  `negated`; a command that used to exit 2 exits 0.
+- **Breaking:** file-level rules can remove already-indexed files on the next sweep. That is
+  correct — those files match an ignore rule — but it will look like data loss if unexpected.
+- `synapse config ignored-dirs list|add|remove` is deprecated. It still works and prints a
+  notice pointing at `synapse ignore`; the tool names `synapse_add_ignored_directories` and
+  `synapse_remove_ignored_directories` are deliberately unchanged so installed agent
+  instructions keep working.
 - **Breaking:** `callers` and `callees` now contain call-proven sites only. A call is
   never inferred from either endpoint's declaration kind, so a C# `declared-type`
   reference no longer makes a method a caller of the type it declares. Everything else is

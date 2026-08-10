@@ -66,10 +66,11 @@ package's internal decomposition, not separate import targets.
   inside the write transaction after every full and incremental index run; a
   version bump invalidates stored maps without forcing a workspace reindex, and
   readers derive a missing map live on their snapshot without writing.
-- **`core.config`**: `settings` resolves configuration across three layers — packaged defaults, the
-  global user config, and a workspace-local `.synapse/config.json` — and owns atomic writes.
-  `ignores` is the shared directory ignore matcher used by both the crawler and the watch layer,
-  so crawl and watch filter identically.
+- **`core.config`**: `settings` resolves ignore rules across three ordered layers — packaged
+  defaults, global, project — and owns atomic writes. `ignores` is the shared gitignore-style
+  matcher used by both the crawler and the watch layer, so crawl and watch filter identically.
+  `ignore_presets` holds the packaged ecosystem templates, marker-file detection, and the
+  first-run bootstrap.
 - **`core.navigation`**: the deterministic two-call navigation contract behind
   `synapse_orient` and `synapse_inspect`. Synapse supplies compact structural
   evidence; the agent supplies semantic interpretation, query expansion,
@@ -195,8 +196,10 @@ package's internal decomposition, not separate import targets.
 - **`cli`**: provides global `install`, workspace `init`/`status`, project-scoped `setup`,
   `serve`, grammar, watch, doctor, and uninstall commands. Global install is the canonical
   onboarding path; project setup remains an advanced compatibility path.
-- **`cli.config`**: `synapse config ignored-dirs list|add|remove`, scoped with
+- **`cli.ignore`**: `synapse ignore init|add|remove|list|migrate|presets`, scoped with
   `--scope project|global`; delegates every write to `core.config`.
+- **`cli.config`**: `synapse config ignored-dirs list|add|remove`, deprecated aliases that
+  delegate to `cli.ignore` so installed agent instructions keep working.
 - **`adapters`** (`src/synapse/adapters/`, packaged data): the shared instruction snippet
   templates. One project template renders per agent from an `{agent_id}` placeholder.
 - **`cli.adapters`**: the declarative agent seam. `model.py` defines the capability model,
@@ -231,20 +234,52 @@ package's internal decomposition, not separate import targets.
 
 ## Configuration layering
 
-Ignored directories resolve as a **union, not an override**: packaged defaults ∪ global user
-config (`~/.config/synapse/config.json`) ∪ project config (`<workspace>/.synapse/config.json`).
-A built-in entry therefore cannot be un-ignored by a lower layer, and every effective entry
-reports each layer that contributes it.
+Ignore rules are **ordered, and the last matching rule wins**. Rules concatenate in layer order:
+packaged defaults, then the global layer, then the project layer. A later layer can therefore
+re-include what an earlier one ignored — `!node_modules/` in a workspace genuinely turns off the
+built-in. `.git` is the single exception: it is pinned as a directory at any depth and no rule can
+negate it, because un-ignoring it costs unboundedly and buys nothing.
 
-Entries are gitignore-compatible: a bare name (`node_modules`) matches at any depth, while a
-leading or embedded slash anchors to the workspace root (`/build`, `src/generated`). Globs are
-not supported.
+Each writable layer reads from an ignore file, falling back to the legacy JSON list:
 
-Only `ignored_directories` is agent-writable, and only in the project layer. The `watch.*`
-tunables stay global and CLI-only. Because `core.config` is re-read on every crawl, an ignore
-change converges on the next sweep without a reindex or daemon restart.
+| Layer | Ignore file | Legacy fallback |
+| --- | --- | --- |
+| built-in | — | `core/default_ignored_directories.json` (packaged) |
+| global | `~/.config/synapse/ignore` | `ignored_directories` in `~/.config/synapse/config.json` |
+| project | `<workspace>/.synapseignore` | `ignored_directories` in `<workspace>/.synapse/config.json` |
 
-The project config is meant to be committed, so the whole team indexes the same tree.
+When an ignore file exists it **supersedes** that layer's `ignored_directories`, which is reported
+as `shadowed_project_json` and warned about rather than silently dropped. `watch.*` in the JSON is
+unaffected. Any write adopts the ignore file, migrating the legacy entries into it in the same
+write, so a layer never has two live sources. `synapse ignore migrate` does that explicitly.
+
+Ignore files use gitignore syntax, compiled by `pathspec` (`GitIgnoreSpecPattern`): a bare name
+matches at any depth, a trailing slash matches directories only (`build/`), a leading slash anchors
+to the workspace root (`/dist`), embedded slashes anchor implicitly (`src/generated/`), globs match
+file names (`*.min.js`, `test_?.py`, `[Bb]uild/`, `docs/**`), and a leading `!` re-includes. `#`
+starts a comment. A line that cannot be compiled is skipped with a warning and reported in
+`ignore_problems`; failing the whole file over one typo could silently un-ignore a build tree.
+
+Paths are decided **component by component from the root down**, exactly as git decides them: the
+first component that resolves to ignored wins and nothing beneath it can be re-included. That is
+what makes `os.walk` pruning equivalent to evaluating full paths, and it is why `!build/keep.py` is
+inert when `build/` is ignored — the same behavior git itself has.
+
+Legacy `ignored_directories` entries map to directory-only rules (`node_modules` → `node_modules/`,
+`/build` → `/build/`, `src/generated` → `/src/generated/`), so migrating never causes a file to
+become newly ignored.
+
+Because `core.config` is re-read on every crawl, an ignore change converges on the next sweep
+without a reindex or daemon restart.
+
+`.synapseignore` is meant to be committed, so the whole team indexes the same tree. On first-run
+initialization, `ensure_workspace` creates one from the ecosystems it detects (marker files at the
+root or one level down) before the first crawl. It never touches an existing file, writes nothing
+when no ecosystem is detected, degrades to a warning on any filesystem error, and reports what it
+wrote in `EnsureWorkspaceResult.ignore_bootstrap`. Opt out with `SYNAPSE_NO_IGNORE_BOOTSTRAP=1` or
+`"auto_ignore_bootstrap": false`. The file is flat — no managed marker block — because it is
+version-controlled, and git already provides the history and conflict handling a managed region
+would duplicate. Synapse only ever appends to it or deletes an exact line.
 
 ## Agent adoption layers
 

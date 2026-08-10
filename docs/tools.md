@@ -395,60 +395,81 @@ rebuild is rejected while a live watcher owns the workspace.
 
 ## Configuration
 
-Configuration resolves as a union of three layers: packaged defaults, the global user config
-(`~/.config/synapse/config.json`), and the project config (`<workspace>/.synapse/config.json`).
-The MCP tools write the **project** layer only, so an ignore added for one repository never
-leaks into another. The project config is meant to be committed.
+Ignore rules resolve as three **ordered** layers — packaged defaults, the global layer
+(`~/.config/synapse/ignore`), and the project layer (`<workspace>/.synapseignore`) — and the
+**last matching rule wins**. A later layer can re-include what an earlier one ignored. The MCP
+tools write the **project** layer only, so an ignore added for one repository never leaks into
+another. `.synapseignore` is meant to be committed.
 
-An ignored directory entry takes one of three forms:
+Patterns use gitignore syntax:
 
 | Form | Example | Matches |
 | --- | --- | --- |
-| bare name | `node_modules` | a directory of that name at any depth |
-| root-anchored name | `/build` | only the top-level `build/` |
-| workspace-relative path | `src/generated` | only `<workspace>/src/generated/` |
+| bare name | `node_modules` | that name at any depth, file or directory |
+| directory only | `build/` | directories named `build` at any depth, never a file |
+| root-anchored | `/dist` | only `<workspace>/dist` |
+| workspace-relative path | `src/generated/` | only `<workspace>/src/generated/` |
+| glob | `*.min.js`, `test_?.py`, `[Bb]uild/`, `docs/**` | matching names |
+| negation | `!src/vendor/keep.js` | re-includes what an earlier rule ignored |
 
-Absolute paths, `.`/`..` segments, and glob patterns are rejected. Matching is case-sensitive
-because entries are compared against real directory names.
+Absolute paths, `.`/`..` segments, and empty strings are rejected. Matching is case-sensitive
+because patterns are compared against real path names. `.git` is always ignored and cannot be
+re-included.
+
+A path is decided component by component from the root down, as git does it: the first
+component that resolves to ignored wins, so a negation beneath an ignored directory is inert
+(`!build/keep.py` does nothing when `build/` is ignored).
 
 Anchoring is relative to the resolved `workspace_path`. Passing a subdirectory as
-`workspace_path` therefore selects a different, separately-anchored project config; every
-payload echoes the resolved `workspace_path` so this stays visible.
+`workspace_path` therefore selects a different, separately-anchored ignore file; every payload
+echoes the resolved `workspace_path` so this stays visible.
+
+If a layer still has a legacy `ignored_directories` list in its `config.json`, an ignore file
+supersedes it; the superseded entries are reported in `shadowed_project_json`. The first write
+adopts the ignore file and migrates those entries into it, reported as `migrated_from_json`.
 
 ### `synapse_get_config`
 
-Effective configuration with per-entry provenance and write targets. Safe before
-initialization.
+Ordered ignore rules with per-rule provenance and write targets. Safe before initialization.
 
 - Parameters: `workspace_path="."`
 - Returns: `workspace_path`, `project_config_path`, `project_config_exists`,
-  `global_config_path`, `watch_poll_interval_s`, and an `options` map. Each option carries its
-  type, `accepted_forms`, `rejected` forms, `writes_to`, `layers`, `takes_effect`, and an
-  `effective` list of `{value, sources}` where `sources` is any of `built-in`, `global`,
-  `project`
+  `global_config_path`, `watch_poll_interval_s`, and an `options` map whose `ignore_rules`
+  carries `type`, `semantics`, `project_source`, `project_ignore_file`, `global_ignore_file`,
+  `accepted_forms`, `rejected`, `case_sensitive`, `always_ignored`, `writes_to`, `layers`,
+  `takes_effect`, `rules` (each `{pattern, scope, origin, line, negated, directory_only}` in
+  evaluation order), `rules_total`, `rules_complete`, `skipped_lines`,
+  `shadowed_project_json`, and `coverage`
+
+`rules` is bounded at 200 entries; `rules_total` and `rules_complete` make that explicit. This
+is the **rule list, not the set of ignored paths** — with negation, whether a path is ignored
+depends on rule order, so no flat effective set exists.
 
 ### `synapse_add_ignored_directories`
 
-Stop indexing directories by writing the project config.
+Stop indexing paths by appending gitignore patterns to `.synapseignore`.
 
-- Parameters: `directories` (list), `workspace_path="."`
-- Returns: `added`, `already_present`, `already_covered_by_builtin`, `normalized`,
-  `project_ignored_directories`, `effective_ignored_directories`, `takes_effect`
+- Parameters: `directories` (list of patterns), `workspace_path="."`
+- Returns: `scope`, `config_path`, `created`, `added`, `already_present`, `negated`,
+  `not_present`, `migrated_from_json`, `normalized`, `project_rules`, `takes_effect`,
+  `coverage`
 
-Built-in ignores are reported as already covered rather than duplicated. Any invalid entry
+Patterns append to the end, so a newly added rule beats the rules already there. The file is
+created (and any legacy entries migrated into it) when it does not exist. Any invalid entry
 rejects the whole call and writes nothing.
 
 ### `synapse_remove_ignored_directories`
 
-Resume indexing directories by removing them from the project config.
+Resume indexing paths by editing `.synapseignore`.
 
-- Parameters: `directories` (list), `workspace_path="."`
-- Returns: `removed`, `not_present`, `normalized`, `project_ignored_directories`,
-  `effective_ignored_directories`, `takes_effect`
+- Parameters: `directories` (list of patterns), `workspace_path="."`
+- Returns: the same fields as `synapse_add_ignored_directories`
 
-Built-in ignores and entries inherited from the global config cannot be removed here; both
-raise an error naming where the entry comes from and how to remove it. An entry that is not
-ignored anywhere is reported in `not_present` and is not an error.
+A pattern the project file owns is deleted and reported in `removed`. A pattern inherited from
+a built-in or the global layer cannot be deleted there, so a negation is appended instead and
+reported in `negated` — that is how a built-in gets turned off. `.git` is the exception and
+stays ignored. A pattern that is not ignored anywhere is reported in `not_present` and is not
+an error.
 
 ### Applying a change
 

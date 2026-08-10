@@ -18,7 +18,8 @@ This file is the contract for any human or AI agent contributing to THIS reposit
   Grouped into cohesive sub-packages, each with a re-export `__init__.py` that is the
   package's public surface — import from the package, not its private submodules:
   - `core/models` — normalized symbol model.
-  - `core/config` — layered config (`settings.py`) and the shared ignore matcher (`ignores.py`).
+  - `core/config` — ordered ignore layers (`settings.py`), the shared gitignore-style matcher
+    (`ignores.py`), and the ecosystem templates plus first-run bootstrap (`ignore_presets.py`).
   - `core/languages` — the language seam: `registry.py`, `grammars.py`, `grammar_install.py`,
     `queries.py` (`.scm` loading).
   - `core/index` — SQLite index: `symbol_index.py` entry object over `schema.py`,
