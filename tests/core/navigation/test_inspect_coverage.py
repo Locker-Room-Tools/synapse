@@ -550,3 +550,40 @@ def test_zero_incoming_calibration_respects_the_wire_budget(tmp_path: Path) -> N
 
     assert len(wire) <= 500 * 4
     assert json.loads(wire)["coverage"]["exhaustive"] is False
+
+
+def test_typescript_coverage_advertises_call_kinds_and_dynamic_dispatch(
+    tmp_path: Path,
+) -> None:
+    """TS extraction is partial, call-proven by two kinds, and names its gaps."""
+    workspace, index = _indexed(
+        tmp_path,
+        {
+            "app/target.ts": "export function target() { return 1; }\n",
+            "app/caller.ts": "function caller() { return target(); }\n",
+        },
+    )
+    payload = _inspect(index, workspace, (symbol_handle(_only_id(index, "target")),))
+    entry = _extraction(payload)["typescript"]
+
+    assert entry["completeness"] == "partial"
+    assert entry["call_kinds"] == ["invocation", "object-creation"]
+    assert entry["limitations"]
+    assert "dynamic-dispatch" in entry["limitations"]
+
+
+def test_zero_callers_in_typescript_stay_calibrated(tmp_path: Path) -> None:
+    """A zero-caller TS answer reads as "no call was proven", not "nothing calls this"."""
+    workspace, index = _indexed(
+        tmp_path,
+        {"app/lonely.ts": "export function lonely() { return 1; }\n"},
+    )
+    payload = _inspect(index, workspace, (symbol_handle(_only_id(index, "lonely")),))
+    entry = payload["symbols"][0]
+    extraction = _extraction(payload)["typescript"]
+
+    assert entry["in_total"] == 0
+    assert not entry.get("callers")
+    # The zero is read against the advertised call coverage, which stays visible.
+    assert extraction["call_kinds"] == ["invocation", "object-creation"]
+    assert "dynamic-dispatch" in extraction["limitations"]

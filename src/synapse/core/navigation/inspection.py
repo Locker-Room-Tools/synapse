@@ -39,6 +39,13 @@ MAX_CHILDREN = 12
 MAX_HYPOTHESES = 5
 REDUCED_GROUPS = 6
 REDUCED_CHILDREN = 5
+# Deep-pressure floors: selected-symbol source outranks redundant relation groups, so
+# callers/callees shrink to a compact navigation set — and neutral refs keep one group
+# per direction — before any selected source is removed. The retained groups follow the
+# existing best-evidence-first ordering, so a follow-up relation handle survives
+# whenever relation evidence exists, regardless of call classification.
+FLOOR_CALL_GROUPS = 2
+FLOOR_REF_GROUPS = 1
 # One C# extraction block costs ~330 bytes, so an unbounded union would let a polyglot
 # workspace spend the whole budget on coverage. Omissions are reported explicitly.
 MAX_EXTRACTION_LANGUAGES = 4
@@ -521,28 +528,28 @@ def _pop_hypothesis(item: _Selected) -> bool:
 
 
 def _pop_ref_out_group(item: _Selected) -> bool:
-    if item.refs_out:
+    if len(item.refs_out) > FLOOR_REF_GROUPS:
         item.refs_out.pop()
         return True
     return False
 
 
 def _pop_ref_in_group(item: _Selected) -> bool:
-    if item.refs_in:
+    if len(item.refs_in) > FLOOR_REF_GROUPS:
         item.refs_in.pop()
         return True
     return False
 
 
-def _pop_callee_group(item: _Selected) -> bool:
-    if len(item.callees) > REDUCED_GROUPS:
+def _pop_callee_group(item: _Selected, floor: int) -> bool:
+    if len(item.callees) > floor:
         item.callees.pop()
         return True
     return False
 
 
-def _pop_caller_group(item: _Selected) -> bool:
-    if len(item.callers) > REDUCED_GROUPS:
+def _pop_caller_group(item: _Selected, floor: int) -> bool:
+    if len(item.callers) > floor:
         item.callers.pop()
         return True
     return False
@@ -577,7 +584,14 @@ def _drop_symbol(item: _Selected) -> bool:
 
 
 def _drop_steps(selected: list[_Selected]) -> list[DropStep]:
-    """Deterministic degradation order; earlier-requested symbols degrade last."""
+    """Deterministic degradation order; earlier-requested symbols degrade last.
+
+    Selected-symbol source outranks redundant relation groups: hypotheses and excess
+    neutral references drop first, then source halves, then caller/callee groups shrink
+    to `REDUCED_GROUPS` and further to the `FLOOR_CALL_GROUPS` navigation set before any
+    selected source is removed. Whole-source drops stay last so a pathological request
+    near the symbol maximum still degrades honestly instead of exceeding the cap.
+    """
     steps: list[DropStep] = []
     reverse = list(reversed(selected))
 
@@ -588,10 +602,10 @@ def _drop_steps(selected: list[_Selected]) -> list[DropStep]:
         for _ in item.hypotheses:
             steps.append(_step("hypothesis", item, _pop_hypothesis))
     for item in reverse:
-        for _ in item.refs_out:
+        for _ in range(max(0, len(item.refs_out) - FLOOR_REF_GROUPS)):
             steps.append(_step("ref-group", item, _pop_ref_out_group))
     for item in reverse:
-        for _ in item.refs_in:
+        for _ in range(max(0, len(item.refs_in) - FLOOR_REF_GROUPS)):
             steps.append(_step("ref-group", item, _pop_ref_in_group))
     for item in reverse:
         steps.append(_step("children", item, _shrink_children))
@@ -600,10 +614,24 @@ def _drop_steps(selected: list[_Selected]) -> list[DropStep]:
         steps.append(_step("source", item, _halve_source))
     for item in reverse:
         for _ in range(max(0, len(item.callees) - REDUCED_GROUPS)):
-            steps.append(_step("callee-group", item, _pop_callee_group))
+            steps.append(
+                _step("callee-group", item, partial(_pop_callee_group, floor=REDUCED_GROUPS))
+            )
     for item in reverse:
         for _ in range(max(0, len(item.callers) - REDUCED_GROUPS)):
-            steps.append(_step("caller-group", item, _pop_caller_group))
+            steps.append(
+                _step("caller-group", item, partial(_pop_caller_group, floor=REDUCED_GROUPS))
+            )
+    for item in reverse:
+        for _ in range(max(0, min(len(item.callees), REDUCED_GROUPS) - FLOOR_CALL_GROUPS)):
+            steps.append(
+                _step("callee-group", item, partial(_pop_callee_group, floor=FLOOR_CALL_GROUPS))
+            )
+    for item in reverse:
+        for _ in range(max(0, min(len(item.callers), REDUCED_GROUPS) - FLOOR_CALL_GROUPS)):
+            steps.append(
+                _step("caller-group", item, partial(_pop_caller_group, floor=FLOOR_CALL_GROUPS))
+            )
     for item in reverse:
         steps.append(_step("source", item, _drop_source))
     for item in reverse[:-1]:

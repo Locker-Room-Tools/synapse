@@ -337,6 +337,73 @@ def test_inspection_is_byte_deterministic(tmp_path: Path) -> None:
     assert first == second
 
 
+def test_cross_area_caller_handle_survives_default_budget_and_round_trips(
+    tmp_path: Path,
+) -> None:
+    """A returned relation handle is a first-class follow-up inspection input.
+
+    The managed workflow closes open facets by inspecting handles taken from
+    `callers`/`callees` groups, so a cross-area caller must keep its handle under the
+    default budget and that handle must resolve in a second call.
+    """
+    workspace = _workspace(tmp_path)
+    index = build_index(tmp_path)
+    target = make_symbol("py:process", "process", "app/core/process.py", line=3)
+    cross_caller = make_symbol("py:schedule", "schedule", "app/jobs/schedule.py", line=5)
+    local_callers = [
+        make_symbol(f"py:local{i}", f"local_caller_{i}", f"app/core/local{i}.py", line=2)
+        for i in range(4)
+    ]
+    add_file(index, "app/core/process.py", [target])
+    add_file(
+        index,
+        "app/jobs/schedule.py",
+        [cross_caller],
+        [
+            make_reference(
+                "r-cross",
+                from_symbol_id="py:schedule",
+                to_symbol_id="py:process",
+                from_file_path="app/jobs/schedule.py",
+                resolution=ResolutionMethod.EXACT,
+                line=6,
+            )
+        ],
+    )
+    for i, caller in enumerate(local_callers):
+        add_file(
+            index,
+            caller.file_path,
+            [caller],
+            [
+                make_reference(
+                    f"r-local{i}",
+                    from_symbol_id=caller.id,
+                    to_symbol_id="py:process",
+                    from_file_path=caller.file_path,
+                    resolution=ResolutionMethod.EXACT,
+                    line=3,
+                )
+            ],
+        )
+    _write_source(workspace, "app/core/process.py", 10)
+    _write_source(workspace, "app/jobs/schedule.py", 10)
+
+    first = _inspect(index, workspace, (symbol_handle("py:process"),))
+    callers = first["symbols"][0]["callers"]
+    assert isinstance(callers, list)
+    cross_groups = [group for group in callers if group.get("n") == "schedule"]
+    assert cross_groups, "the cross-area caller group must survive the default budget"
+    follow_up_handle = cross_groups[0].get("h")
+    assert isinstance(follow_up_handle, str)
+
+    second = _inspect(index, workspace, (follow_up_handle,))
+    assert not second.get("missing")
+    followed = second["symbols"][0]
+    assert followed["n"] == "schedule"
+    assert followed["h"] == follow_up_handle
+
+
 def test_tight_budget_degrades_honestly(tmp_path: Path) -> None:
     index, workspace = _service_index(tmp_path)
     result = inspect_symbols(
