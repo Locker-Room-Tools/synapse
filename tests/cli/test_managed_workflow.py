@@ -62,6 +62,14 @@ SKILL_CONTRACT: tuple[tuple[str, tuple[str, ...]], ...] = (
         ),
     ),
     (
+        "continuation before shell",
+        (
+            "pass that token alone to `synapse_inspect` before any shell range read "
+            "of the same symbol",
+            "use shell only if continuation is unavailable, rejected, or exhausted",
+        ),
+    ),
+    (
         "shell limits",
         (
             "start with broad grep",
