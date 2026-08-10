@@ -6,13 +6,11 @@ from pathlib import Path
 from synapse.core.config import (
     ConfigScope,
     EffectiveConfig,
-    config_file_path,
-    load_default_ignored_directories,
+    IgnoreWriteResult,
+    add_ignore_patterns,
     load_effective_config,
-    load_project_config,
-    load_user_config,
-    normalize_ignore_entry,
-    write_project_ignored_directories,
+    remove_ignore_patterns,
+    validate_ignore_pattern,
 )
 from synapse.core.index import SymbolIndex, relation_summary, symbol_summary
 from synapse.core.indexing import index_workspace
@@ -35,15 +33,22 @@ from synapse.mcp.workspace import current_workspace
 
 _DIRECTORIES_ARGUMENT = "the directories argument"
 _ACCEPTED_FORMS = (
-    "bare directory name, matched at any depth (e.g. 'node_modules')",
-    "root-anchored name, matched only at the workspace root (e.g. '/build')",
-    "workspace-relative path, anchored at the workspace root (e.g. 'src/generated')",
+    "bare name, matched at any depth (e.g. 'node_modules')",
+    "trailing slash to match directories only (e.g. 'build/')",
+    "leading slash to anchor at the workspace root (e.g. '/dist')",
+    "workspace-relative path, anchored at the workspace root (e.g. 'src/generated/')",
+    "glob (e.g. '*.min.js', 'test_?.py', '[Bb]uild/', 'docs/**')",
+    "leading '!' to re-include a path an earlier rule ignored (e.g. '!src/vendor/keep.js')",
 )
 _REJECTED_FORMS = (
     "absolute paths",
     "'.' or '..' segments",
-    "glob patterns",
     "empty strings",
+)
+_MAX_REPORTED_RULES = 200
+_RULES_COVERAGE = (
+    "This is the rule list, not the set of ignored paths. Whether a path is ignored depends on "
+    "rule order, so no flat effective set exists."
 )
 
 
@@ -92,14 +97,14 @@ def _takes_effect(config: EffectiveConfig) -> str:
 
 
 def _normalized_directories(directories: list[str]) -> tuple[list[str], dict[str, str]]:
-    """Canonicalize every requested entry before any write, deduplicating in input order."""
+    """Validate every requested pattern before any write, deduplicating in input order."""
     if not directories:
         msg = "directories must contain at least one entry."
         raise ValueError(msg)
     requested: list[str] = []
     normalized: dict[str, str] = {}
     for raw in directories:
-        value = normalize_ignore_entry(raw, source=_DIRECTORIES_ARGUMENT)
+        value = validate_ignore_pattern(raw, source=_DIRECTORIES_ARGUMENT)
         if value != raw:
             normalized[raw] = value
         if value not in requested:
@@ -110,28 +115,25 @@ def _normalized_directories(directories: list[str]) -> tuple[list[str], dict[str
 def _mutation_payload(
     workspace_root: Path,
     normalized: dict[str, str],
-    *,
-    added: list[str],
-    removed: list[str],
-    already_present: list[str],
-    already_covered_by_builtin: list[str],
-    not_present: list[str],
+    result: IgnoreWriteResult,
 ) -> dict[str, object]:
     config = load_effective_config(workspace_root)
-    project = load_project_config(workspace_root)
+    project_layer = config.layer(ConfigScope.PROJECT)
     return {
         "workspace_path": str(workspace_root),
-        "scope": str(ConfigScope.PROJECT),
-        "config_path": str(config.project_config_path),
-        "added": added,
-        "removed": removed,
-        "already_present": already_present,
-        "already_covered_by_builtin": already_covered_by_builtin,
-        "not_present": not_present,
+        "scope": str(result.scope),
+        "config_path": str(result.path),
+        "created": result.created,
+        "added": list(result.added),
+        "removed": list(result.removed),
+        "negated": list(result.negated),
+        "already_present": list(result.already_present),
+        "not_present": list(result.not_present),
+        "migrated_from_json": list(result.migrated_from_json),
         "normalized": normalized,
-        "project_ignored_directories": sorted(project.ignored_directories),
-        "effective_ignored_directories": [entry.value for entry in config.ignored_directories],
+        "project_rules": [rule.pattern for rule in project_layer.rules],
         "takes_effect": _takes_effect(config),
+        "coverage": _RULES_COVERAGE,
     }
 
 
@@ -462,15 +464,17 @@ def synapse_compact_context(
 
 @tool()
 def synapse_get_config(workspace_path: str = ".") -> dict[str, object]:
-    """Read Synapse configuration: effective values, per-entry source, and write targets.
+    """Read Synapse configuration: ordered ignore rules, per-rule source, and write targets.
 
-    Self-describing; no other documentation is needed to configure Synapse. Returns each
-    option with its type, accepted input forms, current effective value, the source of every
-    entry (built-in/global/project), the file writes land in, and when a change takes effect.
-    Safe before initialization.
+    Self-describing; no other documentation is needed to configure Synapse. Ignore rules use
+    gitignore syntax and the last matching rule decides, so the response is an ordered list
+    with each rule's layer, file, and line — not a set of ignored paths. Bounded by
+    rules_total/rules_complete. Safe before initialization.
     """
     workspace_root = _workspace_root(workspace_path)
     config = load_effective_config(workspace_root)
+    rules = config.ignore_rules
+    project_layer = config.layer(ConfigScope.PROJECT)
     return {
         "workspace_path": str(workspace_root),
         "project_config_path": str(config.project_config_path),
@@ -478,23 +482,45 @@ def synapse_get_config(workspace_path: str = ".") -> dict[str, object]:
         "global_config_path": str(config.global_config_path),
         "watch_poll_interval_s": config.watch.poll_interval_s,
         "options": {
-            "ignored_directories": {
-                "type": "list[str]",
+            "ignore_rules": {
+                "type": "ordered list of gitignore-style patterns",
+                "semantics": "The last matching rule decides. '!' re-includes.",
+                "project_source": str(project_layer.source),
+                "project_ignore_file": str(config.synapseignore_path),
+                "global_ignore_file": str(config.global_ignore_path),
                 "accepted_forms": list(_ACCEPTED_FORMS),
                 "rejected": list(_REJECTED_FORMS),
                 "case_sensitive": True,
+                "always_ignored": [".git"],
                 "add_with": "synapse_add_ignored_directories",
                 "remove_with": "synapse_remove_ignored_directories",
-                "writes_to": str(config.project_config_path),
+                "writes_to": str(config.synapseignore_path),
                 "layers": [str(scope) for scope in ConfigScope],
                 "takes_effect": _takes_effect(config),
-                "effective": [
+                "rules": [
                     {
-                        "value": entry.value,
-                        "sources": [str(scope) for scope in entry.sources],
+                        "pattern": rule.pattern,
+                        "scope": str(rule.scope),
+                        "origin": rule.origin,
+                        "line": rule.line,
+                        "negated": rule.negated,
+                        "directory_only": rule.directory_only,
                     }
-                    for entry in config.ignored_directories
+                    for rule in rules[:_MAX_REPORTED_RULES]
                 ],
+                "rules_total": len(rules),
+                "rules_complete": len(rules) <= _MAX_REPORTED_RULES,
+                "skipped_lines": [
+                    {
+                        "origin": problem.origin,
+                        "line": problem.line,
+                        "text": problem.text,
+                        "reason": problem.reason,
+                    }
+                    for problem in config.ignore_problems
+                ],
+                "shadowed_project_json": list(project_layer.shadowed_json_entries),
+                "coverage": _RULES_COVERAGE,
             },
         },
     }
@@ -505,42 +531,20 @@ def synapse_add_ignored_directories(
     directories: list[str],
     workspace_path: str = ".",
 ) -> dict[str, object]:
-    """Stop indexing directories; writes the project config, not the global one.
+    """Stop indexing paths; appends gitignore patterns to the project .synapseignore.
 
-    Each entry is a bare directory name matched at any depth ("node_modules"), a
-    root-anchored name ("/build"), or a workspace-relative path ("src/generated"). No globs,
-    no absolute paths, no ".." segments. Built-in ignores are reported as already covered
-    instead of being written. Any invalid entry rejects the whole call and writes nothing.
-    Ignored files leave the index on the next watch sweep; call synapse_index_workspace to
-    apply immediately.
+    Each entry is a gitignore pattern: a bare name matched at any depth ("node_modules"), a
+    trailing slash for directories only ("build/"), a leading slash to anchor at the root
+    ("/dist"), a glob ("*.min.js"), or a leading "!" to re-include. No absolute paths, no
+    ".." segments. Patterns append to the end, so a new rule beats the rules already there.
+    Creates .synapseignore and migrates any legacy config entries when it does not exist yet.
+    Any invalid entry rejects the whole call and writes nothing. Ignored files leave the index
+    on the next watch sweep; call synapse_index_workspace to apply immediately.
     """
     workspace_root = _workspace_root(workspace_path)
     requested, normalized = _normalized_directories(directories)
-    defaults = load_default_ignored_directories()
-    entries = set(load_project_config(workspace_root).ignored_directories)
-
-    added: list[str] = []
-    already_present: list[str] = []
-    already_covered_by_builtin: list[str] = []
-    for value in requested:
-        if value in defaults:
-            already_covered_by_builtin.append(value)
-        elif value in entries:
-            already_present.append(value)
-        else:
-            entries.add(value)
-            added.append(value)
-
-    write_project_ignored_directories(workspace_root, entries)
-    return _mutation_payload(
-        workspace_root,
-        normalized,
-        added=added,
-        removed=[],
-        already_present=already_present,
-        already_covered_by_builtin=already_covered_by_builtin,
-        not_present=[],
-    )
+    result = add_ignore_patterns(workspace_root, requested, scope=ConfigScope.PROJECT)
+    return _mutation_payload(workspace_root, normalized, result)
 
 
 @tool()
@@ -548,51 +552,17 @@ def synapse_remove_ignored_directories(
     directories: list[str],
     workspace_path: str = ".",
 ) -> dict[str, object]:
-    """Resume indexing directories; removes entries from the project config only.
+    """Resume indexing paths; edits the project .synapseignore only.
 
-    Built-in ignores and entries inherited from the global user config cannot be removed
-    here and raise an error naming where they come from. Entries that are not ignored
-    anywhere are reported in not_present and are not an error. Any invalid entry rejects the
-    whole call and writes nothing. Restored files re-enter the index on the next watch
-    sweep; call synapse_index_workspace to apply immediately.
+    A pattern the project file owns is deleted and reported in removed. A pattern inherited
+    from a built-in or the global config cannot be deleted there, so a negation is appended
+    instead and reported in negated — that is how a built-in gets turned off. '.git' is the
+    one exception and stays ignored. Patterns that are not ignored anywhere are reported in
+    not_present and are not an error. Any invalid entry rejects the whole call and writes
+    nothing. Restored files re-enter the index on the next watch sweep; call
+    synapse_index_workspace to apply immediately.
     """
     workspace_root = _workspace_root(workspace_path)
     requested, normalized = _normalized_directories(directories)
-    defaults = load_default_ignored_directories()
-    entries = set(load_project_config(workspace_root).ignored_directories)
-    global_entries = load_user_config().ignored_directories
-
-    for value in requested:
-        if value in defaults:
-            msg = (
-                f"Cannot remove built-in ignored directory {value!r}. "
-                "Built-ins ship with Synapse and are not removable."
-            )
-            raise ValueError(msg)
-        if value not in entries and value in global_entries:
-            msg = (
-                f"{value!r} is not in the project config; it is inherited from the global "
-                f"config at {config_file_path()}. Remove it with: "
-                f"synapse config ignored-dirs remove {value} --scope global"
-            )
-            raise ValueError(msg)
-
-    removed: list[str] = []
-    not_present: list[str] = []
-    for value in requested:
-        if value in entries:
-            entries.discard(value)
-            removed.append(value)
-        else:
-            not_present.append(value)
-
-    write_project_ignored_directories(workspace_root, entries)
-    return _mutation_payload(
-        workspace_root,
-        normalized,
-        added=[],
-        removed=removed,
-        already_present=[],
-        already_covered_by_builtin=[],
-        not_present=not_present,
-    )
+    result = remove_ignore_patterns(workspace_root, requested, scope=ConfigScope.PROJECT)
+    return _mutation_payload(workspace_root, normalized, result)
