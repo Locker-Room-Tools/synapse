@@ -1,6 +1,12 @@
 """SQLite-backed symbol index: schema, writes, read projections, and the repo map."""
 
-from synapse.core.index.handles import is_symbol_handle, symbol_handle
+from synapse.core.index.contract import INDEX_WRITER_CONTRACT_VERSION
+from synapse.core.index.handles import HANDLE_LENGTH, HANDLE_PREFIX, is_symbol_handle, symbol_handle
+from synapse.core.index.integrity import (
+    IndexIntegrityError,
+    handle_completeness_reason,
+    repair_symbol_handles,
+)
 from synapse.core.index.reads import (
     TOP_SYMBOL_KINDS,
     ReadProjections,
@@ -34,8 +40,12 @@ from synapse.core.workspace import DEFAULT_DB_NAME
 
 __all__ = [
     "DEFAULT_DB_NAME",
+    "HANDLE_LENGTH",
+    "HANDLE_PREFIX",
+    "INDEX_WRITER_CONTRACT_VERSION",
     "REPO_MAP_DERIVATION_VERSION",
     "AreaResolver",
+    "IndexIntegrityError",
     "SCHEMA",
     "SCHEMA_VERSION",
     "TOP_SYMBOL_KINDS",
@@ -48,6 +58,8 @@ __all__ = [
     "SourceSlice",
     "SymbolIndex",
     "compute_repo_map",
+    "handle_completeness_reason",
+    "repair_symbol_handles",
     "is_symbol_handle",
     "read_symbol_source",
     "symbol_handle",

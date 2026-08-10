@@ -7,22 +7,29 @@ from contextlib import contextmanager
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from synapse.core.index.handles import symbol_handle
+from synapse.core.index.contract import SCHEMA_VERSION
+from synapse.core.index.handles import handle_check_sql
+from synapse.core.index.integrity import repair_symbol_handles
 
-SCHEMA_VERSION = 5
+__all__ = [
+    "SCHEMA",
+    "SCHEMA_VERSION",
+    "atomic_replace_database",
+    "cleanup_database_files",
+    "connection_scope",
+    "create_connection",
+    "initialize_schema",
+    "prepare_database_for_replacement",
+    "temporary_database_path",
+    "transaction_scope",
+]
 
-SCHEMA = """
-PRAGMA foreign_keys = ON;
-
-CREATE TABLE IF NOT EXISTS files (
-    id TEXT PRIMARY KEY,
-    path TEXT NOT NULL UNIQUE,
-    language TEXT NOT NULL,
-    project_root TEXT,
-    content_hash TEXT NOT NULL,
-    indexed_at TEXT NOT NULL
-);
-
+# Single source of truth for the symbols table: `SCHEMA` and the constraint migration
+# must never drift. `handle` is NOT NULL and format-checked so the file itself rejects a
+# writer that does not implement the current persistence contract, including an older
+# daemon holding an open connection. The CHECK proves the format only; that a handle is
+# the digest of its own symbol id is established by the write path and by migration.
+SYMBOLS_TABLE_SQL = f"""
 CREATE TABLE IF NOT EXISTS symbols (
     id TEXT PRIMARY KEY,
     file_id TEXT NOT NULL,
@@ -40,10 +47,25 @@ CREATE TABLE IF NOT EXISTS symbols (
     signature TEXT,
     source TEXT NOT NULL,
     confidence TEXT NOT NULL,
-    handle TEXT,
+    handle TEXT NOT NULL CHECK ({handle_check_sql("handle")}),
     FOREIGN KEY(file_id) REFERENCES files(id) ON DELETE CASCADE
 );
+"""
 
+SYMBOLS_HANDLE_INDEX_SQL = "CREATE UNIQUE INDEX IF NOT EXISTS idx_symbols_handle ON symbols(handle)"
+
+SCHEMA = f"""
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS files (
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE,
+    language TEXT NOT NULL,
+    project_root TEXT,
+    content_hash TEXT NOT NULL,
+    indexed_at TEXT NOT NULL
+);
+{SYMBOLS_TABLE_SQL}
 CREATE TABLE IF NOT EXISTS relations (
     id TEXT PRIMARY KEY,
     file_id TEXT NOT NULL,
@@ -73,7 +95,7 @@ CREATE INDEX IF NOT EXISTS idx_symbols_qualified_name ON symbols(qualified_name)
 CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
 CREATE INDEX IF NOT EXISTS idx_symbols_language ON symbols(language);
 CREATE INDEX IF NOT EXISTS idx_symbols_file_id ON symbols(file_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_symbols_handle ON symbols(handle);
+{SYMBOLS_HANDLE_INDEX_SQL};
 CREATE INDEX IF NOT EXISTS idx_relations_to_symbol_id ON relations(to_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_relations_from_symbol_id ON relations(from_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_relations_kind ON relations(kind);
@@ -164,14 +186,53 @@ def _migrate_columns(
             connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
 
 
-def _backfill_symbol_handles(connection: sqlite3.Connection) -> None:
-    rows = connection.execute("SELECT id FROM symbols WHERE handle IS NULL").fetchall()
-    if not rows:
-        return
-    connection.executemany(
-        "UPDATE symbols SET handle = ? WHERE id = ?",
-        [(symbol_handle(str(row[0])), str(row[0])) for row in rows],
-    )
+_SYMBOL_COPY_COLUMNS = (
+    "id, file_id, language, kind, native_kind, name, qualified_name, file_path, "
+    "container_id, start_line, end_line, start_byte, end_byte, signature, source, "
+    "confidence, handle"
+)
+
+
+def _table_exists(connection: sqlite3.Connection, table: str) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+    ).fetchone()
+    return row is not None
+
+
+def _rebuild_symbols_table(connection: sqlite3.Connection) -> None:
+    """Recreate `symbols` so the file enforces the handle constraint.
+
+    SQLite cannot add NOT NULL/CHECK in place. The FTS triggers are dropped first so
+    they do not follow the renamed table, and the copy assigns new rowids, so the
+    caller must rebuild the external-content FTS index afterwards.
+
+    Driven by explicit statements inside one transaction: `executescript` would commit
+    the partially rebuilt table. The preceding handle repair may already have opened a
+    transaction, in which case the rebuild simply joins it.
+    """
+    owns_transaction = not connection.in_transaction
+    if owns_transaction:
+        connection.execute("BEGIN IMMEDIATE")
+    try:
+        connection.execute("DROP TRIGGER IF EXISTS symbols_fts_after_insert")
+        connection.execute("DROP TRIGGER IF EXISTS symbols_fts_after_delete")
+        connection.execute("DROP TRIGGER IF EXISTS symbols_fts_after_update")
+        connection.execute("ALTER TABLE symbols RENAME TO symbols_migrating")
+        connection.execute(SYMBOLS_TABLE_SQL)
+        connection.execute(
+            f"INSERT INTO symbols ({_SYMBOL_COPY_COLUMNS}) "
+            f"SELECT {_SYMBOL_COPY_COLUMNS} FROM symbols_migrating"
+        )
+        # Inside the rebuild, so a collision rolls the whole migration back instead of
+        # surfacing later against a table that has already been committed. `SCHEMA`
+        # recreates it with IF NOT EXISTS, which is then a no-op.
+        connection.execute(SYMBOLS_HANDLE_INDEX_SQL)
+        connection.execute("DROP TABLE symbols_migrating")
+    except Exception:
+        connection.rollback()
+        raise
+    connection.commit()
 
 
 def initialize_schema(connection: sqlite3.Connection) -> None:
@@ -179,12 +240,15 @@ def initialize_schema(connection: sqlite3.Connection) -> None:
     version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     _migrate_columns(connection, "relations", _RELATION_COLUMN_MIGRATIONS)
     _migrate_columns(connection, "symbols", _SYMBOL_COLUMN_MIGRATIONS)
+    if version < SCHEMA_VERSION and _table_exists(connection, "symbols"):
+        # Repair while the constraint does not exist yet, then let the file carry it.
+        repair_symbol_handles(connection)
+        _rebuild_symbols_table(connection)
     connection.executescript(SCHEMA)
     if version < SCHEMA_VERSION:
-        # Rebuild before the backfill: the backfill UPDATE fires the FTS sync
-        # triggers, which require the external-content index to match `symbols`.
+        # After `executescript` has recreated the triggers, and after the table rebuild
+        # invalidated every rowid the external-content index referred to.
         connection.execute("INSERT INTO symbols_fts(symbols_fts) VALUES ('rebuild')")
-        _backfill_symbol_handles(connection)
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
 

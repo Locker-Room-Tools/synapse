@@ -188,9 +188,21 @@ package's internal decomposition, not separate import targets.
   extractor version + schema version) into the index; `ensure_workspace` and plain
   `synapse index` detect a mismatch with a read-only probe and force an atomic full
   rebuild, so upgraded extraction semantics never silently reuse stale relations.
+- **`core.index.contract`**: declares `SCHEMA_VERSION` (the shape of the file) and
+  `INDEX_WRITER_CONTRACT_VERSION` (the invariants a *writer process* maintains on every
+  incremental write). A watch daemon records the latter in `watch.json`; a live daemon
+  whose provenance is absent, malformed, or different is stale, and `ensure_workspace`
+  stops it before any repair touches the database. The contract is a declared integer
+  rather than a fingerprint over the write path, so cosmetic edits do not force
+  restarts, and rather than the package version, since two development builds share one
+  version while implementing different contracts. Schema 6 moves the structural half of
+  the contract into the file itself: `symbols.handle` is `NOT NULL` and shape-checked,
+  so a writer from an older build is rejected by SQLite rather than trusted, even when
+  it holds a connection opened before the migration. `core.index.integrity` owns the
+  bounded read-only completeness probe and the deterministic, idempotent repair.
 - **`core.provenance`**: reports which Synapse build is serving a call — version, the
-  directory the package was imported from, schema/extractor versions, the reference
-  fingerprint, and PEP 610 editability. Surfaced additively on `ensure_workspace`,
+  directory the package was imported from, schema/writer-contract/extractor versions,
+  the reference fingerprint, and PEP 610 editability. Surfaced additively on `ensure_workspace`,
   `workspace_stats`, and `synapse status`, so a stale globally-installed tool is
   distinguishable from a live checkout. Installation identity only; no environment data.
 - **`cli`**: provides global `install`, workspace `init`/`status`, project-scoped `setup`,
@@ -221,14 +233,20 @@ package's internal decomposition, not separate import targets.
 - **`core.lifecycle`**: owns workspace state, lazy grammar/index initialization, query
   readiness, and daemon repair. CLI and MCP call the same lifecycle.
   Navigation readiness is the complete decision, not a daemon health check:
-  `navigation_repair_reason` returns `no-index`, `not-ready`, `missing-grammars`, or
-  `stale-references`, checked cheapest-first and strictly read-only — it never
-  constructs a `SymbolIndex`, because that migrates the schema and takes a write
-  transaction against a database a daemon or a concurrent rebuild may own.
+  `navigation_repair_reason` returns `no-index`, `not-ready`, `stale-writer`,
+  `missing-grammars`, `stale-references`, or one of the handle-completeness reasons
+  (`incomplete-handles`, `handles-unenforced`, `unreadable-index`), checked
+  cheapest-first and strictly read-only — it never constructs a `SymbolIndex`, because
+  that migrates the schema and takes a write transaction against a database a daemon or
+  a concurrent rebuild may own.
   `ensure_navigation_ready` repairs through `ensure_workspace` only when a reason
   exists, then re-probes before letting the call proceed. Freshness belongs in
   readiness because schema migration alone can carry relations built under older
-  extraction semantics into a workspace that reports READY. A lost repair race
+  extraction semantics into a workspace that reports READY. Handle completeness belongs
+  there for the same reason at a different layer: orientation renders a handle from the
+  stable id while inspection resolves the persisted column, so a row without a usable
+  handle produces a public handle that can never resolve, and neither the schema version
+  nor the fingerprint can see it. A lost repair race
   (`WatchAlreadyRunning`, a locked database, a daemon that would not stop) is waited
   out to a bounded deadline rather than raised, since an agent cannot act on it.
 

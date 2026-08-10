@@ -15,7 +15,7 @@ from importlib import metadata
 from pathlib import Path
 
 import synapse
-from synapse.core.index import SCHEMA_VERSION
+from synapse.core.index import INDEX_WRITER_CONTRACT_VERSION, SCHEMA_VERSION
 from synapse.core.indexing import reference_extraction_fingerprint
 from synapse.core.indexing.parser import REFERENCE_EXTRACTOR_VERSION
 
@@ -29,6 +29,9 @@ class RuntimeProvenance:
     package_version: str
     package_location: str
     schema_version: int
+    # Persistence invariants this build implements; a daemon recording a different
+    # value cannot be reused, whatever its package version says.
+    writer_contract_version: int
     extractor_version: int
     reference_fingerprint: str
     # None when the installation records no PEP 610 origin (e.g. a plain source tree).
@@ -80,6 +83,7 @@ def runtime_provenance() -> RuntimeProvenance:
         package_version=synapse.__version__,
         package_location=str(Path(synapse.__file__).resolve().parent),
         schema_version=SCHEMA_VERSION,
+        writer_contract_version=INDEX_WRITER_CONTRACT_VERSION,
         extractor_version=REFERENCE_EXTRACTOR_VERSION,
         reference_fingerprint=reference_extraction_fingerprint(),
         editable=editable,

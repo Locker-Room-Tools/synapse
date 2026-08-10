@@ -105,9 +105,18 @@ This file is the contract for any human or AI agent contributing to THIS reposit
   neutral `refs_in`/`refs_out`, and a language advertising no call kinds returns no
   callers or callees at all — `coverage.extraction[].call_kinds` says so.
 - Navigation readiness lives entirely in `core.lifecycle`
-  (`navigation_repair_reason`, `ensure_navigation_ready`): no index, not ready,
-  missing grammars, or a stale reference fingerprint all force a repair before the
+  (`navigation_repair_reason`, `ensure_navigation_ready`): no index, not ready, a watch
+  daemon whose writer contract does not match this runtime, missing grammars, a stale
+  reference fingerprint, or incomplete persisted handles all force a repair before the
   call answers. The probe is read-only; `mcp` only delegates.
+- Handles round-trip or navigation fails. Orientation renders a handle from the stable
+  id while inspection resolves the persisted `symbols.handle`, so completeness is an
+  invariant, not a detail: the column is `NOT NULL` and shape-checked in the schema,
+  `INDEX_WRITER_CONTRACT_VERSION` (`core/index/contract.py`) identifies the persistence
+  contract a watch daemon implements, and a daemon with missing or mismatched
+  provenance is stopped before any repair touches the database. Bump the writer
+  contract whenever symbol-write invariants change — the package version is not enough,
+  since two development builds share one version.
 
 ### Agent workflow
 

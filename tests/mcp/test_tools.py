@@ -486,6 +486,8 @@ def test_synapse_ensure_workspace_returns_lifecycle_payload(
         "runtime": runtime_provenance().to_payload(),
         # Set only when first-run init wrote a .synapseignore into the repository.
         "ignore_bootstrap": None,
+        # Set only when the call repaired something, naming the reasons it acted on.
+        "repair": None,
     }
 
 
@@ -926,3 +928,29 @@ def test_not_found_is_a_uniform_envelope_never_none(
         assert "hint" in result
     assert results["symbol"]["target"] == "missing-id"
     assert results["outline"]["target"] == "missing.py"
+
+
+def test_navigation_tools_propagate_an_unrepairable_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A workspace that failed repair must raise, never return an orientation payload.
+
+    Handles are rendered from stable ids, so a payload produced over an index whose
+    persisted handles are incomplete would look entirely healthy and resolve to nothing.
+    """
+
+    def unrepairable(path: str | Path = ".") -> Path:
+        raise WorkspaceNotReadyError("Synapse workspace is still incomplete-handles")
+
+    monkeypatch.setattr(tools, "_navigation_workspace", unrepairable)
+    monkeypatch.setattr(
+        tools, "orient_workspace", lambda *a, **k: pytest.fail("oriented an unready workspace")
+    )
+    monkeypatch.setattr(
+        tools, "inspect_symbols", lambda *a, **k: pytest.fail("inspected an unready workspace")
+    )
+
+    with pytest.raises(WorkspaceNotReadyError, match="incomplete-handles"):
+        tools.synapse_orient(terms=["anything"])
+    with pytest.raises(WorkspaceNotReadyError, match="incomplete-handles"):
+        tools.synapse_inspect(symbols=["s_" + "A" * 22])

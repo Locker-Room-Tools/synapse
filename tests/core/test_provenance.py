@@ -7,7 +7,7 @@ import pytest
 
 import synapse
 from synapse.core import provenance as provenance_module
-from synapse.core.index import SCHEMA_VERSION
+from synapse.core.index import INDEX_WRITER_CONTRACT_VERSION, SCHEMA_VERSION
 from synapse.core.indexing import reference_extraction_fingerprint
 from synapse.core.indexing.parser import REFERENCE_EXTRACTOR_VERSION
 from synapse.core.provenance import runtime_provenance
@@ -19,6 +19,7 @@ def test_runtime_provenance_identifies_the_loaded_installation() -> None:
 
     assert payload["package_version"] == synapse.__version__
     assert payload["schema_version"] == SCHEMA_VERSION
+    assert payload["writer_contract_version"] == INDEX_WRITER_CONTRACT_VERSION
     assert payload["extractor_version"] == REFERENCE_EXTRACTOR_VERSION
     assert payload["reference_fingerprint"] == reference_extraction_fingerprint()
     # The location is what distinguishes a checkout from a frozen installed copy.
@@ -35,6 +36,7 @@ def test_runtime_provenance_never_leaks_environment_details() -> None:
         "package_version",
         "package_location",
         "schema_version",
+        "writer_contract_version",
         "extractor_version",
         "reference_fingerprint",
         "editable",

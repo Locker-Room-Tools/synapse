@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from synapse.core.index import INDEX_WRITER_CONTRACT_VERSION
 from synapse.core.watch import daemon
 from synapse.core.watch.daemon import WatchDaemonError
 from synapse.core.watch.state import WatchStatus
@@ -16,8 +17,12 @@ def _status(
     running: bool,
     pid: int | None = None,
     degraded: bool = False,
+    writer_contract_version: int | None = INDEX_WRITER_CONTRACT_VERSION,
 ) -> WatchStatus:
     return WatchStatus(
+        writer_contract_version=writer_contract_version,
+        writer_package_version="0.0.0-test",
+        writer_package_location="/test",
         workspace_path=str(workspace),
         workspace_id=workspace_id(workspace),
         running=running,
@@ -266,3 +271,106 @@ def test_wait_for_watch_to_stop_returns_final_state_after_timeout(
     monkeypatch.setattr("synapse.core.watch.daemon.time.sleep", lambda seconds: None)
 
     assert daemon.wait_for_watch_to_stop(tmp_path, timeout_s=0.5)
+
+
+def _scripted_statuses(
+    monkeypatch: pytest.MonkeyPatch,
+    statuses: list[WatchStatus],
+) -> None:
+    """Serve a fixed status sequence, repeating the last one once exhausted."""
+    remaining = list(statuses)
+
+    def read(path: Path) -> WatchStatus:
+        return remaining.pop(0) if len(remaining) > 1 else remaining[0]
+
+    monkeypatch.setattr(daemon, "read_watch_status", read)
+
+
+def test_a_compatible_child_is_returned_after_spawn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The normal path is unchanged: a matching child publishes health and is returned."""
+    stopped = _status(tmp_path, running=False)
+    healthy = _status(tmp_path, running=True, pid=222)
+    _scripted_statuses(monkeypatch, [stopped, healthy])
+    monkeypatch.setattr(daemon, "start_detached_watch", lambda path, **kwargs: 222)
+    monkeypatch.setattr(daemon, "pid_is_running", lambda pid: pid == 222)
+
+    assert daemon.ensure_watch_daemon(tmp_path, timeout_s=1) is healthy
+
+
+def test_a_writer_that_wins_the_post_spawn_race_is_never_returned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another runtime publishing status after the initial check must not be handed back.
+
+    The initial check saw no daemon, so the provenance test has to run again on every
+    status the polling loop reads -- otherwise the incompatible writer looks healthy.
+    """
+    stopped = _status(tmp_path, running=False)
+    racer = _status(tmp_path, running=True, pid=999, writer_contract_version=None)
+    ours = _status(tmp_path, running=True, pid=222)
+    _scripted_statuses(monkeypatch, [stopped, racer, ours])
+    monkeypatch.setattr(daemon, "start_detached_watch", lambda path, **kwargs: 222)
+    monkeypatch.setattr(daemon, "pid_is_running", lambda pid: pid in {222, 999})
+    stops: list[Path] = []
+    monkeypatch.setattr(daemon, "request_watch_stop", lambda path: stops.append(path))
+    monkeypatch.setattr(daemon, "wait_for_watch_to_stop", lambda path, **kwargs: True)
+
+    result = daemon.ensure_watch_daemon(tmp_path, timeout_s=1)
+
+    assert result is ours
+    assert result.pid == 222
+    # The racing daemon was stopped through the supported lifecycle path, not ignored.
+    assert stops == [tmp_path]
+
+
+def test_a_persistent_competing_runtime_fails_explicitly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two runtimes that each consider the other stale must not contend indefinitely."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    stopped = _status(tmp_path, running=False)
+    racer = _status(tmp_path, running=True, pid=999, writer_contract_version=None)
+    _scripted_statuses(monkeypatch, [stopped, racer])
+    spawns: list[Path] = []
+
+    def spawn(path: Path, **_: object) -> int:
+        spawns.append(path)
+        return 222
+
+    monkeypatch.setattr(daemon, "start_detached_watch", spawn)
+    # Our child loses the watch lock to the competitor and exits immediately.
+    monkeypatch.setattr(daemon, "pid_is_running", lambda pid: pid == 999)
+    stops: list[Path] = []
+    monkeypatch.setattr(daemon, "request_watch_stop", lambda path: stops.append(path))
+    monkeypatch.setattr(daemon, "wait_for_watch_to_stop", lambda path, **kwargs: True)
+
+    with pytest.raises(WatchDaemonError, match="keeps claiming the watch daemon"):
+        daemon.ensure_watch_daemon(tmp_path, timeout_s=1)
+
+    # Bounded: one recovery attempt, not an unbounded stop/spawn contest.
+    assert len(stops) <= daemon._MAX_WRITER_RACE_RECOVERIES + 1
+    assert len(spawns) <= daemon._MAX_WRITER_RACE_RECOVERIES + 1
+
+
+def test_post_spawn_degraded_status_is_not_returned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A degraded child is still not health, and is still not a writer-contract failure."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    stopped = _status(tmp_path, running=False)
+    degraded = _status(tmp_path, running=True, pid=222, degraded=True)
+    _scripted_statuses(monkeypatch, [stopped, degraded])
+    monkeypatch.setattr(daemon, "start_detached_watch", lambda path, **kwargs: 222)
+    monkeypatch.setattr(daemon, "pid_is_running", lambda pid: pid == 222)
+    monkeypatch.setattr(
+        daemon, "request_watch_stop", lambda path: pytest.fail("stopped a degraded daemon")
+    )
+
+    with pytest.raises(WatchDaemonError, match="did not become healthy"):
+        daemon.ensure_watch_daemon(tmp_path, timeout_s=0.2)

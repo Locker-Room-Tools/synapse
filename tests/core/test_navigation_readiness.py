@@ -31,6 +31,8 @@ def _healthy(
     state: str = "ready",
     missing: tuple[str, ...] = (),
     stale: bool = False,
+    writer_reason: str | None = None,
+    handle_reason: str | None = None,
 ) -> None:
     """Pin every readiness probe so a test states exactly one condition."""
     monkeypatch.setattr(
@@ -39,6 +41,16 @@ def _healthy(
     monkeypatch.setattr(lifecycle, "workspace_status_payload", lambda root: {"state": state})
     monkeypatch.setattr(lifecycle, "missing_grammars", lambda: missing)
     monkeypatch.setattr(lifecycle, "reference_index_is_stale", lambda root: stale)
+    monkeypatch.setattr(lifecycle, "read_watch_status", lambda root: None)
+    monkeypatch.setattr(lifecycle, "watch_writer_reason", lambda status: writer_reason)
+    monkeypatch.setattr(lifecycle, "handle_completeness_reason", lambda path: handle_reason)
+
+
+def _trusted_writer_and_handles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the writer and handle probes for tests that state a different condition."""
+    monkeypatch.setattr(lifecycle, "read_watch_status", lambda root: None)
+    monkeypatch.setattr(lifecycle, "watch_writer_reason", lambda status: None)
+    monkeypatch.setattr(lifecycle, "handle_completeness_reason", lambda path: None)
 
 
 def _workspace(tmp_path: Path) -> Path:
@@ -74,8 +86,13 @@ def test_ready_and_current_workspace_is_never_ensured_or_reindexed(
         ({"db_exists": False}, "no-index"),
         ({"state": "uninitialized"}, "not-ready"),
         ({"state": "degraded"}, "not-ready"),
+        ({"writer_reason": "writer-contract-unknown"}, "stale-writer"),
+        ({"writer_reason": "writer-contract-mismatch"}, "stale-writer"),
         ({"missing": ("python",)}, "missing-grammars"),
         ({"stale": True}, "stale-references"),
+        ({"handle_reason": "incomplete-handles"}, "incomplete-handles"),
+        ({"handle_reason": "handles-unenforced"}, "handles-unenforced"),
+        ({"handle_reason": "unreadable-index"}, "unreadable-index"),
     ],
 )
 def test_every_repair_trigger_is_named(
@@ -101,6 +118,7 @@ def test_stale_fingerprint_on_a_ready_daemon_repairs_before_navigating(
     ensured: list[Path] = []
 
     monkeypatch.setattr(lifecycle, "db_file_path", lambda root: root / "index.sqlite")
+    _trusted_writer_and_handles(monkeypatch)
     monkeypatch.setattr(lifecycle, "workspace_status_payload", lambda root: {"state": "ready"})
     monkeypatch.setattr(lifecycle, "missing_grammars", lambda: ())
     monkeypatch.setattr(lifecycle, "reference_index_is_stale", lambda root: stale["value"])
@@ -128,6 +146,7 @@ def test_missing_grammar_on_a_ready_daemon_repairs(
     ensured: list[Path] = []
 
     monkeypatch.setattr(lifecycle, "db_file_path", lambda root: root / "index.sqlite")
+    _trusted_writer_and_handles(monkeypatch)
     monkeypatch.setattr(lifecycle, "workspace_status_payload", lambda root: {"state": "ready"})
     monkeypatch.setattr(lifecycle, "missing_grammars", lambda: missing["value"])
     monkeypatch.setattr(lifecycle, "reference_index_is_stale", lambda root: False)
@@ -152,6 +171,7 @@ def test_degraded_workspace_still_initializes_lazily(
     ensured: list[Path] = []
 
     monkeypatch.setattr(lifecycle, "db_file_path", lambda root: root / "index.sqlite")
+    _trusted_writer_and_handles(monkeypatch)
     monkeypatch.setattr(
         lifecycle, "workspace_status_payload", lambda root: {"state": state["value"]}
     )
@@ -177,6 +197,7 @@ def test_lost_repair_race_converges_on_the_winners_fresh_index(
     stale = {"value": True}
 
     monkeypatch.setattr(lifecycle, "db_file_path", lambda root: root / "index.sqlite")
+    _trusted_writer_and_handles(monkeypatch)
     monkeypatch.setattr(lifecycle, "workspace_status_payload", lambda root: {"state": "ready"})
     monkeypatch.setattr(lifecycle, "missing_grammars", lambda: ())
     monkeypatch.setattr(lifecycle, "reference_index_is_stale", lambda root: stale["value"])
@@ -247,6 +268,7 @@ def test_concurrent_repair_wait_is_bounded_and_polls_until_ready(
     remaining = {"polls": 3}
 
     monkeypatch.setattr(lifecycle, "db_file_path", lambda root: root / "index.sqlite")
+    _trusted_writer_and_handles(monkeypatch)
     monkeypatch.setattr(lifecycle, "missing_grammars", lambda: ())
     monkeypatch.setattr(lifecycle, "reference_index_is_stale", lambda root: False)
     monkeypatch.setattr(lifecycle, "NAVIGATION_REPAIR_TIMEOUT_S", 5.0)

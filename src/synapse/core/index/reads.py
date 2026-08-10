@@ -5,7 +5,8 @@ from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
-from synapse.core.index.handles import symbol_handle
+from synapse.core.index.handles import is_symbol_handle, symbol_handle
+from synapse.core.index.integrity import IndexIntegrityError
 from synapse.core.index.source import read_symbol_source
 from synapse.core.languages import reference_extraction as get_reference_extraction
 from synapse.core.languages import reference_limitations as get_reference_limitations
@@ -790,7 +791,14 @@ class ReadProjections:
         return symbols
 
     def get_symbols_by_handles(self, handles: Sequence[str]) -> dict[str, Symbol]:
-        """Return indexed symbols keyed by compact handle; missing handles are omitted."""
+        """Return indexed symbols keyed by compact handle; missing handles are omitted.
+
+        A handle that resolves to more than one declaration, or to a malformed
+        persisted value, is corruption rather than a lookup outcome: reporting one
+        arbitrary declaration would be indistinguishable from a correct answer. The
+        current schema makes both unreachable, so this only ever fires on a database
+        written outside the current contract.
+        """
         symbols: dict[str, Symbol] = {}
         for batch in _sorted_batches(handles):
             placeholders = ", ".join("?" for _ in batch)
@@ -799,7 +807,18 @@ class ReadProjections:
                 batch,
             ).fetchall()
             for row in rows:
-                symbols[str(row["handle"])] = _map_symbol(row)
+                handle = str(row["handle"])
+                if not is_symbol_handle(handle):
+                    msg = f"persisted handle {handle!r} is malformed for symbol {row['id']!r}"
+                    raise IndexIntegrityError(msg)
+                existing = symbols.get(handle)
+                if existing is not None:
+                    msg = (
+                        f"handle {handle} resolves to multiple declarations: "
+                        f"{existing.id!r} and {str(row['id'])!r}"
+                    )
+                    raise IndexIntegrityError(msg)
+                symbols[handle] = _map_symbol(row)
         return symbols
 
     def files_matching_path(

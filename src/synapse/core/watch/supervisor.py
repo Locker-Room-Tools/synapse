@@ -16,6 +16,7 @@ from synapse.core.watch.backend import PollingWatchBackend
 from synapse.core.watch.reconcile import reconcile_workspace
 from synapse.core.watch.state import (
     WatchStatus,
+    current_writer_provenance,
     pid_is_running,
     read_unfinished_journal,
     read_watch_status,
@@ -171,7 +172,11 @@ def _status(
     started_at: str | None,
     pid: int | None,
 ) -> WatchStatus:
+    writer = current_writer_provenance()
     return WatchStatus(
+        writer_contract_version=writer.contract_version,
+        writer_package_version=writer.package_version,
+        writer_package_location=writer.package_location,
         workspace_path=str(root),
         workspace_id=workspace_id(root),
         running=running,

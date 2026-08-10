@@ -9,6 +9,7 @@ import pytest
 from synapse.core.index import SymbolIndex, is_symbol_handle, read_symbol_source, symbol_handle
 from synapse.core.index import writes as writes_module
 from synapse.core.models import Confidence, SourceFile, Symbol, SymbolKind
+from tests.core.index.legacy_databases import write_legacy_database
 
 
 def _symbol(symbol_id: str, name: str, file_path: str, *, line: int = 1) -> Symbol:
@@ -70,58 +71,12 @@ def test_inserted_symbols_carry_their_handle(tmp_path: Path) -> None:
 def test_symbols_table_migrates_v4_handle_column(tmp_path: Path) -> None:
     """Reopening a v4 database adds and backfills the handle column under a unique index."""
     database_path = tmp_path / "index.sqlite"
-    with closing(sqlite3.connect(database_path)) as connection, connection:
-        connection.execute(
-            """
-            CREATE TABLE symbols (
-                id TEXT PRIMARY KEY,
-                file_id TEXT NOT NULL,
-                language TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                native_kind TEXT NOT NULL,
-                name TEXT NOT NULL,
-                qualified_name TEXT,
-                file_path TEXT NOT NULL,
-                container_id TEXT,
-                start_line INTEGER NOT NULL,
-                end_line INTEGER NOT NULL,
-                start_byte INTEGER NOT NULL,
-                end_byte INTEGER NOT NULL,
-                signature TEXT,
-                source TEXT NOT NULL,
-                confidence TEXT NOT NULL
-            )
-            """
-        )
-        connection.execute(
-            """
-            INSERT INTO symbols (
-                id, file_id, language, kind, native_kind, name, qualified_name, file_path,
-                container_id, start_line, end_line, start_byte, end_byte, signature,
-                source, confidence
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "py:legacy",
-                "legacy.py",
-                "python",
-                "function",
-                "function_definition",
-                "legacy",
-                "legacy",
-                "legacy.py",
-                None,
-                1,
-                2,
-                0,
-                10,
-                None,
-                "tree-sitter",
-                "high",
-            ),
-        )
-        connection.execute("PRAGMA user_version = 4")
+    write_legacy_database(
+        database_path,
+        user_version=4,
+        symbols=[("py:legacy", "legacy")],
+        with_handle_column=False,
+    )
 
     reopened = SymbolIndex(database_path)
 

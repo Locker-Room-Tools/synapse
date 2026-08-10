@@ -7,6 +7,7 @@ import pytest
 
 from synapse.core import lifecycle
 from synapse.core.config import ignore_presets
+from synapse.core.index import INDEX_WRITER_CONTRACT_VERSION
 from synapse.core.indexing import IndexStats
 from synapse.core.lifecycle import WorkspaceNotReadyError, WorkspaceState
 from synapse.core.watch.state import WatchStatus
@@ -19,8 +20,12 @@ def _watch_status(
     running: bool,
     degraded: bool = False,
     pid: int | None = None,
+    writer_contract_version: int | None = INDEX_WRITER_CONTRACT_VERSION,
 ) -> WatchStatus:
     return WatchStatus(
+        writer_contract_version=writer_contract_version,
+        writer_package_version="0.0.0-test",
+        writer_package_location="/test",
         workspace_path=str(workspace),
         workspace_id=workspace_id(workspace),
         running=running,
@@ -433,3 +438,154 @@ def test_repair_does_not_bootstrap(
     assert result.action == "repaired"
     assert not (tmp_path / ".synapseignore").exists()
     assert result.ignore_bootstrap is None
+
+
+def _stale_writer_scenario(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    writer_contract_version: int | None,
+    handle_reason: str | None = None,
+    stops: bool = True,
+) -> list[object]:
+    """Pin a live daemon whose writer identity the current runtime cannot accept."""
+    calls: list[object] = []
+    live = _watch_status(
+        tmp_path,
+        running=True,
+        pid=1234,
+        writer_contract_version=writer_contract_version,
+    )
+    started = _watch_status(tmp_path, running=True, pid=5678)
+    monkeypatch.setattr(lifecycle, "read_metadata", lambda path: SimpleNamespace())
+    monkeypatch.setattr(lifecycle, "missing_grammars", lambda: ())
+    monkeypatch.setattr(lifecycle, "read_watch_status", lambda path: live)
+    monkeypatch.setattr(lifecycle, "pid_is_running", lambda pid: True)
+    monkeypatch.setattr(lifecycle, "reference_index_is_stale", lambda path: False)
+    monkeypatch.setattr(lifecycle, "handle_completeness_reason", lambda path: handle_reason)
+
+    def fake_stop(path: Path) -> None:
+        calls.append(("stop", path))
+
+    def fake_wait(path: Path) -> bool:
+        return stops
+
+    def fake_index(path: Path, *, force: bool = False) -> IndexStats:
+        calls.append(("index", path, force))
+        return IndexStats(str(path), 1, 0, 0, 0, 1, 2, ["python"])
+
+    def fake_ensure_daemon(path: Path) -> WatchStatus:
+        calls.append(("daemon", path))
+        return started
+
+    monkeypatch.setattr(lifecycle, "request_watch_stop", fake_stop)
+    monkeypatch.setattr(lifecycle, "wait_for_watch_to_stop", fake_wait)
+    monkeypatch.setattr(lifecycle, "index_workspace", fake_index)
+    monkeypatch.setattr(lifecycle, "ensure_watch_daemon", fake_ensure_daemon)
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("writer_contract_version", "expected_reason"),
+    [
+        (None, "writer-contract-unknown"),
+        (INDEX_WRITER_CONTRACT_VERSION - 1, "writer-contract-mismatch"),
+    ],
+    ids=["no-provenance", "older-contract"],
+)
+def test_stale_writer_daemon_is_stopped_before_the_rebuild_and_replaced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    writer_contract_version: int | None,
+    expected_reason: str,
+) -> None:
+    """The stop must precede every write, or the old writer undoes the repair."""
+    calls = _stale_writer_scenario(
+        tmp_path, monkeypatch, writer_contract_version=writer_contract_version
+    )
+
+    result = lifecycle.ensure_workspace(tmp_path)
+
+    assert calls == [
+        ("stop", tmp_path),
+        ("index", tmp_path, True),
+        ("daemon", tmp_path),
+    ]
+    assert result.action == "repaired"
+    assert result.repair is not None
+    assert result.repair["daemon_stopped"] == expected_reason
+    assert expected_reason in result.repair["reasons"]  # type: ignore[operator]
+    assert result.daemon["writer_contract_version"] == INDEX_WRITER_CONTRACT_VERSION
+
+
+def test_incomplete_handles_force_a_rebuild_and_are_named(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A trusted daemon over an index with unusable handles still rebuilds."""
+    calls = _stale_writer_scenario(
+        tmp_path,
+        monkeypatch,
+        writer_contract_version=INDEX_WRITER_CONTRACT_VERSION,
+        handle_reason="incomplete-handles",
+    )
+
+    result = lifecycle.ensure_workspace(tmp_path)
+
+    assert calls == [
+        ("stop", tmp_path),
+        ("index", tmp_path, True),
+        ("daemon", tmp_path),
+    ]
+    assert result.repair is not None
+    assert result.repair["reasons"] == ["incomplete-handles"]
+    # Nothing was wrong with the writer itself, so the stop is not attributed to it.
+    assert result.repair["daemon_stopped"] is None
+
+
+def test_a_matching_daemon_is_reused_without_restart_or_rebuild(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Matching provenance and complete handles cost nothing."""
+    healthy = _watch_status(tmp_path, running=True, pid=1234)
+    monkeypatch.setattr(lifecycle, "read_metadata", lambda path: SimpleNamespace())
+    monkeypatch.setattr(lifecycle, "missing_grammars", lambda: ())
+    monkeypatch.setattr(lifecycle, "read_watch_status", lambda path: healthy)
+    monkeypatch.setattr(lifecycle, "pid_is_running", lambda pid: True)
+    monkeypatch.setattr(lifecycle, "reference_index_is_stale", lambda path: False)
+    monkeypatch.setattr(lifecycle, "handle_completeness_reason", lambda path: None)
+    monkeypatch.setattr(
+        lifecycle, "request_watch_stop", lambda path: pytest.fail("stopped a healthy daemon")
+    )
+    monkeypatch.setattr(
+        lifecycle, "index_workspace", lambda *a, **k: pytest.fail("rebuilt a healthy index")
+    )
+
+    class FakeIndex:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def workspace_stats(self) -> dict[str, object]:
+            return {"files": 3, "symbols": 8, "languages": ["python"]}
+
+    monkeypatch.setattr(lifecycle, "SymbolIndex", FakeIndex)
+    monkeypatch.setattr(lifecycle, "ensure_watch_daemon", lambda path: healthy)
+
+    result = lifecycle.ensure_workspace(tmp_path)
+
+    assert result.action == "reused"
+    assert result.repair is None
+
+
+def test_a_stale_daemon_that_will_not_stop_fails_instead_of_reporting_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A repair that cannot fence the old writer must not proceed to rebuild."""
+    calls = _stale_writer_scenario(tmp_path, monkeypatch, writer_contract_version=None, stops=False)
+
+    with pytest.raises(WorkspaceNotReadyError, match="writer-contract-unknown"):
+        lifecycle.ensure_workspace(tmp_path)
+
+    assert calls == [("stop", tmp_path)]
