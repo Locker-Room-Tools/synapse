@@ -102,6 +102,7 @@ def add_file(
     relations: list[Relation] | None = None,
     *,
     project_root: str = "/workspace",
+    content_hash: str | None = None,
 ) -> None:
     index.upsert_file(
         SourceFile(
@@ -109,7 +110,9 @@ def add_file(
             path=file_path,
             language="python",
             project_root=project_root,
-            content_hash=f"hash-{file_path}",
+            # Continuation tests pass the real on-disk hash; everything else keeps
+            # the synthetic placeholder.
+            content_hash=content_hash if content_hash is not None else f"hash-{file_path}",
             indexed_at="2026-01-01T00:00:00Z",
         )
     )

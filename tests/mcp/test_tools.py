@@ -847,6 +847,35 @@ def test_synapse_inspect_delegates_to_core(
     assert request.token_budget == INSPECT_DEFAULT_TOKEN_BUDGET
 
 
+def test_synapse_inspect_passes_continuation_tokens_through(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Continuation tokens ride the existing symbols list; MCP adds no parsing.
+
+    The wire schema is unchanged (list[str]); the token contract lives entirely in
+    core, so the tool must forward the string verbatim and document the round trip.
+    """
+    captured: dict[str, object] = {}
+
+    def fake_inspect(index: SymbolIndex, request: InspectRequest, *, workspace_root: Path) -> str:
+        captured["request"] = request
+        return "{}"
+
+    monkeypatch.setattr(tools, "_navigation_workspace", lambda path=".": tmp_path)
+    monkeypatch.setattr(tools, "inspect_symbols", fake_inspect)
+
+    token = "c_" + "A" * 22 + "@45:0011aabb"
+    tools.synapse_inspect([token, "s_" + "B" * 22])
+
+    request = captured["request"]
+    assert isinstance(request, InspectRequest)
+    assert request.symbols == (token, "s_" + "B" * 22)
+    inspect_doc = " ".join((tools.synapse_inspect.__doc__ or "").split())
+    assert "continuation token" in inspect_doc
+    assert "continuation_rejected" in inspect_doc
+
+
 def test_navigation_tools_delegate_readiness_to_core(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
