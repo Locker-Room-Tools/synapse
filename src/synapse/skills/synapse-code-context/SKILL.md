@@ -66,9 +66,7 @@ Use shell only when Synapse cannot establish the required evidence.
 
 Allowed examples:
 
-- when a truncated source slice provides `next`, pass that token alone to
-  `synapse_inspect` before any shell range read of the same symbol; use shell only
-  if continuation is unavailable, rejected, or exhausted;
+- read beyond a truncated source slice;
 - find an exact configuration string or local value;
 - inspect generated files or unsupported syntax;
 - close a dynamic-dispatch gap that indexed relations cannot establish.
