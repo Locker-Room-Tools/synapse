@@ -1,5 +1,7 @@
 """Tests for watch daemon core components."""
 
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -530,6 +532,28 @@ def test_watch_lock_replaces_stale_lock_and_blocks_live_owner(
     monkeypatch.setattr("synapse.core.watch.supervisor.pid_is_running", lambda pid: True)
     with pytest.raises(WatchAlreadyRunning):
         WatchLock(workspace_root).acquire()
+
+
+def test_watch_lock_preserves_fresh_empty_owner_but_replaces_old_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PID publication has a grace period without making corrupt locks permanent."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    lock_path = watch_lock_path(workspace_root)
+    lock_path.touch()
+
+    with pytest.raises(WatchAlreadyRunning, match="owner is initializing"):
+        WatchLock(workspace_root).acquire()
+    assert lock_path.exists()
+
+    stale_time = time.time() - 60
+    os.utime(lock_path, (stale_time, stale_time))
+    lock = WatchLock(workspace_root)
+    lock.acquire()
+    lock.release()
 
 
 def test_duplicate_foreground_start_does_not_overwrite_live_status(
