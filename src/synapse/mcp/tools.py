@@ -156,15 +156,11 @@ def synapse_orient(
 ) -> str:
     """Start here for any code question: ranked matches for literal repository terms.
 
-    Pass 4-8 discriminative identifiers, file names, or path fragments (up to 12)
-    in the repository's own vocabulary — translate the task into likely code terms
-    first, not a natural-language question. Empty terms return a repository-map
-    orientation (areas, entrypoints, anchors). Returns production-first ranked
-    matches with compact handles for synapse_inspect, weak candidates,
-    crowded/unmatched terms, and coverage counts. Initializes the workspace
-    automatically. The response is bounded server-side; unmatched terms are a
-    reason to refine terms once, not to start searching. Empty results are never
-    proof of absence — check coverage and unmatched_terms.
+    Pass 4-8 discriminative repository terms (up to 12), not a natural-language
+    question. Empty terms return a repository map. Returns production-first matches
+    with handles for synapse_inspect, weak candidates, unmatched/crowded terms, and
+    coverage. Initializes automatically. The response is bounded server-side; refine
+    unmatched terms once. Empty results are never proof of absence.
     """
     root = _navigation_workspace(workspace_path)
     request = OrientRequest(terms=tuple(terms or ()), path_scope=path_scope)
@@ -178,25 +174,16 @@ def synapse_inspect(
 ) -> str:
     """Inspect selected symbols using handles from synapse_orient or returned relations.
 
-    Accepts 1-8 compact handles (s_...) or stable symbol ids; normally 2-3
-    facet-diverse anchors, then follow-ups may reuse relation handles. Returns
-    per symbol: the definition
-    with signature and file:line, a bounded source slice (<=40 lines), parent and
-    children, and grouped callers/callees/other references carrying stored
-    resolution (exact|scoped|unique-name|ambiguous|unresolved), confidence, and
-    usage kind verbatim, plus unresolved hypotheses. Totals and omitted counts
-    stay visible; unknown inputs are listed in missing. When src is truncated,
-    src.next is a continuation token: pass it as a symbols entry in a follow-up
-    call to get the next bounded window (continuations, never repeating returned
-    lines); passing a token alone returns the largest window, mixing it with
-    handles may shorten it; stale or invalid tokens are listed in
-    continuation_rejected. next is a retrieval option, not a walk
-    recommendation: remaining_lines beside it is the exact unreturned count —
-    continue only to close a named evidence gap, never to exhaustively walk a
-    large symbol. The
-    response is bounded server-side; treat the returned source as read. A
-    complete payload is not proof the evidence or answer is complete — check
-    coverage.
+    Accepts 1-8 handles or stable IDs; normally 2-3 facet-diverse anchors, then reuse
+    relation handles. Returns definitions, <=40 source lines, hierarchy, grouped
+    callers/callees/neutral references with exact|scoped|unique-name|ambiguous|unresolved
+    resolution, confidence, usage kind, hypotheses, totals, and coverage. Unknown inputs
+    appear in missing. If src is truncated, pass its continuation token src.next alone
+    as a symbols entry for the largest non-overlapping window; mixing handles may shorten
+    it, and invalid/stale tokens appear in continuation_rejected. remaining_lines is an
+    exact cost hint, not a walk recommendation: continue only for a named gap. The response
+    is bounded server-side; treat source as read. payload_complete is not proof the evidence
+    or answer is complete.
     """
     root = _navigation_workspace(workspace_path)
     request = InspectRequest(symbols=tuple(symbols))
