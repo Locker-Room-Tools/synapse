@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import signal
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -27,6 +28,8 @@ from synapse.core.watch.state import (
 from synapse.core.workspace import require_workspace_path, watch_lock_path, workspace_id
 
 type SignalHandler = Callable[[int, FrameType | None], Any] | int | signal.Handlers | None
+
+_LOCK_OWNER_INITIALIZATION_S = 5.0
 
 
 class WatchAlreadyRunning(RuntimeError):
@@ -52,6 +55,9 @@ class WatchLock:
                 if pid_is_running(owner_pid):
                     msg = f"watch daemon already running for {self.root} (pid {owner_pid})"
                     raise WatchAlreadyRunning(msg) from exc
+                if owner_pid is None and self._owner_is_initializing():
+                    msg = f"watch lock owner is initializing for {self.root}"
+                    raise WatchAlreadyRunning(msg) from exc
                 self.path.unlink(missing_ok=True)
                 continue
             os.write(self._fd, f"{os.getpid()}\n".encode())
@@ -73,6 +79,14 @@ class WatchLock:
             return int(text.splitlines()[0])
         except (IndexError, ValueError):
             return None
+
+    def _owner_is_initializing(self) -> bool:
+        """Whether a fresh lock may still be between atomic creation and PID write."""
+        try:
+            age = time.time() - self.path.stat().st_mtime
+        except OSError:
+            return False
+        return 0 <= age < _LOCK_OWNER_INITIALIZATION_S
 
     def __enter__(self) -> WatchLock:
         self.acquire()

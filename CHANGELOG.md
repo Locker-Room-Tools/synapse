@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > again to refresh managed integration files; existing workspace indexes are repaired
 > automatically on the next navigation call.
 
+### Security
+- Raised the direct `cryptography` floor to `>=50.0.0`, resolving
+  `PYSEC-2026-3552` in the locked release environment.
+
 ### Removed
 - **Breaking:** `synapse_query_context` and the `core/context` task-answer engine are
   removed without deprecation; the feature was unreleased. Natural-language keyword
@@ -261,6 +265,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CODEX_HOME` and `XDG_CONFIG_HOME` keep their existing behaviour.
 
 ### Fixed
+- Watch-lock acquisition no longer deletes a lock file in the brief interval between
+  its atomic creation and the owner PID write. Concurrent stale-index repairs therefore
+  cannot both enter the rebuild critical section and collide inside SQLite; old empty or
+  malformed lock files are still recovered after a bounded initialization grace period.
 - Decorated Python definitions (`@decorator def ...`, decorated methods, decorated async
   defs) are indexed as their actual function declarations; previously the anchored
   tree-sitter patterns missed `decorated_definition` wrappers, which made every
