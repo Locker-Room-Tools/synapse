@@ -79,6 +79,8 @@ def test_windows_walk_the_whole_symbol_without_overlap(tmp_path: Path) -> None:
         source_fingerprint(_long_symbol(), LONG_START + 40, content_hash),
     )
 
+    assert src["remaining_lines"] == LONG_END - src["lines"][1]  # exact: 80
+
     windows: list[tuple[int, int, str]] = [(src["lines"][0], src["lines"][1], src["text"])]
     last_end = src["lines"][1]
     for _ in range(5):
@@ -93,7 +95,12 @@ def test_windows_walk_the_whole_symbol_without_overlap(tmp_path: Path) -> None:
         last_end = continuation["lines"][1]
         if not continuation["more"]:
             assert "next" not in continuation
+            assert "remaining_lines" not in continuation
             break
+        # next present <=> remaining_lines present, positive, and exact.
+        remaining = continuation["remaining_lines"]
+        assert remaining == LONG_END - last_end
+        assert remaining > 0
         token = continuation["next"]
     else:
         raise AssertionError("continuation walk did not terminate")
@@ -143,6 +150,7 @@ def test_exact_fit_final_window_reports_no_more(tmp_path: Path) -> None:
     assert continuation["lines"] == [start, LONG_END]
     assert continuation["more"] is False
     assert "next" not in continuation
+    assert "remaining_lines" not in continuation  # never emitted as zero
 
 
 def test_tampering_with_the_line_component_invalidates_the_token(tmp_path: Path) -> None:
@@ -281,6 +289,8 @@ def test_long_lines_force_halving_and_next_tracks_the_returned_end(tmp_path: Pat
     assert returned in (128, 64, 32, 16, 10)  # only deterministic halving sizes
     assert continuation["more"] is True
     assert payload["budget"]["dropped"]["continuation"] >= 1
+    # The hint reflects the post-halving returned end, not the 256-line request.
+    assert continuation["remaining_lines"] == WIDE_END - end
     follow = parse_continuation(continuation["next"])
     assert follow is not None
     assert follow.start_line == end + 1  # next tracks the returned end, not the request
@@ -379,6 +389,43 @@ def test_tight_budget_omits_the_continuation_honestly(tmp_path: Path) -> None:
     assert payload["budget"]["complete"] is False
 
 
+def test_budget_shortened_head_reports_remaining_from_the_actual_end(tmp_path: Path) -> None:
+    """A head shortened by the wire budget hints from where it actually stopped."""
+    index, workspace, _ = _wide_symbol_index(tmp_path)
+    token_budget = 1500  # ~200-char lines: a full 40-line head cannot fit
+    result = inspect_symbols(
+        index,
+        InspectRequest(symbols=(symbol_handle(WIDE_ID),), token_budget=token_budget),
+        workspace_root=workspace,
+    )
+    assert len(result) <= token_budget * CHARS_PER_TOKEN
+    payload = json.loads(result)
+    src = payload["symbols"][0]["src"]
+    assert src.get("shortened") is True
+    end = src["lines"][1]
+    assert end < WIDE_START + 39  # actually shortened below the 40-line head
+    assert src["remaining_lines"] == WIDE_END - end
+    parsed = parse_continuation(src["next"])
+    assert parsed is not None
+    assert parsed.start_line == end + 1  # hint and token share one returned end
+
+
+def test_complete_sources_never_gain_the_optional_fields(tmp_path: Path) -> None:
+    """An untruncated head carries neither next nor remaining_lines."""
+    workspace = _workspace(tmp_path)
+    index = build_index(tmp_path)
+    small_id, small_file = "py:small", "app/small.py"
+    small = make_symbol(small_id, "tiny", small_file, line=3, end_line=12)
+    content_hash = _write_source(workspace, small_file, 20)
+    add_file(index, small_file, [small], content_hash=content_hash)
+
+    payload = _inspect(index, workspace, (symbol_handle(small_id),))
+    src = payload["symbols"][0]["src"]
+    assert src["truncated"] is False
+    assert "next" not in src
+    assert "remaining_lines" not in src
+
+
 def test_remaining_217_lines_return_in_one_continuation_only_call(tmp_path: Path) -> None:
     """The T3 shape: head plus a 217-line tail must cost exactly one follow-up."""
     workspace = _workspace(tmp_path)
@@ -391,11 +438,13 @@ def test_remaining_217_lines_return_in_one_continuation_only_call(tmp_path: Path
     payload = _inspect(index, workspace, (symbol_handle(tall_id),))
     src = payload["symbols"][0]["src"]
     assert src["lines"] == [5, 44]  # normal head stays capped at 40 lines
+    assert src["remaining_lines"] == 217
     follow_up = _inspect(index, workspace, (src["next"],))
     continuation = follow_up["continuations"][0]
     assert continuation["lines"] == [45, 261]  # all 217 remaining lines at once
     assert continuation["more"] is False
     assert "next" not in continuation
+    assert "remaining_lines" not in continuation
 
 
 def test_body_beyond_the_ceiling_needs_exactly_two_windows(tmp_path: Path) -> None:
@@ -411,6 +460,7 @@ def test_body_beyond_the_ceiling_needs_exactly_two_windows(tmp_path: Path) -> No
     first = _inspect(index, workspace, (token,))["continuations"][0]
     assert first["lines"] == [45, 45 + 255]  # full 256-line window
     assert first["more"] is True
+    assert first["remaining_lines"] == 340 - (45 + 255)  # exact count beside next
     second = _inspect(index, workspace, (first["next"],))["continuations"][0]
     assert second["lines"] == [301, 340]
     assert second["more"] is False
@@ -481,8 +531,8 @@ def test_payload_without_tokens_is_unchanged(tmp_path: Path) -> None:
     assert "continuations" not in payload
     assert "continuation_rejected" not in payload
     assert "continuation_requested" not in payload["coverage"]
-    # The only addition for an incomplete source is the deterministic next token.
+    # The only additions for an incomplete source are the token and its cost hint.
     src = payload["symbols"][0]["src"]
-    assert set(src) == {"lines", "truncated", "text", "next"}
+    assert set(src) == {"lines", "truncated", "text", "next", "remaining_lines"}
     again = _inspect(index, workspace, (symbol_handle(LONG_ID),))
     assert again == payload  # same index state, same token: replayable

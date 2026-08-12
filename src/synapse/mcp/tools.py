@@ -190,7 +190,10 @@ def synapse_inspect(
     call to get the next bounded window (continuations, never repeating returned
     lines); passing a token alone returns the largest window, mixing it with
     handles may shorten it; stale or invalid tokens are listed in
-    continuation_rejected. The
+    continuation_rejected. next is a retrieval option, not a walk
+    recommendation: remaining_lines beside it is the exact unreturned count —
+    continue only to close a named evidence gap, never to exhaustively walk a
+    large symbol. The
     response is bounded server-side; treat the returned source as read. A
     complete payload is not proof the evidence or answer is complete — check
     coverage.

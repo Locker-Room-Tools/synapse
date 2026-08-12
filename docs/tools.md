@@ -124,7 +124,13 @@ One batch inspection of the selected symbols under one read snapshot.
 When a returned `src` is incomplete (`truncated: true`), it carries `next`: a
 deterministic continuation token
 (`c_<handle digest>@<start_line>:<16-hex fingerprint>`) naming the first
-unreturned line. Passing that token as a `symbols` entry in a follow-up call
+unreturned line, and `remaining_lines`: the exact count of stored symbol lines
+not yet returned. The invariant is strict — `next` present ⇔ `remaining_lines`
+present and positive — and both are derived from the same actually-returned end
+(after any budget shrinking), so they cannot disagree; a terminal window carries
+neither. `remaining_lines` is a **cost hint**, not evidence that continuing is
+required: it exists so the choice to follow a token is informed by how much
+source is left, instead of discovering it one window at a time. Passing that token as a `symbols` entry in a follow-up call
 returns the next bounded window under `continuations` — never repeating
 already-returned lines — as `{h, f, lines, more, text, next?}`; `more` says
 whether stored body remains and `next` is the only valid follow-up position.
