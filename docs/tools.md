@@ -130,10 +130,12 @@ present and positive — and both are derived from the same actually-returned en
 (after any budget shrinking), so they cannot disagree; a terminal window carries
 neither. `remaining_lines` is a **cost hint**, not evidence that continuing is
 required: it exists so the choice to follow a token is informed by how much
-source is left, instead of discovering it one window at a time. Passing that token as a `symbols` entry in a follow-up call
+source is left, instead of discovering it one window at a time. Passing that
+token as a `symbols` entry in a follow-up call
 returns the next bounded window under `continuations` — never repeating
-already-returned lines — as `{h, f, lines, more, text, next?}`; `more` says
-whether stored body remains and `next` is the only valid follow-up position.
+already-returned lines — as
+`{h, f, lines, more, text, next?, remaining_lines?}`; `more` says whether stored
+body remains and `next` is the only valid follow-up position.
 Windows are clipped to the symbol's stored span and capped at 256 lines — a
 continuation is the call's explicit ask and carries no relations, children,
 hypotheses, or head source, so a **continuation-only** request can spend most of
