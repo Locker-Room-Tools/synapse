@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -114,7 +115,7 @@ def _inspect(
     workspace: Path,
     symbols: tuple[str, ...],
     token_budget: int = 2400,
-) -> dict[str, object]:
+) -> dict[str, Any]:
     result = inspect_symbols(
         index,
         InspectRequest(symbols=symbols, token_budget=token_budget),
