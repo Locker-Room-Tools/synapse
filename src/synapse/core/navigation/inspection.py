@@ -282,6 +282,7 @@ def _continuation_entry(item: _Continuation, files: FileTable) -> dict[str, obje
         token = _next_token(item.handle, item.symbol, end_line, item.content_hash)
         if token is not None:
             entry["next"] = token
+            entry["remaining_lines"] = item.symbol.end_line - end_line
     return entry
 
 
@@ -559,6 +560,9 @@ def inspect_symbols(
                 token = _next_token(item.handle, symbol, end_line, item.content_hash)
                 if token is not None:
                     src["next"] = token
+                    # Cost hint, derived from the same returned end as the token so
+                    # the two can never disagree. Present exactly when `next` is.
+                    src["remaining_lines"] = symbol.end_line - end_line
             entry["src"] = src
         elif item.src_missing:
             entry["src_unavailable"] = True
