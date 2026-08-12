@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-12
+
+> **Breaking beta release.** Synapse remains pre-1.0, so minor releases may contain
+> incompatible changes. This release replaces the default MCP surface and several
+> configuration and response contracts. After upgrading, run `synapse install <agent>`
+> again to refresh managed integration files; existing workspace indexes are repaired
+> automatically on the next navigation call.
+
 ### Removed
 - **Breaking:** `synapse_query_context` and the `core/context` task-answer engine are
   removed without deprecation; the feature was unreleased. Natural-language keyword
@@ -50,10 +58,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   definitions, bounded source slices (<=40 lines), parents/children, and grouped
   relations carrying stored resolution, confidence, and usage kind verbatim, plus
   unresolved hypotheses. Default budget 2,400 estimated tokens, public maximum 4,000.
+- Stateless source continuation for incomplete `synapse_inspect` slices. `src.next`
+  retrieves the next non-overlapping window, while `remaining_lines` reports the exact
+  unreturned span so an agent can decide whether another call is worth its context cost.
+  Continuation-only calls may return up to 256 lines and shrink deterministically under
+  wire pressure; tokens bind the symbol, exact next line, stored span, and indexed content
+  hash, and an edited file is rejected as stale instead of being spliced across versions.
 - Deterministic compact symbol handles (`s_` + 22 base64url characters from a 128-bit
-  blake2b digest of the stable ID), stored under a unique index (schema v5) and backfilled
-  by an in-place migration; a digest collision fails indexing explicitly. Full-profile
-  symbol summaries include the handle alongside the canonical `symbol_id`.
+  blake2b digest of the stable ID), stored as a non-null, shape-checked value under a
+  unique index (schema v6) and backfilled by an in-place migration; a digest collision
+  fails indexing explicitly. Full-profile symbol summaries include the handle alongside
+  the canonical `symbol_id`.
 - Per-language `call_usage_kinds` on `LanguageSpec`, with `call_usage_kinds()` and
   `is_call_usage()` accessors: the single place where usage-kind vocabulary becomes call
   semantics. C#, TypeScript, TSX, and JavaScript prove a call with `invocation` and
@@ -142,6 +157,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   healthy, current workspace performs no ensure and no re-index; the probe is read-only
   and never allocates the cache directory. Losing a repair race to another process is
   absorbed and waited out rather than surfaced as a lock error.
+- The persisted index now declares an independent writer-contract version. Navigation
+  stops a live watch daemon whose write invariants are missing or incompatible before a
+  repair touches SQLite, preventing an older process from reintroducing handle-less rows
+  after schema migration.
 - Inspection coverage reports what the evidence is actually made of: per-language
   `completeness` (so an empty limitation list can no longer read as complete),
   `call_kinds`, `limitations`, an explicit `exhaustive: false`, the languages that
@@ -223,9 +242,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   partial/missing facet (a relation handle, a refined orientation, or one facet-scoped
   shell fallback) -> report each facet verified or unresolved. Two calls remain the
   common fast path, not a cap.
-- `SCHEMA_VERSION` is 5 and `REFERENCE_EXTRACTOR_VERSION` is 7. Existing workspaces
-  perform one fingerprint-forced rebuild on the next navigation call, `ensure_workspace`,
-  or `synapse index`.
+- `SCHEMA_VERSION` is 6, `INDEX_WRITER_CONTRACT_VERSION` is 1, and
+  `REFERENCE_EXTRACTOR_VERSION` is 7. Existing workspaces perform the required in-place
+  migration and one fingerprint-forced rebuild on the next navigation call,
+  `ensure_workspace`, or `synapse index`.
 - Query tools that previously returned `null`/empty content for a missing symbol or file
   (`synapse_get_definition`, `synapse_get_file_outline`, `synapse_get_file_dependencies`,
   `synapse_get_symbol_context`, `synapse_related_symbols`, `synapse_compact_context`) now
