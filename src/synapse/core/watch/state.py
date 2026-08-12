@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import synapse
+from synapse.core.index.contract import INDEX_WRITER_CONTRACT_VERSION
 from synapse.core.workspace import (
     normalize_workspace_path,
     read_metadata,
@@ -21,6 +23,17 @@ from synapse.core.workspace import (
 def utc_now() -> str:
     """Return the current UTC timestamp as ISO-8601 text."""
     return datetime.now(tz=UTC).isoformat()
+
+
+def _parse_contract_version(value: object) -> int | None:
+    """Read a writer contract version conservatively: anything odd means unknown."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _parse_optional_text(value: object) -> str | None:
+    return value if isinstance(value, str) else None
 
 
 def _parse_timestamp(value: str | None) -> datetime | None:
@@ -51,6 +64,50 @@ class WatchStatus:
     last_reconcile_finished_at: str | None
     errors_count: int
     errors: list[str] = field(default_factory=list)
+    # Identity of the process performing incremental writes. Status files written by
+    # older builds carry none, which is why the default is None (unknown) rather than
+    # the current contract. Only the contract version decides compatibility; the
+    # package fields are diagnostics, since two development builds can share a version
+    # while implementing different persistence contracts.
+    writer_contract_version: int | None = None
+    writer_package_version: str | None = None
+    writer_package_location: str | None = None
+
+
+def watch_writer_reason(status: WatchStatus) -> str | None:
+    """Return why this daemon's writer cannot be trusted, or None when it matches.
+
+    Equality rather than a lower bound: a daemon from a newer build maintains
+    invariants this runtime cannot verify, so it is not reusable either.
+    """
+    if status.writer_contract_version is None:
+        return "writer-contract-unknown"
+    if status.writer_contract_version != INDEX_WRITER_CONTRACT_VERSION:
+        return "writer-contract-mismatch"
+    return None
+
+
+def watch_writer_is_current(status: WatchStatus) -> bool:
+    """Whether this daemon implements the current index write contract."""
+    return watch_writer_reason(status) is None
+
+
+@dataclass(frozen=True, slots=True)
+class WriterProvenance:
+    """Writer identity recorded by a daemon started from this runtime."""
+
+    contract_version: int
+    package_version: str
+    package_location: str
+
+
+def current_writer_provenance() -> WriterProvenance:
+    """Return the writer identity of the current runtime."""
+    return WriterProvenance(
+        contract_version=INDEX_WRITER_CONTRACT_VERSION,
+        package_version=synapse.__version__,
+        package_location=str(Path(synapse.__file__).resolve().parent),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +152,9 @@ def read_watch_status(path: str | Path) -> WatchStatus:
     if not isinstance(errors, list):
         errors = []
     return WatchStatus(
+        writer_contract_version=_parse_contract_version(payload.get("writer_contract_version")),
+        writer_package_version=_parse_optional_text(payload.get("writer_package_version")),
+        writer_package_location=_parse_optional_text(payload.get("writer_package_location")),
         workspace_path=str(payload.get("workspace_path", root)),
         workspace_id=str(payload.get("workspace_id", workspace_id(root))),
         running=bool(payload.get("running", False)),
@@ -138,6 +198,10 @@ def watch_status_payload(path: str | Path) -> dict[str, object]:
     latest = _parse_timestamp(status.last_full_sweep_ts or status.last_event_ts)
     payload["staleness_seconds"] = (
         None if latest is None else max(0, int((datetime.now(tz=UTC) - latest).total_seconds()))
+    )
+    payload["writer_contract_expected"] = INDEX_WRITER_CONTRACT_VERSION
+    payload["writer_contract_current"] = bool(payload["running"]) and watch_writer_is_current(
+        status
     )
     return payload
 

@@ -7,6 +7,7 @@ import pytest
 
 from synapse.cli import main as cli_main
 from synapse.core.lifecycle import EnsureWorkspaceResult
+from synapse.core.provenance import runtime_provenance
 
 
 def test_init_delegates_to_shared_workspace_lifecycle(
@@ -31,6 +32,7 @@ def test_init_delegates_to_shared_workspace_lifecycle(
             initialized=True,
             daemon={"running": True, "degraded": False, "pid": 1234},
             index={"files": 2, "symbols": 4, "languages": ["python"]},
+            runtime=runtime_provenance().to_payload(),
         )
 
     monkeypatch.setattr(cli_main, "ensure_workspace", fake_ensure)

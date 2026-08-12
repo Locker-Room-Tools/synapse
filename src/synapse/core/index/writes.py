@@ -3,6 +3,7 @@
 import sqlite3
 from collections.abc import Iterable
 
+from synapse.core.index.handles import symbol_handle
 from synapse.core.models import Relation, RelationKind, SourceFile, Symbol
 
 
@@ -19,6 +20,11 @@ def _relation_rows(file_id: str, relations: Iterable[Relation]) -> list[tuple[ob
             relation.to_name,
             relation.source,
             str(relation.confidence),
+            relation.start_line,
+            relation.start_byte_col,
+            str(relation.resolution) if relation.resolution is not None else None,
+            relation.usage_kind,
+            relation.to_qualified_name,
         )
         for relation in relations
     ]
@@ -35,12 +41,18 @@ def _insert_relation_rows(
         """
         INSERT OR REPLACE INTO relations (
             id, file_id, kind, from_symbol_id, to_symbol_id, from_file_path,
-            to_file_path, to_name, source, confidence
+            to_file_path, to_name, source, confidence, start_line, start_byte_col, resolution,
+            usage_kind, to_qualified_name
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         row_list,
     )
+
+
+def set_meta(connection: sqlite3.Connection, key: str, value: str) -> None:
+    """Insert or update one index metadata entry."""
+    connection.execute("INSERT OR REPLACE INTO index_meta (key, value) VALUES (?, ?)", (key, value))
 
 
 def upsert_file(connection: sqlite3.Connection, source_file: SourceFile) -> None:
@@ -92,6 +104,7 @@ def replace_symbols_for_file(
             symbol.signature,
             symbol.source,
             str(symbol.confidence),
+            symbol_handle(symbol.id),
         )
         for symbol in symbols
     ]
@@ -104,9 +117,9 @@ def replace_symbols_for_file(
             INSERT INTO symbols (
                 id, file_id, language, kind, native_kind, name, qualified_name, file_path,
                 container_id, start_line, end_line, start_byte, end_byte, signature,
-                source, confidence
+                source, confidence, handle
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             symbol_rows,
         )

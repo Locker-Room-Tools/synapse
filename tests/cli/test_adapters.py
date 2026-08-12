@@ -10,8 +10,8 @@ from synapse.cli.adapters import (
     ADAPTERS,
     BEGIN_MARKER,
     END_MARKER,
-    adapter_choices,
     install_instruction_snippet,
+    project_snippet,
     remove_instruction_snippet,
     render_mcp_config,
 )
@@ -78,7 +78,6 @@ def test_render_mcp_config_uses_opencode_local_shape(tmp_path: Path) -> None:
         )
     )
 
-    assert set(adapter_choices()) == {"claude-code", "codex", "opencode"}
     server = config["mcp"]["synapse"]
     assert config["$schema"] == "https://opencode.ai/config.json"
     assert server["type"] == "local"
@@ -105,20 +104,19 @@ def test_install_instruction_snippet_creates_and_is_idempotent(tmp_path: Path) -
     assert second.status == "unchanged"
     assert content.count(BEGIN_MARKER) == 1
     assert content.count(END_MARKER) == 1
-    assert "synapse_ensure_workspace" in content
-    assert "synapse_get_definition" in content
-    assert "synapse_find_references" in content
-    assert "synapse_project_map" in content
-    assert "synapse_watch_status" in content
+    assert "synapse_orient" in content
+    assert "synapse_inspect" in content
+    assert "repository vocabulary" in content
+    assert "never proof of absence" in content
     assert "synapse doctor --path . --agent codex" in content
     assert "use only if the index is stale or missing" not in content
 
 
 def test_agent_snippets_differ_only_in_doctor_line() -> None:
-    """All adapter snippets share one body; only the doctor command names the agent."""
+    """One shared template renders every adapter snippet; only the doctor line differs."""
     bodies = set()
     for adapter in ADAPTERS.values():
-        content = adapter.snippet_path.read_text(encoding="utf-8")
+        content = project_snippet(adapter.id)
         assert f"synapse doctor --path . --agent {adapter.id}" in content
         bodies.add("\n".join(line for line in content.splitlines() if "synapse doctor" not in line))
     assert len(bodies) == 1

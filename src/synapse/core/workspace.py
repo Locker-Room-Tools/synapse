@@ -80,6 +80,11 @@ def db_path(path: Path | str) -> Path:
     return data_dir(path) / DEFAULT_DB_NAME
 
 
+def db_file_path(path: Path | str) -> Path:
+    """Return the SQLite index path without creating its parent directory."""
+    return data_dir_path(path) / DEFAULT_DB_NAME
+
+
 def metadata_path(path: Path | str) -> Path:
     """Return the metadata JSON path for a workspace."""
     return data_dir(path) / "metadata.json"

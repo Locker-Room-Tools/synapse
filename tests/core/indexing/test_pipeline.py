@@ -1,12 +1,18 @@
 """Tests for incremental workspace indexing."""
 
 import sqlite3
+from contextlib import closing
 from pathlib import Path
+from typing import cast
 
 import pytest
 
-from synapse.core.index import SymbolIndex
-from synapse.core.indexing import index_workspace
+from synapse.core.index import REPO_MAP_DERIVATION_VERSION, SymbolIndex, load_repo_map
+from synapse.core.indexing import (
+    REFERENCE_FINGERPRINT_KEY,
+    index_workspace,
+    reference_extraction_fingerprint,
+)
 from synapse.core.indexing.crawler import hash_source as calculate_source_hash
 from synapse.core.indexing.parser import ParsedSource
 from synapse.core.indexing.parser import parse_source as parse_source_bytes
@@ -322,3 +328,115 @@ def test_missing_workspace_fails_before_cache_creation(
         index_workspace(missing)
 
     assert not data_root.exists()
+
+
+def test_index_writes_reference_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every successful index run stamps the current extraction fingerprint."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "alpha.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
+
+    index_workspace(workspace_root)
+
+    index = SymbolIndex(db_path(workspace_root))
+    assert index.get_meta(REFERENCE_FINGERPRINT_KEY) == reference_extraction_fingerprint()
+
+
+def test_fingerprint_change_invalidates_stale_relations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fingerprint mismatch escalates a plain reindex to a full forced rebuild."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    (workspace_root / "alpha.py").write_text(
+        "def target():\n    return 1\n\ndef caller():\n    return target()\n",
+        encoding="utf-8",
+    )
+
+    first = index_workspace(workspace_root)
+    assert first.indexed_files == 1
+
+    # Unchanged fingerprint and files: nothing is reindexed.
+    unchanged = index_workspace(workspace_root)
+    assert (unchanged.indexed_files, unchanged.skipped_files) == (0, 1)
+
+    with closing(sqlite3.connect(db_path(workspace_root))) as connection, connection:
+        connection.execute(
+            "UPDATE index_meta SET value = 'stale' WHERE key = ?",
+            (REFERENCE_FINGERPRINT_KEY,),
+        )
+
+    rebuilt = index_workspace(workspace_root)
+
+    # The stale index is fully rebuilt without --force and re-stamped.
+    assert rebuilt.indexed_files == 1
+    assert rebuilt.skipped_files == 0
+    index = SymbolIndex(db_path(workspace_root))
+    assert index.get_meta(REFERENCE_FINGERPRINT_KEY) == reference_extraction_fingerprint()
+    # The rebuilt relations carry the current extraction semantics.
+    rebuilt_references = index.find_references(name="target")
+    assert cast(dict[str, object], rebuilt_references["page"])["total"] == 1
+    items = rebuilt_references["items"]
+    assert isinstance(items, list)
+    assert items[0]["match"] == "heuristic"
+
+
+def test_index_workspace_stores_repository_map(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Full indexing materializes a versioned repository map in index_meta."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace_root = tmp_path / "workspace"
+    (workspace_root / "app").mkdir(parents=True)
+    (workspace_root / "core").mkdir()
+    (workspace_root / "app" / "main.py").write_text(
+        "from core.store import Store\n\ndef main():\n    return Store()\n",
+        encoding="utf-8",
+    )
+    (workspace_root / "core" / "store.py").write_text(
+        "class Store:\n    def get(self):\n        return 1\n",
+        encoding="utf-8",
+    )
+
+    index_workspace(workspace_root)
+
+    index = SymbolIndex(db_path(workspace_root))
+    with index.read_session() as reads:
+        repo_map = load_repo_map(reads)
+    assert repo_map is not None
+    assert repo_map.version == REPO_MAP_DERIVATION_VERSION
+    assert {area.path for area in repo_map.areas} == {"app", "core"}
+    assert any(
+        entry.name == "main" and entry.signal == "name-convention" for entry in repo_map.entrypoints
+    )
+
+
+def test_forced_reindex_ships_a_fresh_repository_map(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The map is written inside the temp database before the atomic replace."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace_root = tmp_path / "workspace"
+    (workspace_root / "app").mkdir(parents=True)
+    (workspace_root / "app" / "main.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+    index_workspace(workspace_root)
+
+    (workspace_root / "extra").mkdir()
+    (workspace_root / "extra" / "util.py").write_text(
+        "def helper():\n    return 2\n", encoding="utf-8"
+    )
+    index_workspace(workspace_root, force=True)
+
+    index = SymbolIndex(db_path(workspace_root))
+    with index.read_session() as reads:
+        repo_map = load_repo_map(reads)
+    assert repo_map is not None
+    assert {area.path for area in repo_map.areas} == {"app", "extra"}

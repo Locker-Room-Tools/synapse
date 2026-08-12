@@ -57,11 +57,17 @@ jobs:
             tests: >-
               tests/core/config tests/core/index tests/core/languages
               tests/core/test_lifecycle.py tests/core/test_models.py
-              tests/core/test_workspace.py
+              tests/core/test_workspace.py tests/core/test_provenance.py
           - shard: indexing lifecycle
             tests: >-
               tests/core/indexing/test_pipeline.py
               tests/core/indexing/test_crawler.py
+              tests/core/indexing/test_references.py
+              tests/core/test_multiprocess_rebuild.py
+          - shard: references and resolution
+            tests: >-
+              tests/core/indexing/test_resolution.py
+              tests/core/indexing/test_reference_trust.py
           - shard: base parsers
             tests: >-
               tests/core/indexing/test_parser.py

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from synapse.core.config import IgnoreMatcher, write_project_ignored_directories
-from synapse.core.index import SymbolIndex
+from synapse.core.index import SymbolIndex, load_repo_map
 from synapse.core.indexing.crawler import hash_source as calculate_source_hash
 from synapse.core.indexing.crawler import iter_source_files
 from synapse.core.indexing.parser import ParsedSource
@@ -141,6 +141,21 @@ def test_event_normalizer_and_crawler_filter_identically(
 
     assert crawled == {"src/app.py", "pkg/src/generated/y.py"}
     assert normalized == crawled
+
+
+def test_event_normalizer_applies_file_patterns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Watch filters file patterns too, not just the directories on the way to a file."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    workspace_root = tmp_path / "workspace"
+    (workspace_root / "src").mkdir(parents=True)
+    (workspace_root / ".synapseignore").write_text("*.min.js\n", encoding="utf-8")
+    normalizer = EventNormalizer(workspace_root)
+
+    assert normalizer.normalize_path(workspace_root / "src" / "app.min.js") is None
+    assert normalizer.normalize_path(workspace_root / "src" / "app.js") == "src/app.js"
 
 
 def test_coalescing_buffer_batches_latest_intent() -> None:
@@ -592,3 +607,38 @@ def test_watch_status_payload_marks_dead_running_status_as_stopped(
     assert payload["running"] is False
     assert payload["pending"] == 0
     assert isinstance(payload["staleness_seconds"], int)
+
+
+def test_watch_worker_refreshes_repository_map_incrementally(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An applied batch rewrites the stored repository map in the same transaction."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    workspace_root = tmp_path / "workspace"
+    (workspace_root / "app").mkdir(parents=True)
+    (workspace_root / "app" / "main.py").write_text("def main():\n    return 1\n", encoding="utf-8")
+    worker = WatchWorker(workspace_root)
+    worker.apply_batch(reindex_paths=["app/main.py"], remove_paths=[])
+
+    index = SymbolIndex(db_path(workspace_root))
+    with index.read_session() as reads:
+        first_map = load_repo_map(reads)
+    assert first_map is not None
+    assert {area.path for area in first_map.areas} == {"app"}
+
+    (workspace_root / "core").mkdir()
+    (workspace_root / "core" / "store.py").write_text(
+        "class Store:\n    def get(self):\n        return 1\n", encoding="utf-8"
+    )
+    worker.apply_batch(reindex_paths=["core/store.py"], remove_paths=[])
+    with index.read_session() as reads:
+        second_map = load_repo_map(reads)
+    assert second_map is not None
+    assert {area.path for area in second_map.areas} == {"app", "core"}
+
+    empty = worker.apply_batch(reindex_paths=[], remove_paths=[])
+    assert empty.indexed_files == 0
+    with index.read_session() as reads:
+        third_map = load_repo_map(reads)
+    assert third_map == second_map

@@ -1,18 +1,32 @@
 """MCP client config install and uninstall helpers."""
 
-import json
 import re
 import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 from synapse.cli.adapters import (
     AgentAdapter,
+    ConfigFormat,
+    McpTarget,
+    build_server_entry,
     get_adapter,
     render_mcp_config,
-    resolve_agent_user_path,
+    resolve_user_path,
+)
+from synapse.cli.adapters.model import JsonObject
+from synapse.cli.config_codecs import (
+    SERVER_NAME,
+    apply_document_defaults,
+    delete_entry,
+    document_is_empty,
+    dumps,
+    loads,
+    read_entry,
+    render_toml_entry,
+    write_entry,
 )
 from synapse.cli.marker_blocks import append_marker_block, find_marker_block, splice_marker_block
 from synapse.core.workspace import normalize_workspace_path
@@ -22,11 +36,6 @@ MANAGED_TOML_END = "# <<< SYNAPSE MCP (managed) <<<"
 _PARTIAL_MARKERS_MESSAGE = (
     "MCP config contains partial Synapse managed markers; fix the file manually."
 )
-_CODEX_SYNAPSE_TABLE = re.compile(
-    r"(?ms)^\[mcp_servers\.synapse\]\n.*?(?=^\[|\Z)",
-)
-
-JsonObject = dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,30 +56,34 @@ def resolve_config_path(
     resolved_scope = scope or adapter.default_scope
     workspace = normalize_workspace_path(workspace_root)
     if resolved_scope == "project":
-        if adapter.config.relative_path is None:
-            msg = f"{adapter.display_name} does not support project-scope MCP config."
+        if adapter.mcp.project is None:
+            msg = (
+                f"{adapter.display_name} does not support project-scope MCP config; "
+                f"use 'synapse install {adapter.id}' for its global configuration."
+            )
             raise ValueError(msg)
-        return workspace / adapter.config.relative_path
+        return workspace / adapter.mcp.project
     if resolved_scope == "user":
-        if adapter.config.user_path is None:
-            msg = f"{adapter.display_name} does not support user-scope MCP config."
+        if adapter.mcp.user is None:
+            msg = (
+                f"{adapter.display_name} does not support user-scope MCP config; "
+                f"use 'synapse setup {adapter.id} --path .' for its project configuration."
+            )
             raise ValueError(msg)
-        return resolve_agent_user_path(adapter.id, adapter.config.user_path)
+        return resolve_user_path(adapter.mcp.user)
     msg = f"Unsupported MCP config scope: {resolved_scope}"
     raise ValueError(msg)
 
 
-def render_codex_toml_block(
+def render_managed_toml_block(
+    adapter: AgentAdapter,
     workspace_root: str | Path | None,
     python_executable: str | None = None,
 ) -> str:
-    """Render the marker-managed Codex TOML server block."""
+    """Render the marker-managed TOML server block for an adapter."""
     workspace = None if workspace_root is None else normalize_workspace_path(workspace_root)
-    content = render_mcp_config(
-        workspace,
-        agent_id="codex",
-        python_executable=python_executable,
-    ).strip()
+    entry = build_server_entry(adapter.mcp, workspace, python_executable)
+    content = render_toml_entry(adapter.mcp, entry).strip()
     return f"{MANAGED_TOML_BEGIN}\n{content}\n{MANAGED_TOML_END}"
 
 
@@ -88,8 +101,16 @@ def install_mcp_server(
     adapter = get_adapter(agent_id)
     workspace = normalize_workspace_path(workspace_root)
     target = resolve_config_path(adapter, workspace, scope)
-    if adapter.config.fmt == "json":
-        return _install_json_config(
+    resolved_scope = scope or adapter.default_scope
+    if resolved_scope == "user" and adapter.mcp.user_requires_existing and not target.exists():
+        msg = (
+            f"{target} does not exist. {adapter.display_name} requires an existing "
+            "configuration file with its mandatory top-level keys; start the agent once "
+            f"to create it, or use 'synapse setup {adapter.id} --path .' for project scope."
+        )
+        raise ValueError(msg)
+    if adapter.mcp.fmt is ConfigFormat.TOML:
+        return _install_toml_config(
             adapter,
             target,
             workspace,
@@ -98,17 +119,15 @@ def install_mcp_server(
             python_executable=python_executable,
             portable=portable,
         )
-    if adapter.config.fmt == "toml":
-        return _install_toml_config(
-            target,
-            workspace,
-            force=force,
-            dry_run=dry_run,
-            python_executable=python_executable,
-            portable=portable,
-        )
-    msg = f"Unsupported MCP config format: {adapter.config.fmt}"
-    raise ValueError(msg)
+    return _install_structured_config(
+        adapter,
+        target,
+        workspace,
+        force=force,
+        dry_run=dry_run,
+        python_executable=python_executable,
+        portable=portable,
+    )
 
 
 def uninstall_mcp_server(
@@ -122,12 +141,15 @@ def uninstall_mcp_server(
     adapter = get_adapter(agent_id)
     workspace = normalize_workspace_path(workspace_root)
     target = resolve_config_path(adapter, workspace, scope)
-    if adapter.config.fmt == "json":
-        return _uninstall_json_config(adapter, target, dry_run=dry_run)
-    if adapter.config.fmt == "toml":
+    if adapter.mcp.fmt is ConfigFormat.TOML:
         return _uninstall_toml_config(target, dry_run=dry_run)
-    msg = f"Unsupported MCP config format: {adapter.config.fmt}"
-    raise ValueError(msg)
+    resolved_scope = scope or adapter.default_scope
+    return _uninstall_structured_config(
+        adapter,
+        target,
+        dry_run=dry_run,
+        allow_delete=not (resolved_scope == "user" and adapter.mcp.user_requires_existing),
+    )
 
 
 def uninstall_global_mcp_server(
@@ -139,21 +161,19 @@ def uninstall_global_mcp_server(
     """Remove the portable global MCP entry without touching pinned entries."""
     adapter = get_adapter(agent_id)
     target = resolve_config_path(adapter, workspace_root, "user")
-    if adapter.config.fmt == "json":
-        return _uninstall_json_config(
-            adapter,
-            target,
-            dry_run=dry_run,
-            expected_workspace=None,
-        )
-    if adapter.config.fmt == "toml":
+    if adapter.mcp.fmt is ConfigFormat.TOML:
         return _uninstall_toml_config(
             target,
             dry_run=dry_run,
-            expected_block=render_codex_toml_block(None),
+            expected_block=render_managed_toml_block(adapter, None),
         )
-    msg = f"Unsupported MCP config format: {adapter.config.fmt}"
-    raise ValueError(msg)
+    return _uninstall_structured_config(
+        adapter,
+        target,
+        dry_run=dry_run,
+        expected_workspace=None,
+        allow_delete=not adapter.mcp.user_requires_existing,
+    )
 
 
 def config_has_mcp_server(
@@ -168,21 +188,16 @@ def config_has_mcp_server(
     if not path.exists():
         return False
     try:
-        if adapter.config.fmt == "json":
-            data = _read_json_file(path)
-            server_parent = _lookup_mapping(data, adapter.config.json_key_path)
-            return isinstance(server_parent.get("synapse"), dict)
-        if adapter.config.fmt == "toml":
-            text = path.read_text(encoding="utf-8")
-            parsed = tomllib.loads(text)
-            servers = parsed.get("mcp_servers")
-            return isinstance(servers, dict) and isinstance(servers.get("synapse"), dict)
+        text = path.read_text(encoding="utf-8")
+        if adapter.mcp.fmt is ConfigFormat.TOML:
+            return _toml_has_entry(text, adapter.mcp)
+        data = loads(adapter.mcp.fmt, text, str(path))
+        return read_entry(data, adapter.mcp) is not None
     except (OSError, ValueError, tomllib.TOMLDecodeError):
         return False
-    return False
 
 
-def _install_json_config(
+def _install_structured_config(
     adapter: AgentAdapter,
     target: Path,
     workspace_root: Path,
@@ -192,33 +207,25 @@ def _install_json_config(
     python_executable: str | None,
     portable: bool,
 ) -> InstallResult:
-    created = not target.exists()
-    data = _read_json_file(target) if target.exists() else {}
-    payload = cast(
-        JsonObject,
-        json.loads(
-            render_mcp_config(
-                None if portable else workspace_root,
-                agent_id=adapter.id,
-                python_executable=python_executable,
-            )
-        ),
+    mcp = adapter.mcp
+    exists = target.exists()
+    data = loads(mcp.fmt, target.read_text(encoding="utf-8"), str(target)) if exists else {}
+    desired = build_server_entry(
+        mcp,
+        None if portable else workspace_root,
+        python_executable,
     )
-    if adapter.id == "opencode" and "$schema" not in data and "$schema" in payload:
-        data["$schema"] = payload["$schema"]
-    desired_parent = _lookup_mapping(payload, adapter.config.json_key_path)
-    desired_entry = desired_parent["synapse"]
-    parent = _ensure_mapping(data, adapter.config.json_key_path)
-    current_entry = parent.get("synapse")
-    if current_entry == desired_entry:
-        content = _json_text(data)
-        return InstallResult(target, "unchanged", content)
-    if current_entry is not None and not force:
-        msg = f"{target} already contains a different synapse MCP entry; use --force."
+    if not exists:
+        apply_document_defaults(data, mcp)
+    current = read_entry(data, mcp)
+    if current == desired:
+        return InstallResult(target, "unchanged", dumps(mcp.fmt, data))
+    if current is not None and not force:
+        msg = f"{target} already contains a different {SERVER_NAME} MCP entry; use --force."
         raise FileExistsError(msg)
-    parent["synapse"] = desired_entry
-    content = _json_text(data)
-    action = "created" if created else "updated"
+    write_entry(data, mcp, desired)
+    content = dumps(mcp.fmt, data)
+    action = "updated" if exists else "created"
     if dry_run:
         return InstallResult(target, _dry_run_action(action), content)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -226,43 +233,44 @@ def _install_json_config(
     return InstallResult(target, action, content)
 
 
-def _uninstall_json_config(
+def _uninstall_structured_config(
     adapter: AgentAdapter,
     target: Path,
     *,
     dry_run: bool,
     expected_workspace: Path | None | object = ...,
+    allow_delete: bool = True,
 ) -> InstallResult:
+    mcp = adapter.mcp
     if not target.exists():
         return InstallResult(target, "absent", "")
-    data = _read_json_file(target)
-    parent = _lookup_mapping(data, adapter.config.json_key_path)
-    if "synapse" not in parent:
-        return InstallResult(target, "absent", _json_text(data))
+    data = loads(mcp.fmt, target.read_text(encoding="utf-8"), str(target))
+    current = read_entry(data, mcp)
+    if current is None:
+        return InstallResult(target, "absent", dumps(mcp.fmt, data))
     if expected_workspace is not ...:
-        expected = cast(Path | None, expected_workspace)
-        expected_payload = cast(
-            JsonObject,
-            json.loads(render_mcp_config(expected, agent_id=adapter.id)),
-        )
-        expected_parent = _lookup_mapping(expected_payload, adapter.config.json_key_path)
-        if parent["synapse"] != expected_parent["synapse"]:
-            return InstallResult(target, "unmanaged", _json_text(data))
-    del parent["synapse"]
-    _drop_empty_path(data, adapter.config.json_key_path)
-    if _json_effectively_empty(data, adapter):
+        expected = build_server_entry(mcp, _as_path(expected_workspace))
+        if current != expected:
+            return InstallResult(target, "unmanaged", dumps(mcp.fmt, data))
+    delete_entry(data, mcp)
+    if allow_delete and document_is_empty(data, mcp):
         if dry_run:
             return InstallResult(target, "would-remove", "")
         target.unlink()
         return InstallResult(target, "removed", "")
-    content = _json_text(data)
+    content = dumps(mcp.fmt, data)
     if dry_run:
         return InstallResult(target, "would-remove", content)
     target.write_text(content, encoding="utf-8")
     return InstallResult(target, "removed", content)
 
 
+def _as_path(value: Path | None | object) -> Path | None:
+    return value if isinstance(value, Path) else None
+
+
 def _install_toml_config(
+    adapter: AgentAdapter,
     target: Path,
     workspace_root: Path,
     *,
@@ -272,12 +280,13 @@ def _install_toml_config(
     portable: bool,
 ) -> InstallResult:
     created = not target.exists()
-    block = render_codex_toml_block(
+    block = render_managed_toml_block(
+        adapter,
         None if portable else workspace_root,
         python_executable,
     )
     existing = target.read_text(encoding="utf-8") if target.exists() else ""
-    next_text, changed = _upsert_managed_toml_block(existing, block, force=force)
+    next_text, changed = _upsert_managed_toml_block(existing, block, adapter.mcp, force=force)
     if not changed:
         return InstallResult(target, "unchanged", next_text)
     action = "created" if created else "updated"
@@ -324,6 +333,7 @@ def _uninstall_toml_config(
 def _upsert_managed_toml_block(
     existing: str,
     block: str,
+    mcp: McpTarget,
     *,
     force: bool,
 ) -> tuple[str, bool]:
@@ -339,11 +349,14 @@ def _upsert_managed_toml_block(
             raise FileExistsError(msg)
         return splice_marker_block(existing, span, block), True
 
-    if _has_codex_synapse_table(existing):
+    if _toml_has_entry(existing, mcp):
         if not force:
-            msg = "Codex config already contains synapse MCP config; use --force to manage it."
+            msg = (
+                f"Config already contains an unmanaged {SERVER_NAME} MCP table; "
+                "use --force to manage it."
+            )
             raise FileExistsError(msg)
-        existing = _strip_codex_synapse_table(existing)
+        existing = _strip_toml_entry(existing, mcp)
 
     return append_marker_block(existing, block), True
 
@@ -357,89 +370,33 @@ def _remove_managed_toml_block(existing: str) -> tuple[str, bool]:
     return splice_marker_block(existing, span), True
 
 
-def _has_codex_synapse_table(text: str) -> bool:
+def _toml_entry_pattern(mcp: McpTarget) -> re.Pattern[str]:
+    header = re.escape(".".join((*mcp.key_path, SERVER_NAME)))
+    return re.compile(rf"(?ms)^\[{header}\]\n.*?(?=^\[|\Z)")
+
+
+def _toml_has_entry(text: str, mcp: McpTarget) -> bool:
     if not text.strip():
         return False
     try:
-        parsed = tomllib.loads(text)
+        parsed: dict[str, Any] = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
-        msg = "Codex config contains invalid TOML."
+        msg = "MCP config contains invalid TOML."
         raise ValueError(msg) from exc
-    servers = parsed.get("mcp_servers")
-    return isinstance(servers, dict) and isinstance(servers.get("synapse"), dict)
+    current: Any = parsed
+    for key in mcp.key_path:
+        if not isinstance(current, dict):
+            return False
+        current = current.get(key)
+    return isinstance(current, dict) and isinstance(current.get(SERVER_NAME), dict)
 
 
-def _strip_codex_synapse_table(text: str) -> str:
-    next_text, replacements = _CODEX_SYNAPSE_TABLE.subn("", text)
+def _strip_toml_entry(text: str, mcp: McpTarget) -> str:
+    next_text, replacements = _toml_entry_pattern(mcp).subn("", text)
     if replacements == 0:
-        msg = "Existing Codex synapse config is not a simple table; remove it manually."
+        msg = f"Existing {SERVER_NAME} config is not a simple table; remove it manually."
         raise ValueError(msg)
     return next_text.strip() + "\n" if next_text.strip() else ""
-
-
-def _read_json_file(path: Path) -> JsonObject:
-    text = path.read_text(encoding="utf-8")
-    if not text.strip():
-        return {}
-    data = json.loads(text)
-    if not isinstance(data, dict):
-        msg = f"{path} must contain a JSON object."
-        raise ValueError(msg)
-    return cast(JsonObject, data)
-
-
-def _json_text(data: JsonObject) -> str:
-    return json.dumps(data, indent=2) + "\n"
-
-
-def _ensure_mapping(data: JsonObject, key_path: tuple[str, ...]) -> JsonObject:
-    current = data
-    for key in key_path:
-        child = current.get(key)
-        if child is None:
-            child = {}
-            current[key] = child
-        if not isinstance(child, dict):
-            msg = f"Config key {key} must be an object."
-            raise ValueError(msg)
-        current = cast(JsonObject, child)
-    return current
-
-
-def _lookup_mapping(data: JsonObject, key_path: tuple[str, ...]) -> JsonObject:
-    current = data
-    for key in key_path:
-        child = current.get(key)
-        if child is None:
-            return {}
-        if not isinstance(child, dict):
-            msg = f"Config key {key} must be an object."
-            raise ValueError(msg)
-        current = cast(JsonObject, child)
-    return current
-
-
-def _drop_empty_path(data: JsonObject, key_path: tuple[str, ...]) -> None:
-    if not key_path:
-        return
-    stack: list[tuple[JsonObject, str]] = []
-    current = data
-    for key in key_path:
-        child = current.get(key)
-        if not isinstance(child, dict):
-            return
-        stack.append((current, key))
-        current = cast(JsonObject, child)
-    while stack and not current:
-        parent, key = stack.pop()
-        del parent[key]
-        current = parent
-
-
-def _json_effectively_empty(data: JsonObject, adapter: AgentAdapter) -> bool:
-    if not data:
-        return True
-    return adapter.id == "opencode" and set(data) == {"$schema"}
 
 
 def _dry_run_action(action: str) -> str:
@@ -459,3 +416,18 @@ def standalone_mcp_config(
     """Render a standalone MCP config for printing or explicit output files."""
     command = python_executable or sys.executable
     return render_mcp_config(workspace_root, agent_id=agent_id, python_executable=command)
+
+
+__all__ = [
+    "MANAGED_TOML_BEGIN",
+    "MANAGED_TOML_END",
+    "InstallResult",
+    "JsonObject",
+    "config_has_mcp_server",
+    "install_mcp_server",
+    "render_managed_toml_block",
+    "resolve_config_path",
+    "standalone_mcp_config",
+    "uninstall_global_mcp_server",
+    "uninstall_mcp_server",
+]

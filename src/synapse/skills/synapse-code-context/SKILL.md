@@ -1,44 +1,98 @@
 ---
 name: synapse-code-context
-description: Navigate and understand codebases with fresh Synapse structural context. Use for code exploration, architecture questions, symbol lookup, definitions, references, dependencies, file outlines, project maps, and compact code context before falling back to grep or whole-file reads.
+description: Navigate and understand codebases with fresh Synapse structural context. Use for code exploration, architecture questions, execution flows, impact analysis, symbol lookup, definitions, and references before falling back to grep or whole-file reads.
 ---
 
 <!-- SYNAPSE MANAGED SKILL -->
 
 # Synapse Code Context
 
-Use Synapse as the first source of code structure. Keep calls bounded and reuse stable
-`symbol_id` values between tools.
+## Purpose
 
-## Workflow
+Use Synapse before shell exploration for repository structure.
+Synapse provides structural evidence; you interpret and synthesize it.
 
-1. Before the first code-navigation operation:
-   - Normally call `synapse_ensure_workspace`. Continue when it reports `initialized: true`,
-     `daemon.running: true`, and `daemon.degraded: false`.
-   - If the task explicitly forbids workspace mutation, call the read-only
-     `synapse_watch_status` instead. Use query tools only when it reports
-     `initialized: true`, `running: true`, and `degraded: false`; otherwise explain that
-     initialization needs permission and use a permitted fallback.
-2. Choose the narrowest structural entry point:
-   - Known symbol: `synapse_get_definition(name=...)`.
-   - Unknown symbol: `synapse_search_symbols(query=...)`.
-   - Known file: `synapse_get_file_outline(file_path=...)`.
-   - Broad architecture: `synapse_project_map`.
-3. Reuse the returned `symbol_id`:
-   - Usages: `synapse_find_references(symbol_id=...)`.
-   - Local structure: `synapse_get_symbol_context` or `synapse_compact_context`.
-   - Relations: `synapse_get_dependencies`, `synapse_get_file_dependencies` (file
-     imports), or `synapse_related_symbols`.
-4. Follow pagination metadata instead of requesting unbounded results.
-5. Use grep or file reads only for exact text, generated files, unsupported syntax, or details
-   explicitly absent from the index.
+Default workflow:
+plan → orient → inspect → follow relations → close gaps → synthesize
 
-## Freshness and recovery
+## 1. Plan
 
-If a query reports that the workspace is uninitialized or degraded, call
-`synapse_ensure_workspace` again unless the task forbids mutation. Inspect
-`synapse_watch_status` only when freshness or daemon health needs diagnosis. If Synapse tools
-are unavailable, report that the global integration may need installation or an agent
-restart; do not imitate those operations manually. Do not implement installation or daemon
-lifecycle inside the skill. Use a permitted bounded fallback when continuing without Synapse
-is useful.
+Identify the few concrete facts required by the task.
+
+For cross-cutting questions, prefer anchors from different relevant
+architectural layers.
+
+## 2. Orient
+
+Use `synapse_orient` with 4–8 discriminative terms.
+
+Rules:
+
+- terms come from the request, framework, or previous Synapse results;
+- don't invent repository symbols;
+- don't path-scope prematurely;
+- refine once when orientation is weak or crowded.
+
+## 3. Inspect
+
+Inspect 2–3 diverse production anchors with `synapse_inspect`.
+
+Use returned source and relations as evidence.
+Prefer production symbols unless tests are relevant.
+
+## 4. Follow relations
+
+Follow returned handles only to close a specific open fact.
+Do not inspect the same handle twice.
+
+## 5. Close gaps
+
+For each required fact:
+
+- verified
+- unresolved
+
+If evidence is insufficient, make one targeted closing attempt:
+
+- relation handle;
+- refined orientation;
+- narrow shell fallback.
+
+Then stop investigating that fact.
+
+## 6. Shell fallback
+
+Use shell only when Synapse cannot establish the required evidence.
+
+Allowed examples:
+
+- read beyond a truncated source slice;
+- find an exact configuration string or local value;
+- inspect generated files or unsupported syntax;
+- close a dynamic-dispatch gap that indexed relations cannot establish.
+
+Never:
+
+- start with broad grep;
+- reproduce the whole investigation;
+- use shell to upgrade heuristic relations into proven relations.
+
+## 7. Evidence semantics
+
+`exact`/`scoped` = structural evidence  
+`unique-name` = heuristic  
+`ambiguous`/`unresolved` = hypothesis  
+empty relations != proof of absence
+
+See [evidence semantics](references/evidence-semantics.md) for coverage and call-kind
+details.
+
+## 8. Stop
+
+Stop when every requested fact is verified or unresolved.
+
+Clearly distinguish:
+
+- verified evidence;
+- structural inference;
+- unresolved evidence.

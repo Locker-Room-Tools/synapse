@@ -11,7 +11,9 @@ from synapse import __version__
 from synapse.cli import doctor as cli_doctor
 from synapse.cli import main as cli_main
 from synapse.cli.doctor import DoctorReport
+from synapse.core.config import global_ignore_path
 from synapse.core.indexing import IndexStats
+from synapse.mcp.profiles import ToolProfile
 
 
 def test_version_flag_reports_installed_package_version(
@@ -352,8 +354,12 @@ def test_doctor_validates_mcp_path(
     workspace_root.mkdir()
     (workspace_root / "sample.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
 
-    async def fake_probe(_workspace_root: Path) -> tuple[list[str], int, str | None]:
-        return sorted(cli_doctor.EXPECTED_TOOLS), 1, "Use Synapse first"
+    async def fake_probe(
+        _workspace_root: Path,
+        _profile: ToolProfile = ToolProfile.DEFAULT,
+    ) -> tuple[list[str], int, str | None]:
+        expected = cli_doctor.expected_tools(ToolProfile.DEFAULT)
+        return sorted(expected), 1, "Use Synapse first"
 
     monkeypatch.setattr(cli_doctor, "_probe_mcp", fake_probe)
     monkeypatch.setattr(
@@ -511,7 +517,7 @@ def test_config_ignored_dirs_preserves_watch_settings(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Config rewrites update ignored directories without dropping watch tunables."""
+    """Adopting the global ignore file leaves the rest of the config file alone."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     config_path = tmp_path / "xdg" / "synapse" / "config.json"
     config_path.parent.mkdir(parents=True)
@@ -533,4 +539,4 @@ def test_config_ignored_dirs_preserves_watch_settings(
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     assert exit_code == 0
     assert payload["watch"] == {"poll_interval_s": 2}
-    assert payload["ignored_directories"] == ["generated"]
+    assert "generated" in global_ignore_path().read_text(encoding="utf-8")

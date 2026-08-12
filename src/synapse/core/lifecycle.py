@@ -1,16 +1,31 @@
 """Per-workspace initialization and readiness lifecycle."""
 
+import sqlite3
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
+from time import monotonic, sleep
 
-from synapse.core.index import SymbolIndex
-from synapse.core.indexing import index_workspace
+from synapse.core.config import IgnoreWriteResult
+from synapse.core.config.ignore_presets import bootstrap_project_ignores
+from synapse.core.index import SymbolIndex, handle_completeness_reason
+from synapse.core.indexing import index_workspace, reference_index_is_stale
 from synapse.core.languages.grammar_install import install_grammars, missing_grammars
+from synapse.core.provenance import runtime_provenance
 from synapse.core.watch.daemon import ensure_watch_daemon, wait_for_watch_to_stop
-from synapse.core.watch.state import pid_is_running, read_watch_status, watch_status_payload
-from synapse.core.watch.supervisor import request_watch_stop
-from synapse.core.workspace import db_path, read_metadata, require_workspace_path
+from synapse.core.watch.state import (
+    pid_is_running,
+    read_watch_status,
+    watch_status_payload,
+    watch_writer_reason,
+)
+from synapse.core.watch.supervisor import WatchAlreadyRunning, request_watch_stop
+from synapse.core.workspace import (
+    db_file_path,
+    db_path,
+    read_metadata,
+    require_workspace_path,
+)
 
 
 class WorkspaceState(StrEnum):
@@ -35,6 +50,13 @@ class EnsureWorkspaceResult:
     initialized: bool
     daemon: dict[str, object]
     index: dict[str, object]
+    # Identity of the Synapse serving this call, so a stale globally-installed build
+    # is visible rather than mistaken for the checkout under development.
+    runtime: dict[str, object]
+    # Set only when first-run initialization created a .synapseignore in the repository.
+    ignore_bootstrap: dict[str, object] | None = None
+    # Set only when this call repaired something, naming the reasons it acted on.
+    repair: dict[str, object] | None = None
 
     def to_payload(self) -> dict[str, object]:
         """Return the MCP/CLI response shape."""
@@ -59,6 +81,7 @@ def workspace_status_payload(workspace_path: str | Path) -> dict[str, object]:
         "state": state.value,
         "initialized": initialized,
         "daemon": watch,
+        "runtime": runtime_provenance().to_payload(),
     }
 
 
@@ -69,7 +92,101 @@ def require_workspace_ready(workspace_path: str | Path) -> Path:
     if status["state"] != WorkspaceState.READY:
         msg = (
             f"Synapse workspace is {status['state']}. "
-            "Call synapse_ensure_workspace before using query tools."
+            "Call synapse_ensure_workspace (or a navigation tool, which initializes "
+            "automatically) before using query tools."
+        )
+        raise WorkspaceNotReadyError(msg)
+    return root
+
+
+# A lost repair race is resolved by waiting for the winner's atomic rebuild, not by
+# failing: an agent has no way to act on a lock collision it never caused.
+NAVIGATION_REPAIR_TIMEOUT_S = 120.0
+_NAVIGATION_POLL_INTERVAL_S = 0.2
+
+
+def navigation_repair_reason(workspace_path: str | Path) -> str | None:
+    """Return why a navigation call must repair this workspace, or None when it is ready.
+
+    Readiness for navigation is more than metadata plus daemon health. Schema migration
+    runs on any ``SymbolIndex`` construction, so a workspace can report READY while its
+    relations were produced under older extraction semantics; serving those forever is
+    the failure this check exists to prevent.
+
+    Readiness also covers the two ways orientation can hand back handles that
+    inspection cannot resolve: a daemon whose write contract this runtime cannot verify,
+    and persisted rows whose handle is missing. Neither is visible to the schema or
+    fingerprint checks, so a workspace can otherwise report READY while every rendered
+    handle is unresolvable.
+
+    Strictly read-only: it must never create, migrate, or write the index, because it
+    runs while a watch daemon or a concurrent rebuild may own the database. Checks are
+    ordered cheapest-first, so a healthy workspace pays one stat, one status-file read,
+    one grammar listing, and two read-only SQLite probes.
+    """
+    root = require_workspace_path(workspace_path)
+    if not db_file_path(root).exists():
+        # Metadata can outlive a deleted cache, and the staleness probe reads such a
+        # workspace as fresh because it has no stored fingerprint to disagree with.
+        return "no-index"
+    if workspace_status_payload(root)["state"] != WorkspaceState.READY:
+        return "not-ready"
+    # READY implies a live, non-degraded daemon, so whether anything it writes from here
+    # on can be trusted is now the decisive question — and it costs one status read.
+    if watch_writer_reason(read_watch_status(root)) is not None:
+        return "stale-writer"
+    if missing_grammars():
+        return "missing-grammars"
+    if reference_index_is_stale(root):
+        return "stale-references"
+    return handle_completeness_reason(db_file_path(root))
+
+
+def _await_concurrent_repair(root: Path) -> bool:
+    """Wait out another process's repair, reporting whether the workspace became ready."""
+    deadline = monotonic() + NAVIGATION_REPAIR_TIMEOUT_S
+    while True:
+        if navigation_repair_reason(root) is None:
+            return True
+        if monotonic() >= deadline:
+            return False
+        sleep(_NAVIGATION_POLL_INTERVAL_S)
+
+
+def ensure_navigation_ready(workspace_path: str | Path) -> Path:
+    """Return a workspace that is queryable and current, repairing it only when needed.
+
+    This is the complete readiness decision for the navigation tools, so the MCP layer
+    stays a delegator. A healthy, current workspace is never re-ensured and never
+    re-indexed. A repair runs through ``ensure_workspace``, which owns grammar
+    installation, the daemon stop, the watch lock, and the atomic rebuild.
+
+    Another process may be performing exactly that repair. Losing the lock race is not
+    an error as long as the workspace is queryable and current afterwards, so the
+    reason is probed once more before failing.
+    """
+    root = require_workspace_path(workspace_path)
+    reason = navigation_repair_reason(root)
+    if reason is None:
+        return root
+    try:
+        ensure_workspace(root)
+    except (WatchAlreadyRunning, WorkspaceNotReadyError, sqlite3.OperationalError) as exc:
+        # The winner stops the daemon, rebuilds under the watch lock, and swaps the
+        # database atomically, so the workspace reads as not-ready until it finishes.
+        if not _await_concurrent_repair(root):
+            msg = (
+                f"Synapse workspace is {reason} and a concurrent repair did not finish "
+                f"within {NAVIGATION_REPAIR_TIMEOUT_S:.0f}s ({exc}). "
+                "Retry, or call synapse_ensure_workspace."
+            )
+            raise WorkspaceNotReadyError(msg) from exc
+        return root
+    remaining = navigation_repair_reason(root)
+    if remaining is not None:
+        msg = (
+            f"Synapse workspace is still {remaining} after an automatic repair. "
+            "Call synapse_ensure_workspace or run 'synapse doctor'."
         )
         raise WorkspaceNotReadyError(msg)
     return root
@@ -94,17 +211,38 @@ def ensure_workspace(
         raise ValueError(msg)
 
     watch_before = read_watch_status(root)
-    daemon_healthy_before = (
-        watch_before.running and not watch_before.degraded and pid_is_running(watch_before.pid)
-    )
+    daemon_alive = watch_before.running and pid_is_running(watch_before.pid)
+    writer_reason = watch_writer_reason(watch_before) if daemon_alive else None
+    daemon_healthy_before = daemon_alive and not watch_before.degraded and writer_reason is None
 
     if missing:
         install_grammars()
 
-    should_index = not initialized_before or force or bool(missing)
+    # A stale reference fingerprint means the persisted relations were produced by
+    # older extraction semantics and must be rebuilt, not incrementally reused.
+    fingerprint_stale = reference_index_is_stale(root)
+    handle_reason = handle_completeness_reason(db_file_path(root))
+    # Anything a writer we cannot identify produced is rebuilt rather than incrementally
+    # reused, and an incomplete handle set is not repairable in place while that writer
+    # is free to reinsert null handles on its next batch.
+    untrusted_writes = handle_reason is not None or writer_reason is not None
+    force_index = force or fingerprint_stale or untrusted_writes
+    should_index = not initialized_before or force_index or bool(missing)
+
+    # A forced rebuild takes the watch lock, so a live daemon must stop first;
+    # schema migration also only ever runs on this indexing path. The stop precedes
+    # every write, so a stale writer cannot reintroduce what the rebuild repairs.
+    if daemon_alive and (force_index or watch_before.degraded or writer_reason is not None):
+        request_watch_stop(root)
+        if not wait_for_watch_to_stop(root):
+            msg = f"Watch daemon did not stop for {root} ({writer_reason or 'repair'})."
+            raise WorkspaceNotReadyError(msg)
+
+    # Seed ignore rules before the first crawl, so the initial index already honors them.
+    bootstrap = bootstrap_project_ignores(root) if not initialized_before else None
 
     if should_index:
-        indexed = index_workspace(root, force=force)
+        indexed = index_workspace(root, force=force_index)
         index_payload: dict[str, object] = {
             "files": indexed.total_files,
             "symbols": indexed.total_symbols,
@@ -117,12 +255,6 @@ def ensure_workspace(
             "symbols": stats["symbols"],
             "languages": stats["languages"],
         }
-
-    if watch_before.running and watch_before.degraded and pid_is_running(watch_before.pid):
-        request_watch_stop(root)
-        if not wait_for_watch_to_stop(root):
-            msg = f"Degraded watch daemon did not stop for {root}."
-            raise WorkspaceNotReadyError(msg)
 
     daemon = ensure_watch_daemon(root)
 
@@ -142,6 +274,44 @@ def ensure_workspace(
             "degraded": daemon.degraded,
             "backend": daemon.backend,
             "pid": daemon.pid,
+            "writer_contract_version": daemon.writer_contract_version,
         },
         index=index_payload,
+        runtime=runtime_provenance().to_payload(),
+        ignore_bootstrap=_bootstrap_payload(bootstrap),
+        repair=_repair_payload(
+            writer_reason=writer_reason,
+            handle_reason=handle_reason,
+            fingerprint_stale=fingerprint_stale,
+            rebuilt=should_index,
+        ),
     )
+
+
+def _repair_payload(
+    *,
+    writer_reason: str | None,
+    handle_reason: str | None,
+    fingerprint_stale: bool,
+    rebuilt: bool,
+) -> dict[str, object] | None:
+    """Explain why a call repaired anything, so a daemon restart is never unexplained."""
+    reasons = [
+        reason
+        for reason in (
+            writer_reason,
+            handle_reason,
+            "stale-references" if fingerprint_stale else None,
+        )
+        if reason is not None
+    ]
+    if not reasons:
+        return None
+    return {"reasons": reasons, "daemon_stopped": writer_reason, "rebuilt": rebuilt}
+
+
+def _bootstrap_payload(result: IgnoreWriteResult | None) -> dict[str, object] | None:
+    """Report a generated .synapseignore, since it is a write into the user's repository."""
+    if result is None:
+        return None
+    return {"path": str(result.path), "patterns": len(result.added)}

@@ -11,6 +11,7 @@ from synapse.core.models import (
     Confidence,
     Relation,
     RelationKind,
+    ResolutionMethod,
     SourceFile,
     Symbol,
     SymbolKind,
@@ -87,12 +88,14 @@ def test_index_supports_search_definition_outline_and_context(tmp_path: Path) ->
                 "kind": "class",
                 "name": "Example",
                 "line_range": [1, 3],
+                "signature": "class Example:",
                 "children": [
                     {
                         "symbol_id": method.id,
                         "kind": "method",
                         "name": "method",
                         "line_range": [2, 3],
+                        "signature": "def method(self):",
                         "children": [],
                     }
                 ],
@@ -102,6 +105,7 @@ def test_index_supports_search_definition_outline_and_context(tmp_path: Path) ->
                 "kind": "function",
                 "name": "helper",
                 "line_range": [5, 6],
+                "signature": "def helper():",
                 "children": [],
             },
         ],
@@ -117,6 +121,23 @@ def test_index_supports_search_definition_outline_and_context(tmp_path: Path) ->
     assert symbol_payload["name"] == "method"
     assert parent_payload["name"] == "Example"
     assert "def method" in body
+    assert context["body_truncated"] is False
+
+
+def test_get_symbol_context_caps_body_at_max_body_lines(tmp_path: Path) -> None:
+    """include_body respects max_body_lines and reports the truncation."""
+    index, symbols = _build_index(tmp_path)
+    example = next(symbol for symbol in symbols if symbol.name == "Example")
+
+    context = index.get_symbol_context(example.id, include_body=True, max_body_lines=1)
+    assert context is not None
+    assert context["body"] == "class Example:"
+    assert context["body_truncated"] is True
+
+    default_context = index.get_symbol_context(example.id)
+    assert default_context is not None
+    assert default_context["body"] is None
+    assert default_context["body_truncated"] is False
 
 
 def test_search_symbols_matches_prefix_substring_and_filters(tmp_path: Path) -> None:
@@ -183,6 +204,278 @@ def test_remove_files_deletes_tracked_file_rows(tmp_path: Path) -> None:
 
     assert index.remove_files(["sample.py"]) == 1
     assert index.list_indexed_files() == []
+
+
+def test_project_map_excludes_namespaces_and_aggregates_them(tmp_path: Path) -> None:
+    """Namespaces never fill top_symbols slots; they are aggregated and deduplicated."""
+    index = SymbolIndex(tmp_path / "index.sqlite")
+    namespace_names = [f"Overlock.Feature{number:02d}" for number in range(25)]
+    for file_number, file_id in enumerate(("a.cs", "b.cs")):
+        index.upsert_file(
+            SourceFile(
+                id=file_id,
+                path=file_id,
+                language="csharp",
+                project_root=str(tmp_path),
+                content_hash=f"hash-{file_number}",
+                indexed_at="2026-06-16T00:00:00+00:00",
+            )
+        )
+        # The same 25 file-scoped namespace names recur in both files.
+        symbols = [
+            _test_symbol(
+                symbol_id=f"ns-{file_number}-{number}",
+                name=name,
+                file_path=file_id,
+                kind=SymbolKind.NAMESPACE,
+                start_byte=number * 10,
+                end_byte=number * 10 + 5,
+            )
+            for number, name in enumerate(namespace_names)
+        ]
+        index.replace_symbols_for_file(file_id, symbols, [])
+    index.upsert_file(
+        SourceFile(
+            id="types.cs",
+            path="types.cs",
+            language="csharp",
+            project_root=str(tmp_path),
+            content_hash="hash-t",
+            indexed_at="2026-06-16T00:00:00+00:00",
+        )
+    )
+    type_symbols = [
+        _test_symbol(
+            symbol_id="cls-z",
+            name="ZzzEndpoint",
+            file_path="types.cs",
+            kind=SymbolKind.CLASS,
+            start_byte=0,
+            end_byte=5,
+        ),
+        _test_symbol(
+            symbol_id="rec-z",
+            name="ZzzDto",
+            file_path="types.cs",
+            kind=SymbolKind.RECORD,
+            start_byte=10,
+            end_byte=15,
+        ),
+        _test_symbol(
+            symbol_id="enum-a",
+            name="AaaStatus",
+            file_path="types.cs",
+            kind=SymbolKind.ENUM,
+            start_byte=20,
+            end_byte=25,
+        ),
+        _test_symbol(
+            symbol_id="type-a",
+            name="AaaNotify",
+            file_path="types.cs",
+            kind=SymbolKind.TYPE,
+            start_byte=30,
+            end_byte=35,
+        ),
+    ]
+    index.replace_symbols_for_file("types.cs", type_symbols, [])
+
+    project_map = index.project_map(top_symbols_limit=20)
+    top_symbols = cast(list[dict[str, object]], project_map["top_symbols"])
+
+    # Free slots remain (4 declarations, limit 20) yet no namespace appears.
+    assert len(top_symbols) == 4
+    assert all(symbol["kind"] != "namespace" for symbol in top_symbols)
+    # Kind ranking stays predictable: class, record, enum, then type (delegates).
+    assert [symbol["name"] for symbol in top_symbols] == [
+        "ZzzEndpoint",
+        "ZzzDto",
+        "AaaStatus",
+        "AaaNotify",
+    ]
+    namespaces = cast(dict[str, object], project_map["namespaces"])
+    items = cast(list[str], namespaces["items"])
+    assert items == sorted(namespace_names)[:20]
+    assert namespaces["total"] == 25
+    assert namespaces["truncated"] is True
+    # The namespace total counts distinct names, independently of the item limit.
+    assert namespaces["total"] == len(set(namespace_names))
+    assert index.project_map(top_symbols_limit=1)["namespaces"] == namespaces
+
+
+def _diverse_kinds_index(tmp_path: Path) -> SymbolIndex:
+    """One file holding many classes plus a few records and methods."""
+    index = SymbolIndex(tmp_path / "index.sqlite")
+    index.upsert_file(
+        SourceFile(
+            id="app.cs",
+            path="app.cs",
+            language="csharp",
+            project_root=str(tmp_path),
+            content_hash="hash-app",
+            indexed_at="2026-06-16T00:00:00+00:00",
+        )
+    )
+    symbols = [
+        _test_symbol(
+            symbol_id=f"cls-{number:02d}",
+            name=f"Class{number:02d}",
+            file_path="app.cs",
+            kind=SymbolKind.CLASS,
+            start_byte=number * 10,
+            end_byte=number * 10 + 5,
+        )
+        for number in range(30)
+    ]
+    symbols += [
+        _test_symbol(
+            symbol_id=f"rec-{number:02d}",
+            name=f"Record{number:02d}",
+            file_path="app.cs",
+            kind=SymbolKind.RECORD,
+            start_byte=500 + number * 10,
+            end_byte=500 + number * 10 + 5,
+        )
+        for number in range(4)
+    ]
+    symbols += [
+        _test_symbol(
+            symbol_id=f"mth-{number:02d}",
+            name=f"Method{number:02d}",
+            file_path="app.cs",
+            kind=SymbolKind.METHOD,
+            start_byte=900 + number * 10,
+            end_byte=900 + number * 10 + 5,
+        )
+        for number in range(6)
+    ]
+    index.replace_symbols_for_file("app.cs", symbols, [])
+    return index
+
+
+def test_project_map_top_symbols_keep_kind_diversity(tmp_path: Path) -> None:
+    """A class-heavy workspace still surfaces records and callable entry points."""
+    index = _diverse_kinds_index(tmp_path)
+
+    project_map = index.project_map(top_symbols_limit=12)
+    top_symbols = cast(list[dict[str, object]], project_map["top_symbols"])
+    kinds = {str(symbol["kind"]) for symbol in top_symbols}
+
+    assert len(top_symbols) == 12
+    # A strict kind cascade would return twelve classes and nothing else.
+    assert kinds == {"class", "record", "method"}
+    assert project_map["top_symbols_total"] == 40
+    assert project_map["top_symbols_truncated"] is True
+    # Ranking is deterministic: repeated calls agree exactly.
+    assert top_symbols == cast(
+        list[dict[str, object]], index.project_map(top_symbols_limit=12)["top_symbols"]
+    )
+    # Types still outrank callables within the page.
+    kind_order = [str(symbol["kind"]) for symbol in top_symbols]
+    assert kind_order.index("class") < kind_order.index("method")
+
+
+def test_project_map_single_kind_workspace_still_fills_the_page(tmp_path: Path) -> None:
+    """The per-kind cap never starves a page when only one kind exists."""
+    index = SymbolIndex(tmp_path / "index.sqlite")
+    index.upsert_file(
+        SourceFile(
+            id="only.cs",
+            path="only.cs",
+            language="csharp",
+            project_root=str(tmp_path),
+            content_hash="hash-only",
+            indexed_at="2026-06-16T00:00:00+00:00",
+        )
+    )
+    index.replace_symbols_for_file(
+        "only.cs",
+        [
+            _test_symbol(
+                symbol_id=f"cls-{number:02d}",
+                name=f"Class{number:02d}",
+                file_path="only.cs",
+                kind=SymbolKind.CLASS,
+                start_byte=number * 10,
+                end_byte=number * 10 + 5,
+            )
+            for number in range(20)
+        ],
+        [],
+    )
+
+    top_symbols = cast(
+        list[dict[str, object]], index.project_map(top_symbols_limit=10)["top_symbols"]
+    )
+    assert len(top_symbols) == 10
+    assert {str(symbol["kind"]) for symbol in top_symbols} == {"class"}
+
+
+def test_project_map_file_pages_do_not_change_global_aggregates(tmp_path: Path) -> None:
+    """`tree`/`page` describe one page of files; symbol and namespace views are global."""
+    index = SymbolIndex(tmp_path / "index.sqlite")
+    for number in range(5):
+        file_id = f"pkg/file_{number:02d}.cs"
+        index.upsert_file(
+            SourceFile(
+                id=file_id,
+                path=file_id,
+                language="csharp",
+                project_root=str(tmp_path),
+                content_hash=f"hash-{number}",
+                indexed_at="2026-06-16T00:00:00+00:00",
+            )
+        )
+        index.replace_symbols_for_file(
+            file_id,
+            [
+                _test_symbol(
+                    symbol_id=f"cls-{number}",
+                    name=f"Class{number}",
+                    file_path=file_id,
+                    kind=SymbolKind.CLASS,
+                ),
+                _test_symbol(
+                    symbol_id=f"ns-{number}",
+                    name="Shared.Namespace",
+                    file_path=file_id,
+                    kind=SymbolKind.NAMESPACE,
+                    start_byte=100,
+                    end_byte=105,
+                ),
+            ],
+            [],
+        )
+
+    first = index.project_map(limit=2, offset=0)
+    second = index.project_map(limit=2, offset=2)
+    third = index.project_map(limit=2, offset=4)
+
+    assert cast(dict[str, object], first["page"])["files"] == [
+        "pkg/file_00.cs",
+        "pkg/file_01.cs",
+    ]
+    assert cast(dict[str, object], second["page"])["files"] == [
+        "pkg/file_02.cs",
+        "pkg/file_03.cs",
+    ]
+    assert cast(dict[str, object], third["page"]) == {
+        "limit": 2,
+        "offset": 4,
+        "returned": 1,
+        "total": 5,
+        "has_more": False,
+        "files": ["pkg/file_04.cs"],
+    }
+    # Global aggregates repeat unchanged on every page.
+    for page in (second, third):
+        assert page["top_symbols"] == first["top_symbols"]
+        assert page["namespaces"] == first["namespaces"]
+        assert page["top_symbols_total"] == first["top_symbols_total"]
+    # Five files declare the same namespace name; it is reported once.
+    namespaces = cast(dict[str, object], first["namespaces"])
+    assert namespaces["items"] == ["Shared.Namespace"]
+    assert namespaces["total"] == 1
 
 
 def test_workspace_stats_project_map_and_file_dependencies(tmp_path: Path) -> None:
@@ -437,6 +730,7 @@ def test_collection_queries_are_bounded_paged_and_stably_ordered(tmp_path: Path)
         "returned": 2,
         "total": 56,
         "has_more": True,
+        "files": ["pkg/file_00.py", "pkg/file_01.py"],
     }
     assert len(cast(list[dict[str, object]], project_map["top_symbols"])) == 50
 
@@ -480,13 +774,15 @@ def test_collection_queries_are_bounded_paged_and_stably_ordered(tmp_path: Path)
     }
 
     references = index.find_references(symbol_id="duplicate-00", limit=2, offset=1)
-    assert references["files"] == ["pkg/file_02.py", "pkg/file_03.py"]
+    # `files` spans the whole result; the page-scoped view lives under page.files.
+    assert references["files"] == [f"pkg/file_{number:02d}.py" for number in range(1, 55)]
     assert references["page"] == {
         "limit": 2,
         "offset": 1,
         "returned": 2,
         "total": 54,
         "has_more": True,
+        "files": ["pkg/file_02.py", "pkg/file_03.py"],
     }
 
     related = index.related_symbols("duplicate-00", limit=2, offset=1)
@@ -503,3 +799,493 @@ def test_collection_queries_are_bounded_paged_and_stably_ordered(tmp_path: Path)
         "total": 54,
         "has_more": True,
     }
+
+
+def _reference_relation(
+    *,
+    relation_id: str,
+    from_symbol_id: str,
+    from_file_path: str,
+    to_name: str,
+    to_symbol_id: str | None = None,
+    resolution: ResolutionMethod = ResolutionMethod.AMBIGUOUS,
+    start_line: int = 1,
+    start_byte_col: int = 1,
+) -> Relation:
+    return Relation(
+        id=relation_id,
+        kind=RelationKind.REFERENCES,
+        from_symbol_id=from_symbol_id,
+        to_symbol_id=to_symbol_id,
+        from_file_path=from_file_path,
+        to_file_path=None,
+        to_name=to_name,
+        source="tree-sitter",
+        confidence=Confidence.MEDIUM if to_symbol_id else Confidence.LOW,
+        start_line=start_line,
+        start_byte_col=start_byte_col,
+        resolution=ResolutionMethod.UNIQUE_NAME if to_symbol_id else resolution,
+    )
+
+
+def _servers_index(tmp_path: Path) -> tuple[SymbolIndex, list[Symbol]]:
+    """Three same-name declarations plus ambiguous usage relations."""
+    index = SymbolIndex(tmp_path / "index.sqlite")
+    declarations = []
+    for number, file_id in enumerate(("decl_a.cs", "decl_b.cs", "decl_c.cs")):
+        index.upsert_file(
+            SourceFile(
+                id=file_id,
+                path=file_id,
+                language="csharp",
+                project_root=str(tmp_path),
+                content_hash=f"hash-{number}",
+                indexed_at="2026-06-16T00:00:00+00:00",
+            )
+        )
+        declaration = _test_symbol(
+            symbol_id=f"servers-{number}",
+            name="Servers",
+            file_path=file_id,
+            kind=SymbolKind.PROPERTY,
+        )
+        index.replace_symbols_for_file(file_id, [declaration], [])
+        declarations.append(declaration)
+    index.upsert_file(
+        SourceFile(
+            id="usage.cs",
+            path="usage.cs",
+            language="csharp",
+            project_root=str(tmp_path),
+            content_hash="hash-u",
+            indexed_at="2026-06-16T00:00:00+00:00",
+        )
+    )
+    caller = _test_symbol(symbol_id="caller", name="Caller", file_path="usage.cs")
+    index.replace_symbols_for_file("usage.cs", [caller], [])
+    index.add_relations_for_file(
+        "usage.cs",
+        [
+            _reference_relation(
+                relation_id="references:caller:Servers:10:100",
+                from_symbol_id=caller.id,
+                from_file_path="usage.cs",
+                to_name="Servers",
+                start_line=10,
+                start_byte_col=21,
+            ),
+            _reference_relation(
+                relation_id="references:caller:Servers:12:140",
+                from_symbol_id=caller.id,
+                from_file_path="usage.cs",
+                to_name="Servers",
+                start_line=12,
+                start_byte_col=9,
+            ),
+        ],
+    )
+    return index, declarations
+
+
+def test_find_references_marks_unique_name_matches_as_heuristic(tmp_path: Path) -> None:
+    """Target-bound relations surface as heuristic items with exact locations."""
+    index, symbols = _build_index(tmp_path)
+    helper = next(symbol for symbol in symbols if symbol.name == "helper")
+    method = next(symbol for symbol in symbols if symbol.name == "method")
+    index.add_relations_for_file(
+        "sample.py",
+        [
+            _reference_relation(
+                relation_id="references:method:helper:3:60",
+                from_symbol_id=method.id,
+                from_file_path="sample.py",
+                to_name="helper",
+                to_symbol_id=helper.id,
+                start_line=3,
+                start_byte_col=16,
+            )
+        ],
+    )
+
+    result = index.find_references(symbol_id=helper.id)
+    items = cast(list[dict[str, object]], result["items"])
+
+    assert len(items) == 1
+    assert items[0]["match"] == "heuristic"
+    assert items[0]["line"] == 3
+    assert items[0]["byte_column"] == 16
+    assert items[0]["confidence"] == "medium"
+    assert "candidate_symbol_ids" not in items[0]
+    assert result["possible_items"] == []
+    coverage = cast(dict[str, object], result["coverage"])
+    assert coverage["resolution_model"] == "syntactic-structural"
+    assert coverage["exhaustive"] is False
+    assert coverage["counts"] == {
+        "exact": 0,
+        "scoped": 0,
+        "heuristic": 1,
+        "ambiguous": 0,
+        "unresolved": 0,
+        "resolved": 0,
+    }
+    assert "zero_result" not in coverage
+
+
+def test_same_name_declarations_get_ambiguous_possible_items_not_confirmed_usages(
+    tmp_path: Path,
+) -> None:
+    """Shared same-name usages stay in possible_items for every candidate target."""
+    index, declarations = _servers_index(tmp_path)
+
+    for declaration in declarations:
+        result = index.find_references(symbol_id=declaration.id)
+        # Nothing is presented as a confirmed usage of this specific target.
+        assert result["items"] == []
+        possible_items = cast(list[dict[str, object]], result["possible_items"])
+        assert len(possible_items) == 2
+        for item in possible_items:
+            assert item["match"] == "ambiguous"
+            assert item["to_symbol_id"] is None
+            candidate_ids = cast(list[str], item["candidate_symbol_ids"])
+            assert declaration.id in candidate_ids
+            assert item["candidate_count"] == 3
+            assert item["candidates_truncated"] is False
+        coverage = cast(dict[str, object], result["coverage"])
+        assert coverage["counts"] == {
+            "exact": 0,
+            "scoped": 0,
+            "heuristic": 0,
+            "ambiguous": 2,
+            "unresolved": 0,
+            "resolved": 0,
+        }
+
+
+def _paged_servers_index(
+    tmp_path: Path,
+    *,
+    ambiguous: int,
+    confirmed: int = 0,
+) -> tuple[SymbolIndex, Symbol]:
+    """Three same-name declarations plus N ambiguous and M confirmed usage relations.
+
+    Every relation lives in its own file so the documented ordering
+    (`from_file_path`, line, byte column, id) is fully determined by the file name.
+    """
+    index = SymbolIndex(tmp_path / "index.sqlite")
+    declarations: list[Symbol] = []
+    for number, file_id in enumerate(("decl_a.cs", "decl_b.cs", "decl_c.cs")):
+        index.upsert_file(
+            SourceFile(
+                id=file_id,
+                path=file_id,
+                language="csharp",
+                project_root=str(tmp_path),
+                content_hash=f"hash-decl-{number}",
+                indexed_at="2026-06-16T00:00:00+00:00",
+            )
+        )
+        declaration = _test_symbol(
+            symbol_id=f"servers-{number}",
+            name="Servers",
+            file_path=file_id,
+            kind=SymbolKind.PROPERTY,
+        )
+        index.replace_symbols_for_file(file_id, [declaration], [])
+        declarations.append(declaration)
+
+    for number in range(ambiguous + confirmed):
+        # Confirmed relations sort after the ambiguous ones by file name, which keeps
+        # the two collections' page windows visibly independent.
+        prefix = "amb" if number < ambiguous else "hit"
+        file_id = f"{prefix}_{number:02d}.cs"
+        index.upsert_file(
+            SourceFile(
+                id=file_id,
+                path=file_id,
+                language="csharp",
+                project_root=str(tmp_path),
+                content_hash=f"hash-{file_id}",
+                indexed_at="2026-06-16T00:00:00+00:00",
+            )
+        )
+        caller = _test_symbol(
+            symbol_id=f"caller-{number:02d}",
+            name=f"Caller{number:02d}",
+            file_path=file_id,
+        )
+        index.replace_symbols_for_file(file_id, [caller], [])
+        index.add_relations_for_file(
+            file_id,
+            [
+                _reference_relation(
+                    relation_id=f"references:{caller.id}:Servers:{number}:{number * 10}",
+                    from_symbol_id=caller.id,
+                    from_file_path=file_id,
+                    to_name="Servers",
+                    to_symbol_id=declarations[0].id if number >= ambiguous else None,
+                    start_line=number + 1,
+                    start_byte_col=1,
+                )
+            ],
+        )
+    return index, declarations[0]
+
+
+def test_possible_items_are_paged_rather_than_restarted_on_every_page(
+    tmp_path: Path,
+) -> None:
+    """Ambiguous results beyond the first page are reachable via offset."""
+    index, target = _paged_servers_index(tmp_path, ambiguous=5)
+
+    first = index.find_references(symbol_id=target.id, limit=2, offset=0)
+    second = index.find_references(symbol_id=target.id, limit=2, offset=2)
+    third = index.find_references(symbol_id=target.id, limit=2, offset=4)
+
+    # No confirmed usages exist, so the confirmed page is empty on every request.
+    assert first["items"] == []
+    assert cast(dict[str, object], first["page"])["total"] == 0
+    assert first["possible_total"] == 5
+
+    assert first["possible_page"] == {
+        "limit": 2,
+        "offset": 0,
+        "returned": 2,
+        "total": 5,
+        "has_more": True,
+    }
+    assert second["possible_page"] == {
+        "limit": 2,
+        "offset": 2,
+        "returned": 2,
+        "total": 5,
+        "has_more": True,
+    }
+    assert third["possible_page"] == {
+        "limit": 2,
+        "offset": 4,
+        "returned": 1,
+        "total": 5,
+        "has_more": False,
+    }
+
+    def paths(result: dict[str, object]) -> list[str]:
+        items = cast(list[dict[str, object]], result["possible_items"])
+        return [cast(str, item["from_file_path"]) for item in items]
+
+    assert paths(first) == ["amb_00.cs", "amb_01.cs"]
+    assert paths(second) == ["amb_02.cs", "amb_03.cs"]
+    assert paths(third) == ["amb_04.cs"]
+
+
+def test_mixed_confirmed_and_ambiguous_collections_page_independently(
+    tmp_path: Path,
+) -> None:
+    """Both collections honour the same window while reporting separate page blocks."""
+    index, target = _paged_servers_index(tmp_path, ambiguous=4, confirmed=3)
+
+    result = index.find_references(symbol_id=target.id, limit=2, offset=2)
+
+    items = cast(list[dict[str, object]], result["items"])
+    possible_items = cast(list[dict[str, object]], result["possible_items"])
+    assert [item["from_file_path"] for item in items] == ["hit_06.cs"]
+    assert [item["from_file_path"] for item in possible_items] == ["amb_02.cs", "amb_03.cs"]
+
+    assert result["page"] == {
+        "limit": 2,
+        "offset": 2,
+        "returned": 1,
+        "total": 3,
+        "has_more": False,
+        "files": ["amb_02.cs", "amb_03.cs", "hit_06.cs"],
+    }
+    assert result["possible_page"] == {
+        "limit": 2,
+        "offset": 2,
+        "returned": 2,
+        "total": 4,
+        "has_more": False,
+    }
+    # Global aggregates stay comparable across pages.
+    assert result["files"] == [
+        "amb_00.cs",
+        "amb_01.cs",
+        "amb_02.cs",
+        "amb_03.cs",
+        "hit_04.cs",
+        "hit_05.cs",
+        "hit_06.cs",
+    ]
+    coverage = cast(dict[str, object], result["coverage"])
+    assert coverage["counts"] == {
+        "exact": 0,
+        "scoped": 0,
+        "heuristic": 3,
+        "ambiguous": 4,
+        "unresolved": 0,
+        "resolved": 0,
+    }
+
+
+def test_consecutive_reference_pages_have_no_duplicates_or_omissions(
+    tmp_path: Path,
+) -> None:
+    """Walking every page yields each relation exactly once in both collections."""
+    index, target = _paged_servers_index(tmp_path, ambiguous=7, confirmed=5)
+
+    seen_confirmed: list[str] = []
+    seen_possible: list[str] = []
+    offset = 0
+    while True:
+        result = index.find_references(symbol_id=target.id, limit=3, offset=offset)
+        items = cast(list[dict[str, object]], result["items"])
+        possible_items = cast(list[dict[str, object]], result["possible_items"])
+        seen_confirmed.extend(cast(str, item["from_file_path"]) for item in items)
+        seen_possible.extend(cast(str, item["from_file_path"]) for item in possible_items)
+        page = cast(dict[str, object], result["page"])
+        possible_page = cast(dict[str, object], result["possible_page"])
+        if not page["has_more"] and not possible_page["has_more"]:
+            break
+        offset += 3
+
+    assert seen_confirmed == [f"hit_{number:02d}.cs" for number in range(7, 12)]
+    assert seen_possible == [f"amb_{number:02d}.cs" for number in range(7)]
+    assert len(seen_confirmed) == len(set(seen_confirmed))
+    assert len(seen_possible) == len(set(seen_possible))
+
+
+def test_find_references_ambiguous_items_expose_candidates(tmp_path: Path) -> None:
+    """Membership uses the full candidate set; only serialized ids are capped."""
+    index = SymbolIndex(tmp_path / "index.sqlite")
+    widget_ids = []
+    for number in range(10):
+        file_id = f"widget_{number:02d}.cs"
+        index.upsert_file(
+            SourceFile(
+                id=file_id,
+                path=file_id,
+                language="csharp",
+                project_root=str(tmp_path),
+                content_hash=f"hash-{number}",
+                indexed_at="2026-06-16T00:00:00+00:00",
+            )
+        )
+        declaration = _test_symbol(
+            symbol_id=f"widget-{number:02d}",
+            name="Widget",
+            file_path=file_id,
+            kind=SymbolKind.CLASS,
+        )
+        index.replace_symbols_for_file(file_id, [declaration], [])
+        widget_ids.append(declaration.id)
+    index.upsert_file(
+        SourceFile(
+            id="usage.cs",
+            path="usage.cs",
+            language="csharp",
+            project_root=str(tmp_path),
+            content_hash="hash-u",
+            indexed_at="2026-06-16T00:00:00+00:00",
+        )
+    )
+    caller = _test_symbol(symbol_id="caller", name="Caller", file_path="usage.cs")
+    index.replace_symbols_for_file("usage.cs", [caller], [])
+    index.add_relations_for_file(
+        "usage.cs",
+        [
+            _reference_relation(
+                relation_id="references:caller:Widget:4:80",
+                from_symbol_id=caller.id,
+                from_file_path="usage.cs",
+                to_name="Widget",
+                start_line=4,
+                start_byte_col=13,
+            )
+        ],
+    )
+
+    # The queried target is one that a capped candidate list could omit.
+    target_id = widget_ids[-1]
+    result = index.find_references(symbol_id=target_id)
+    possible_items = cast(list[dict[str, object]], result["possible_items"])
+
+    assert result["items"] == []
+    assert len(possible_items) == 1
+    item = possible_items[0]
+    assert item["match"] == "ambiguous"
+    assert item["candidate_count"] == 10
+    assert item["candidates_truncated"] is True
+    assert len(cast(list[str], item["candidate_symbol_ids"])) == 8
+
+
+def test_find_references_zero_results_carry_partial_coverage(tmp_path: Path) -> None:
+    """An empty answer states partial coverage instead of implying proven absence."""
+    index, symbols = _build_index(tmp_path)
+    example = next(symbol for symbol in symbols if symbol.name == "Example")
+
+    result = index.find_references(symbol_id=example.id)
+
+    assert result["items"] == []
+    assert result["possible_items"] == []
+    assert result["possible_total"] == 0
+    coverage = cast(dict[str, object], result["coverage"])
+    assert coverage["zero_result"] == "no-indexed-matches"
+    assert coverage["exhaustive"] is False
+    extraction = cast(list[dict[str, object]], coverage["extraction"])
+    assert extraction and extraction[0]["language"] == "python"
+    assert extraction[0]["completeness"] == "partial"
+
+
+def test_relations_table_migrates_v2_columns(tmp_path: Path) -> None:
+    """Reopening a v2 database adds location columns; legacy rows read as None."""
+    database_path = tmp_path / "index.sqlite"
+    with closing(sqlite3.connect(database_path)) as connection, connection:
+        connection.execute(
+            """
+            CREATE TABLE relations (
+                id TEXT PRIMARY KEY,
+                file_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                from_symbol_id TEXT,
+                to_symbol_id TEXT,
+                from_file_path TEXT NOT NULL,
+                to_file_path TEXT,
+                to_name TEXT,
+                source TEXT NOT NULL,
+                confidence TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO relations (
+                id, file_id, kind, from_symbol_id, to_symbol_id, from_file_path,
+                to_file_path, to_name, source, confidence
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "references:legacy:Ghost:1:0",
+                "legacy.cs",
+                "references",
+                "legacy-symbol",
+                None,
+                "legacy.cs",
+                None,
+                "Ghost",
+                "tree-sitter",
+                "low",
+            ),
+        )
+        connection.execute("PRAGMA user_version = 2")
+
+    reopened = SymbolIndex(database_path)
+
+    with closing(sqlite3.connect(database_path)) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(relations)")}
+    assert {"start_line", "start_byte_col", "resolution"} <= columns
+    legacy = reopened.get_references_by_name("Ghost")
+    assert len(legacy) == 1
+    assert legacy[0].start_line is None
+    assert legacy[0].start_byte_col is None
+    assert legacy[0].resolution is None

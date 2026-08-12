@@ -6,6 +6,8 @@ from types import SimpleNamespace
 import pytest
 
 from synapse.core import lifecycle
+from synapse.core.config import ignore_presets
+from synapse.core.index import INDEX_WRITER_CONTRACT_VERSION
 from synapse.core.indexing import IndexStats
 from synapse.core.lifecycle import WorkspaceNotReadyError, WorkspaceState
 from synapse.core.watch.state import WatchStatus
@@ -18,8 +20,12 @@ def _watch_status(
     running: bool,
     degraded: bool = False,
     pid: int | None = None,
+    writer_contract_version: int | None = INDEX_WRITER_CONTRACT_VERSION,
 ) -> WatchStatus:
     return WatchStatus(
+        writer_contract_version=writer_contract_version,
+        writer_package_version="0.0.0-test",
+        writer_package_location="/test",
         workspace_path=str(workspace),
         workspace_id=workspace_id(workspace),
         running=running,
@@ -261,3 +267,325 @@ def test_ensure_workspace_offline_fails_before_mutation(
 
     with pytest.raises(ValueError, match="offline mode"):
         lifecycle.ensure_workspace(tmp_path, offline=True)
+
+
+def test_ensure_workspace_forces_reindex_on_stale_fingerprint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale reference fingerprint stops the daemon, then forces a full rebuild."""
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    calls: list[object] = []
+    healthy = _watch_status(tmp_path, running=True, pid=1234)
+    monkeypatch.setattr(lifecycle, "read_metadata", lambda path: SimpleNamespace())
+    monkeypatch.setattr(lifecycle, "missing_grammars", lambda: ())
+    monkeypatch.setattr(lifecycle, "read_watch_status", lambda path: healthy)
+    monkeypatch.setattr(lifecycle, "pid_is_running", lambda pid: True)
+    monkeypatch.setattr(lifecycle, "reference_index_is_stale", lambda root: True)
+
+    def fake_request_stop(path: Path) -> None:
+        calls.append("stop-daemon")
+
+    def fake_wait_stop(path: Path) -> bool:
+        calls.append("wait-stop")
+        return True
+
+    def fake_index(path: Path, *, force: bool = False) -> IndexStats:
+        calls.append(("index", force))
+        return IndexStats(str(path), 2, 0, 0, 0, 2, 5, ["csharp"])
+
+    def fake_ensure_daemon(path: Path) -> WatchStatus:
+        calls.append("ensure-daemon")
+        return healthy
+
+    monkeypatch.setattr(lifecycle, "request_watch_stop", fake_request_stop)
+    monkeypatch.setattr(lifecycle, "wait_for_watch_to_stop", fake_wait_stop)
+    monkeypatch.setattr(lifecycle, "index_workspace", fake_index)
+    monkeypatch.setattr(lifecycle, "ensure_watch_daemon", fake_ensure_daemon)
+
+    result = lifecycle.ensure_workspace(tmp_path)
+
+    # The daemon stops before the forced rebuild takes the watch lock.
+    assert calls == ["stop-daemon", "wait-stop", ("index", True), "ensure-daemon"]
+    assert result.action == "repaired"
+    assert result.index == {"files": 2, "symbols": 5, "languages": ["csharp"]}
+
+
+def _stub_initialization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    order: list[str] | None = None,
+) -> None:
+    """Stub a first-run ensure_workspace down to just the bootstrap decision."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(lifecycle, "read_metadata", lambda path: None)
+    monkeypatch.setattr(lifecycle, "missing_grammars", lambda: ())
+    monkeypatch.setattr(
+        lifecycle, "read_watch_status", lambda path: _watch_status(path, running=False)
+    )
+    monkeypatch.setattr(
+        lifecycle, "ensure_watch_daemon", lambda path: _watch_status(path, running=True, pid=1)
+    )
+
+    def fake_index(path: Path, *, force: bool = False) -> IndexStats:
+        if order is not None:
+            order.append("index")
+        return IndexStats(str(path), 1, 0, 0, 0, 1, 2, ["python"])
+
+    monkeypatch.setattr(lifecycle, "index_workspace", fake_index)
+
+
+def test_first_init_creates_a_synapseignore_from_detected_ecosystems(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A recognizable workspace gets ignore rules before its very first crawl."""
+    order: list[str] = []
+    _stub_initialization(tmp_path, monkeypatch, order)
+    (tmp_path / "package.json").write_text("{}\n", encoding="utf-8")
+
+    result = lifecycle.ensure_workspace(tmp_path)
+
+    ignore_file = tmp_path / ".synapseignore"
+    assert ignore_file.exists()
+    assert "*.min.js" in ignore_file.read_text(encoding="utf-8")
+    assert result.ignore_bootstrap == {"path": str(ignore_file), "patterns": 7}
+    # The file must exist before the first index, or the first crawl ignores nothing.
+    assert order == ["index"]
+
+
+def test_first_init_never_overwrites_an_existing_synapseignore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Once the file exists it belongs to the repository, not to Synapse."""
+    _stub_initialization(tmp_path, monkeypatch)
+    (tmp_path / "package.json").write_text("{}\n", encoding="utf-8")
+    (tmp_path / ".synapseignore").write_text("# mine\n", encoding="utf-8")
+
+    result = lifecycle.ensure_workspace(tmp_path)
+
+    assert (tmp_path / ".synapseignore").read_text(encoding="utf-8") == "# mine\n"
+    assert result.ignore_bootstrap is None
+
+
+def test_first_init_writes_nothing_when_no_ecosystem_is_detected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unrecognizable workspace gets no file rather than an empty one."""
+    _stub_initialization(tmp_path, monkeypatch)
+
+    result = lifecycle.ensure_workspace(tmp_path)
+
+    assert not (tmp_path / ".synapseignore").exists()
+    assert result.ignore_bootstrap is None
+
+
+@pytest.mark.parametrize("opt_out", ["env", "config"])
+def test_first_init_honors_the_bootstrap_opt_out(
+    opt_out: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both opt-outs suppress the write without affecting anything else."""
+    _stub_initialization(tmp_path, monkeypatch)
+    (tmp_path / "package.json").write_text("{}\n", encoding="utf-8")
+    if opt_out == "env":
+        monkeypatch.setenv("SYNAPSE_NO_IGNORE_BOOTSTRAP", "1")
+    else:
+        config_path = tmp_path / ".synapse" / "config.json"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text('{"auto_ignore_bootstrap": false}', encoding="utf-8")
+
+    result = lifecycle.ensure_workspace(tmp_path)
+
+    assert not (tmp_path / ".synapseignore").exists()
+    assert result.ignore_bootstrap is None
+
+
+def test_bootstrap_failure_warns_but_still_indexes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A read-only checkout must still be indexable; the bootstrap is best-effort."""
+    _stub_initialization(tmp_path, monkeypatch)
+    (tmp_path / "package.json").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(ignore_presets, "write_ignore_file", _raise_permission_error)
+
+    with pytest.warns(UserWarning, match="Could not create"):
+        result = lifecycle.ensure_workspace(tmp_path)
+
+    assert result.action == "initialized"
+    assert result.ignore_bootstrap is None
+
+
+def _raise_permission_error(*args: object, **kwargs: object) -> None:
+    raise PermissionError("read-only file system")
+
+
+def test_repair_does_not_bootstrap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a first-run initialization may write into the repository."""
+    _stub_initialization(tmp_path, monkeypatch)
+    (tmp_path / "package.json").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(lifecycle, "read_metadata", lambda path: {"initialized": True})
+
+    result = lifecycle.ensure_workspace(tmp_path, force=True)
+
+    assert result.action == "repaired"
+    assert not (tmp_path / ".synapseignore").exists()
+    assert result.ignore_bootstrap is None
+
+
+def _stale_writer_scenario(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    writer_contract_version: int | None,
+    handle_reason: str | None = None,
+    stops: bool = True,
+) -> list[object]:
+    """Pin a live daemon whose writer identity the current runtime cannot accept."""
+    calls: list[object] = []
+    live = _watch_status(
+        tmp_path,
+        running=True,
+        pid=1234,
+        writer_contract_version=writer_contract_version,
+    )
+    started = _watch_status(tmp_path, running=True, pid=5678)
+    monkeypatch.setattr(lifecycle, "read_metadata", lambda path: SimpleNamespace())
+    monkeypatch.setattr(lifecycle, "missing_grammars", lambda: ())
+    monkeypatch.setattr(lifecycle, "read_watch_status", lambda path: live)
+    monkeypatch.setattr(lifecycle, "pid_is_running", lambda pid: True)
+    monkeypatch.setattr(lifecycle, "reference_index_is_stale", lambda path: False)
+    monkeypatch.setattr(lifecycle, "handle_completeness_reason", lambda path: handle_reason)
+
+    def fake_stop(path: Path) -> None:
+        calls.append(("stop", path))
+
+    def fake_wait(path: Path) -> bool:
+        return stops
+
+    def fake_index(path: Path, *, force: bool = False) -> IndexStats:
+        calls.append(("index", path, force))
+        return IndexStats(str(path), 1, 0, 0, 0, 1, 2, ["python"])
+
+    def fake_ensure_daemon(path: Path) -> WatchStatus:
+        calls.append(("daemon", path))
+        return started
+
+    monkeypatch.setattr(lifecycle, "request_watch_stop", fake_stop)
+    monkeypatch.setattr(lifecycle, "wait_for_watch_to_stop", fake_wait)
+    monkeypatch.setattr(lifecycle, "index_workspace", fake_index)
+    monkeypatch.setattr(lifecycle, "ensure_watch_daemon", fake_ensure_daemon)
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("writer_contract_version", "expected_reason"),
+    [
+        (None, "writer-contract-unknown"),
+        (INDEX_WRITER_CONTRACT_VERSION - 1, "writer-contract-mismatch"),
+    ],
+    ids=["no-provenance", "older-contract"],
+)
+def test_stale_writer_daemon_is_stopped_before_the_rebuild_and_replaced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    writer_contract_version: int | None,
+    expected_reason: str,
+) -> None:
+    """The stop must precede every write, or the old writer undoes the repair."""
+    calls = _stale_writer_scenario(
+        tmp_path, monkeypatch, writer_contract_version=writer_contract_version
+    )
+
+    result = lifecycle.ensure_workspace(tmp_path)
+
+    assert calls == [
+        ("stop", tmp_path),
+        ("index", tmp_path, True),
+        ("daemon", tmp_path),
+    ]
+    assert result.action == "repaired"
+    assert result.repair is not None
+    assert result.repair["daemon_stopped"] == expected_reason
+    assert expected_reason in result.repair["reasons"]  # type: ignore[operator]
+    assert result.daemon["writer_contract_version"] == INDEX_WRITER_CONTRACT_VERSION
+
+
+def test_incomplete_handles_force_a_rebuild_and_are_named(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A trusted daemon over an index with unusable handles still rebuilds."""
+    calls = _stale_writer_scenario(
+        tmp_path,
+        monkeypatch,
+        writer_contract_version=INDEX_WRITER_CONTRACT_VERSION,
+        handle_reason="incomplete-handles",
+    )
+
+    result = lifecycle.ensure_workspace(tmp_path)
+
+    assert calls == [
+        ("stop", tmp_path),
+        ("index", tmp_path, True),
+        ("daemon", tmp_path),
+    ]
+    assert result.repair is not None
+    assert result.repair["reasons"] == ["incomplete-handles"]
+    # Nothing was wrong with the writer itself, so the stop is not attributed to it.
+    assert result.repair["daemon_stopped"] is None
+
+
+def test_a_matching_daemon_is_reused_without_restart_or_rebuild(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Matching provenance and complete handles cost nothing."""
+    healthy = _watch_status(tmp_path, running=True, pid=1234)
+    monkeypatch.setattr(lifecycle, "read_metadata", lambda path: SimpleNamespace())
+    monkeypatch.setattr(lifecycle, "missing_grammars", lambda: ())
+    monkeypatch.setattr(lifecycle, "read_watch_status", lambda path: healthy)
+    monkeypatch.setattr(lifecycle, "pid_is_running", lambda pid: True)
+    monkeypatch.setattr(lifecycle, "reference_index_is_stale", lambda path: False)
+    monkeypatch.setattr(lifecycle, "handle_completeness_reason", lambda path: None)
+    monkeypatch.setattr(
+        lifecycle, "request_watch_stop", lambda path: pytest.fail("stopped a healthy daemon")
+    )
+    monkeypatch.setattr(
+        lifecycle, "index_workspace", lambda *a, **k: pytest.fail("rebuilt a healthy index")
+    )
+
+    class FakeIndex:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def workspace_stats(self) -> dict[str, object]:
+            return {"files": 3, "symbols": 8, "languages": ["python"]}
+
+    monkeypatch.setattr(lifecycle, "SymbolIndex", FakeIndex)
+    monkeypatch.setattr(lifecycle, "ensure_watch_daemon", lambda path: healthy)
+
+    result = lifecycle.ensure_workspace(tmp_path)
+
+    assert result.action == "reused"
+    assert result.repair is None
+
+
+def test_a_stale_daemon_that_will_not_stop_fails_instead_of_reporting_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A repair that cannot fence the old writer must not proceed to rebuild."""
+    calls = _stale_writer_scenario(tmp_path, monkeypatch, writer_contract_version=None, stops=False)
+
+    with pytest.raises(WorkspaceNotReadyError, match="writer-contract-unknown"):
+        lifecycle.ensure_workspace(tmp_path)
+
+    assert calls == [("stop", tmp_path)]

@@ -6,33 +6,49 @@ from pathlib import Path
 from synapse.core.config import (
     ConfigScope,
     EffectiveConfig,
-    config_file_path,
-    load_default_ignored_directories,
+    IgnoreWriteResult,
+    add_ignore_patterns,
     load_effective_config,
-    load_project_config,
-    load_user_config,
-    normalize_ignore_entry,
-    write_project_ignored_directories,
+    remove_ignore_patterns,
+    validate_ignore_pattern,
 )
 from synapse.core.index import SymbolIndex, relation_summary, symbol_summary
 from synapse.core.indexing import index_workspace
-from synapse.core.lifecycle import ensure_workspace, require_workspace_ready
+from synapse.core.lifecycle import (
+    ensure_navigation_ready,
+    ensure_workspace,
+    require_workspace_ready,
+)
+from synapse.core.navigation import (
+    InspectRequest,
+    OrientRequest,
+    inspect_symbols,
+    orient_workspace,
+)
+from synapse.core.provenance import runtime_provenance
 from synapse.core.watch.state import watch_status_payload
 from synapse.core.workspace import db_path, require_workspace_path
-from synapse.mcp.server import mcp
+from synapse.mcp.profiles import ToolProfile, tool
 from synapse.mcp.workspace import current_workspace
 
 _DIRECTORIES_ARGUMENT = "the directories argument"
 _ACCEPTED_FORMS = (
-    "bare directory name, matched at any depth (e.g. 'node_modules')",
-    "root-anchored name, matched only at the workspace root (e.g. '/build')",
-    "workspace-relative path, anchored at the workspace root (e.g. 'src/generated')",
+    "bare name, matched at any depth (e.g. 'node_modules')",
+    "trailing slash to match directories only (e.g. 'build/')",
+    "leading slash to anchor at the workspace root (e.g. '/dist')",
+    "workspace-relative path, anchored at the workspace root (e.g. 'src/generated/')",
+    "glob (e.g. '*.min.js', 'test_?.py', '[Bb]uild/', 'docs/**')",
+    "leading '!' to re-include a path an earlier rule ignored (e.g. '!src/vendor/keep.js')",
 )
 _REJECTED_FORMS = (
     "absolute paths",
     "'.' or '..' segments",
-    "glob patterns",
     "empty strings",
+)
+_MAX_REPORTED_RULES = 200
+_RULES_COVERAGE = (
+    "This is the rule list, not the set of ignored paths. Whether a path is ignored depends on "
+    "rule order, so no flat effective set exists."
 )
 
 
@@ -48,11 +64,29 @@ def _workspace_index(path: str | Path = ".") -> SymbolIndex:
     return SymbolIndex(db_path(root))
 
 
+def _navigation_workspace(path: str | Path = ".") -> Path:
+    """Lazy readiness for the navigation tools; the whole decision lives in core."""
+    return ensure_navigation_ready(_workspace_root(path))
+
+
 def _normalize_file_path(file_path: str, workspace_root: Path) -> str:
     candidate = Path(file_path)
     if candidate.is_absolute() and candidate.is_relative_to(workspace_root):
         return candidate.relative_to(workspace_root).as_posix()
     return candidate.as_posix()
+
+
+def _not_found(target: str) -> dict[str, object]:
+    """Uniform not-found envelope: every query tool returns a dict, never None."""
+    return {
+        "found": False,
+        "target": target,
+        "reason": "not-indexed",
+        "hint": (
+            "Verify the name with synapse_orient; "
+            "re-index with synapse_index_workspace if the index may be stale."
+        ),
+    }
 
 
 def _takes_effect(config: EffectiveConfig) -> str:
@@ -63,14 +97,14 @@ def _takes_effect(config: EffectiveConfig) -> str:
 
 
 def _normalized_directories(directories: list[str]) -> tuple[list[str], dict[str, str]]:
-    """Canonicalize every requested entry before any write, deduplicating in input order."""
+    """Validate every requested pattern before any write, deduplicating in input order."""
     if not directories:
         msg = "directories must contain at least one entry."
         raise ValueError(msg)
     requested: list[str] = []
     normalized: dict[str, str] = {}
     for raw in directories:
-        value = normalize_ignore_entry(raw, source=_DIRECTORIES_ARGUMENT)
+        value = validate_ignore_pattern(raw, source=_DIRECTORIES_ARGUMENT)
         if value != raw:
             normalized[raw] = value
         if value not in requested:
@@ -81,43 +115,95 @@ def _normalized_directories(directories: list[str]) -> tuple[list[str], dict[str
 def _mutation_payload(
     workspace_root: Path,
     normalized: dict[str, str],
-    *,
-    added: list[str],
-    removed: list[str],
-    already_present: list[str],
-    already_covered_by_builtin: list[str],
-    not_present: list[str],
+    result: IgnoreWriteResult,
 ) -> dict[str, object]:
     config = load_effective_config(workspace_root)
-    project = load_project_config(workspace_root)
+    project_layer = config.layer(ConfigScope.PROJECT)
     return {
         "workspace_path": str(workspace_root),
-        "scope": str(ConfigScope.PROJECT),
-        "config_path": str(config.project_config_path),
-        "added": added,
-        "removed": removed,
-        "already_present": already_present,
-        "already_covered_by_builtin": already_covered_by_builtin,
-        "not_present": not_present,
+        "scope": str(result.scope),
+        "config_path": str(result.path),
+        "created": result.created,
+        "added": list(result.added),
+        "removed": list(result.removed),
+        "negated": list(result.negated),
+        "already_present": list(result.already_present),
+        "not_present": list(result.not_present),
+        "migrated_from_json": list(result.migrated_from_json),
         "normalized": normalized,
-        "project_ignored_directories": sorted(project.ignored_directories),
-        "effective_ignored_directories": [entry.value for entry in config.ignored_directories],
+        "project_rules": [rule.pattern for rule in project_layer.rules],
         "takes_effect": _takes_effect(config),
+        "coverage": _RULES_COVERAGE,
     }
 
 
-@mcp.tool()
+@tool()
 def synapse_ensure_workspace(workspace_path: str = ".") -> dict[str, object]:
-    """Initialize or repair Synapse before any code navigation or query.
+    """Initialize or repair Synapse explicitly; navigation tools do this lazily.
 
     Idempotent: returns action (initialized/reused/repaired), daemon health, and index
-    counts. Query tools reject uninitialized or degraded workspaces; re-call this when
-    they do.
+    counts. Full-profile query tools reject uninitialized or degraded workspaces;
+    re-call this when they do.
     """
     return ensure_workspace(_workspace_root(workspace_path)).to_payload()
 
 
-@mcp.tool()
+@tool(ToolProfile.DEFAULT, structured_output=False)
+def synapse_orient(
+    terms: list[str] | None = None,
+    path_scope: str | None = None,
+    workspace_path: str = ".",
+) -> str:
+    """Start here for any code question: ranked matches for literal repository terms.
+
+    Pass 4-8 discriminative identifiers, file names, or path fragments (up to 12)
+    in the repository's own vocabulary — translate the task into likely code terms
+    first, not a natural-language question. Empty terms return a repository-map
+    orientation (areas, entrypoints, anchors). Returns production-first ranked
+    matches with compact handles for synapse_inspect, weak candidates,
+    crowded/unmatched terms, and coverage counts. Initializes the workspace
+    automatically. The response is bounded server-side; unmatched terms are a
+    reason to refine terms once, not to start searching. Empty results are never
+    proof of absence — check coverage and unmatched_terms.
+    """
+    root = _navigation_workspace(workspace_path)
+    request = OrientRequest(terms=tuple(terms or ()), path_scope=path_scope)
+    return orient_workspace(SymbolIndex(db_path(root)), request, workspace_root=root)
+
+
+@tool(ToolProfile.DEFAULT, structured_output=False)
+def synapse_inspect(
+    symbols: list[str],
+    workspace_path: str = ".",
+) -> str:
+    """Inspect selected symbols using handles from synapse_orient or returned relations.
+
+    Accepts 1-8 compact handles (s_...) or stable symbol ids; normally 2-3
+    facet-diverse anchors, then follow-ups may reuse relation handles. Returns
+    per symbol: the definition
+    with signature and file:line, a bounded source slice (<=40 lines), parent and
+    children, and grouped callers/callees/other references carrying stored
+    resolution (exact|scoped|unique-name|ambiguous|unresolved), confidence, and
+    usage kind verbatim, plus unresolved hypotheses. Totals and omitted counts
+    stay visible; unknown inputs are listed in missing. When src is truncated,
+    src.next is a continuation token: pass it as a symbols entry in a follow-up
+    call to get the next bounded window (continuations, never repeating returned
+    lines); passing a token alone returns the largest window, mixing it with
+    handles may shorten it; stale or invalid tokens are listed in
+    continuation_rejected. next is a retrieval option, not a walk
+    recommendation: remaining_lines beside it is the exact unreturned count —
+    continue only to close a named evidence gap, never to exhaustively walk a
+    large symbol. The
+    response is bounded server-side; treat the returned source as read. A
+    complete payload is not proof the evidence or answer is complete — check
+    coverage.
+    """
+    root = _navigation_workspace(workspace_path)
+    request = InspectRequest(symbols=tuple(symbols))
+    return inspect_symbols(SymbolIndex(db_path(root)), request, workspace_root=root)
+
+
+@tool()
 def synapse_index_workspace(workspace_path: str = ".", force: bool = False) -> dict[str, object]:
     """Explicitly re-index a workspace; recovery and administration only.
 
@@ -128,7 +214,7 @@ def synapse_index_workspace(workspace_path: str = ".", force: bool = False) -> d
     return asdict(index_workspace(workspace_root, force=force))
 
 
-@mcp.tool()
+@tool()
 def synapse_search_symbols(
     query: str,
     kind: str | None = None,
@@ -154,18 +240,18 @@ def synapse_search_symbols(
     return {"items": [symbol_summary(item) for item in items], "page": page}
 
 
-@mcp.tool()
+@tool()
 def synapse_get_definition(
     symbol_id: str | None = None,
     name: str | None = None,
     workspace_path: str = ".",
     limit: int = 50,
     offset: int = 0,
-) -> dict[str, object] | None:
+) -> dict[str, object]:
     """Resolve a declaration to a stable symbol_id; prefer over opening files.
 
     Provide symbol_id OR exact name. Returns one symbol, {candidates, page} when the
-    name is ambiguous, or None when not found.
+    name is ambiguous, or {found: false, ...} when not indexed.
     """
     if symbol_id is None and name is None:
         msg = "Either symbol_id or name must be provided."
@@ -173,13 +259,13 @@ def synapse_get_definition(
     index = _workspace_index(workspace_path)
     if symbol_id is not None:
         symbol = index.get_symbol(symbol_id)
-        return symbol_summary(symbol) if symbol is not None else None
+        return symbol_summary(symbol) if symbol is not None else _not_found(symbol_id)
     assert name is not None
     candidates, page = index.get_definition_page(name, limit=limit, offset=offset)
     total = page["total"]
     assert isinstance(total, int)
     if total == 0:
-        return None
+        return _not_found(name)
     if total == 1:
         return symbol_summary(index.get_definition(name)[0])
     return {
@@ -188,32 +274,40 @@ def synapse_get_definition(
     }
 
 
-@mcp.tool()
+@tool()
 def synapse_get_file_outline(
     file_path: str,
     workspace_path: str = ".",
     max_symbols: int = 200,
-) -> dict[str, object] | None:
+) -> dict[str, object]:
     """Structural outline of one file; prefer before reading a whole file.
 
-    file_path is workspace-relative (absolute paths inside the workspace are accepted).
-    Returns None when the file is not indexed.
+    Each item carries kind, name, signature, and line_range. file_path is
+    workspace-relative (absolute paths inside the workspace are accepted).
+    Returns {found: false, ...} when the file is not indexed.
     """
     workspace_root = _workspace_root(workspace_path)
     normalized_file_path = _normalize_file_path(file_path, workspace_root)
-    return _workspace_index(workspace_root).get_file_outline(
+    outline = _workspace_index(workspace_root).get_file_outline(
         normalized_file_path,
         max_symbols=max_symbols,
     )
+    return outline if outline is not None else _not_found(normalized_file_path)
 
 
-@mcp.tool()
+@tool()
 def synapse_workspace_stats(workspace_path: str = ".") -> dict[str, object]:
-    """Return indexed workspace statistics (files, symbols, language mix)."""
-    return _workspace_index(workspace_path).workspace_stats()
+    """Return indexed workspace statistics (files, symbols, language mix).
+
+    Also reports `runtime`: which Synapse build is serving this call and where it was
+    loaded from, so a stale installed tool is distinguishable from a live checkout.
+    """
+    stats = _workspace_index(workspace_path).workspace_stats()
+    stats["runtime"] = runtime_provenance().to_payload()
+    return stats
 
 
-@mcp.tool()
+@tool()
 def synapse_watch_status(workspace_path: str = ".") -> dict[str, object]:
     """Read-only watch daemon freshness and health; diagnosis only, never repairs.
 
@@ -222,7 +316,7 @@ def synapse_watch_status(workspace_path: str = ".") -> dict[str, object]:
     return watch_status_payload(_workspace_root(workspace_path))
 
 
-@mcp.tool()
+@tool()
 def synapse_project_map(
     workspace_path: str = ".",
     limit: int = 50,
@@ -231,7 +325,9 @@ def synapse_project_map(
 ) -> dict[str, object]:
     """Return a compact paged map of the workspace structure and key symbols.
 
-    Best first call for broad architecture questions.
+    Best first call for broad architecture questions. top_symbols contains type and
+    function declarations only; namespace names are aggregated (deduplicated, with a
+    total) under `namespaces`.
     """
     return _workspace_index(workspace_path).project_map(
         limit=limit,
@@ -240,50 +336,56 @@ def synapse_project_map(
     )
 
 
-@mcp.tool()
+@tool()
 def synapse_get_file_dependencies(
     file_path: str,
     workspace_path: str = ".",
     limit: int = 50,
     offset: int = 0,
-) -> dict[str, object] | None:
+) -> dict[str, object]:
     """Return file-level import dependencies for one indexed file (what it imports).
 
     file_path is workspace-relative (absolute paths inside the workspace are accepted).
-    Returns None when the file is not indexed.
+    Returns {found: false, ...} when the file is not indexed.
     """
     workspace_root = _workspace_root(workspace_path)
     normalized_file_path = _normalize_file_path(file_path, workspace_root)
-    return _workspace_index(workspace_root).get_file_dependencies(
+    dependencies = _workspace_index(workspace_root).get_file_dependencies(
         normalized_file_path,
         limit=limit,
         offset=offset,
     )
+    return dependencies if dependencies is not None else _not_found(normalized_file_path)
 
 
-@mcp.tool()
+@tool()
 def synapse_get_symbol_context(
     symbol_id: str,
     include_body: bool = False,
     workspace_path: str = ".",
     children_limit: int = 50,
     children_offset: int = 0,
-) -> dict[str, object] | None:
+    max_body_lines: int = 200,
+) -> dict[str, object]:
     """Structural context around one symbol: parent, paged children, optional body.
 
-    symbol_id comes from synapse_search_symbols or synapse_get_definition. Set
-    include_body=True only when implementation text is needed; for the smallest view
-    use synapse_compact_context. Returns None for an unknown symbol_id.
+    symbol_id comes from synapse_orient or synapse_get_definition. Set
+    include_body=True to read the implementation source; prefer this over reading the
+    file. body is capped at max_body_lines and body_truncated reports a cut — narrow
+    to a child symbol or raise the cap for more. Returns {found: false, ...} for an
+    unknown symbol_id.
     """
-    return _workspace_index(workspace_path).get_symbol_context(
+    context = _workspace_index(workspace_path).get_symbol_context(
         symbol_id,
         include_body=include_body,
         children_limit=children_limit,
         children_offset=children_offset,
+        max_body_lines=max_body_lines,
     )
+    return context if context is not None else _not_found(symbol_id)
 
 
-@mcp.tool()
+@tool()
 def synapse_get_dependencies(
     symbol_id: str,
     workspace_path: str = ".",
@@ -306,7 +408,7 @@ def synapse_get_dependencies(
     }
 
 
-@mcp.tool()
+@tool()
 def synapse_find_references(
     symbol_id: str | None = None,
     name: str | None = None,
@@ -317,8 +419,12 @@ def synapse_find_references(
     """Find usages (incoming references); prefer over grep across the workspace.
 
     Provide symbol_id (preferred; from synapse_get_definition or
-    synapse_search_symbols) OR name. Returns reference items, affected files, and page
-    metadata.
+    synapse_search_symbols) OR name. Returns confirmed reference items (match:
+    heuristic), same-name possible_items (match: ambiguous/unresolved with candidate
+    symbol ids — never confirmed usages), per-item line/byte_column, affected files,
+    a coverage block (extraction completeness, counts, limitations), and page
+    metadata. Empty results mean no indexed references were found under partial
+    coverage — not proof the symbol is unused.
     """
     if symbol_id is None and name is None:
         msg = "Either symbol_id or name must be provided."
@@ -331,49 +437,53 @@ def synapse_find_references(
     )
 
 
-@mcp.tool()
+@tool()
 def synapse_related_symbols(
     symbol_id: str,
     limit: int = 20,
     workspace_path: str = ".",
     offset: int = 0,
-) -> dict[str, object] | None:
+) -> dict[str, object]:
     """Return graph neighbors of one symbol.
 
     Includes referenced symbols, referencing symbols, container or file siblings, and
-    name-stem matches. Returns None for an unknown symbol_id.
+    name-stem matches. Returns {found: false, ...} for an unknown symbol_id.
     """
-    return _workspace_index(workspace_path).related_symbols(
+    related = _workspace_index(workspace_path).related_symbols(
         symbol_id,
         limit=limit,
         offset=offset,
     )
+    return related if related is not None else _not_found(symbol_id)
 
 
-@mcp.tool()
+@tool()
 def synapse_compact_context(
     symbol_id: str,
     workspace_path: str = ".",
-) -> dict[str, object] | None:
+) -> dict[str, object]:
     """Minimum context to understand a symbol; prefer over reading source.
 
     Returns a compact definition with capped dependency and related-name lists.
-    Returns None for an unknown symbol_id.
+    Returns {found: false, ...} for an unknown symbol_id.
     """
-    return _workspace_index(workspace_path).compact_context(symbol_id)
+    context = _workspace_index(workspace_path).compact_context(symbol_id)
+    return context if context is not None else _not_found(symbol_id)
 
 
-@mcp.tool()
+@tool()
 def synapse_get_config(workspace_path: str = ".") -> dict[str, object]:
-    """Read Synapse configuration: effective values, per-entry source, and write targets.
+    """Read Synapse configuration: ordered ignore rules, per-rule source, and write targets.
 
-    Self-describing; no other documentation is needed to configure Synapse. Returns each
-    option with its type, accepted input forms, current effective value, the source of every
-    entry (built-in/global/project), the file writes land in, and when a change takes effect.
-    Safe before initialization.
+    Self-describing; no other documentation is needed to configure Synapse. Ignore rules use
+    gitignore syntax and the last matching rule decides, so the response is an ordered list
+    with each rule's layer, file, and line — not a set of ignored paths. Bounded by
+    rules_total/rules_complete. Safe before initialization.
     """
     workspace_root = _workspace_root(workspace_path)
     config = load_effective_config(workspace_root)
+    rules = config.ignore_rules
+    project_layer = config.layer(ConfigScope.PROJECT)
     return {
         "workspace_path": str(workspace_root),
         "project_config_path": str(config.project_config_path),
@@ -381,121 +491,87 @@ def synapse_get_config(workspace_path: str = ".") -> dict[str, object]:
         "global_config_path": str(config.global_config_path),
         "watch_poll_interval_s": config.watch.poll_interval_s,
         "options": {
-            "ignored_directories": {
-                "type": "list[str]",
+            "ignore_rules": {
+                "type": "ordered list of gitignore-style patterns",
+                "semantics": "The last matching rule decides. '!' re-includes.",
+                "project_source": str(project_layer.source),
+                "project_ignore_file": str(config.synapseignore_path),
+                "global_ignore_file": str(config.global_ignore_path),
                 "accepted_forms": list(_ACCEPTED_FORMS),
                 "rejected": list(_REJECTED_FORMS),
                 "case_sensitive": True,
+                "always_ignored": [".git"],
                 "add_with": "synapse_add_ignored_directories",
                 "remove_with": "synapse_remove_ignored_directories",
-                "writes_to": str(config.project_config_path),
+                "writes_to": str(config.synapseignore_path),
                 "layers": [str(scope) for scope in ConfigScope],
                 "takes_effect": _takes_effect(config),
-                "effective": [
+                "rules": [
                     {
-                        "value": entry.value,
-                        "sources": [str(scope) for scope in entry.sources],
+                        "pattern": rule.pattern,
+                        "scope": str(rule.scope),
+                        "origin": rule.origin,
+                        "line": rule.line,
+                        "negated": rule.negated,
+                        "directory_only": rule.directory_only,
                     }
-                    for entry in config.ignored_directories
+                    for rule in rules[:_MAX_REPORTED_RULES]
                 ],
+                "rules_total": len(rules),
+                "rules_complete": len(rules) <= _MAX_REPORTED_RULES,
+                "skipped_lines": [
+                    {
+                        "origin": problem.origin,
+                        "line": problem.line,
+                        "text": problem.text,
+                        "reason": problem.reason,
+                    }
+                    for problem in config.ignore_problems
+                ],
+                "shadowed_project_json": list(project_layer.shadowed_json_entries),
+                "coverage": _RULES_COVERAGE,
             },
         },
     }
 
 
-@mcp.tool()
+@tool()
 def synapse_add_ignored_directories(
     directories: list[str],
     workspace_path: str = ".",
 ) -> dict[str, object]:
-    """Stop indexing directories; writes the project config, not the global one.
+    """Stop indexing paths; appends gitignore patterns to the project .synapseignore.
 
-    Each entry is a bare directory name matched at any depth ("node_modules"), a
-    root-anchored name ("/build"), or a workspace-relative path ("src/generated"). No globs,
-    no absolute paths, no ".." segments. Built-in ignores are reported as already covered
-    instead of being written. Any invalid entry rejects the whole call and writes nothing.
-    Ignored files leave the index on the next watch sweep; call synapse_index_workspace to
-    apply immediately.
+    Each entry is a gitignore pattern: a bare name matched at any depth ("node_modules"), a
+    trailing slash for directories only ("build/"), a leading slash to anchor at the root
+    ("/dist"), a glob ("*.min.js"), or a leading "!" to re-include. No absolute paths, no
+    ".." segments. Patterns append to the end, so a new rule beats the rules already there.
+    Creates .synapseignore and migrates any legacy config entries when it does not exist yet.
+    Any invalid entry rejects the whole call and writes nothing. Ignored files leave the index
+    on the next watch sweep; call synapse_index_workspace to apply immediately.
     """
     workspace_root = _workspace_root(workspace_path)
     requested, normalized = _normalized_directories(directories)
-    defaults = load_default_ignored_directories()
-    entries = set(load_project_config(workspace_root).ignored_directories)
-
-    added: list[str] = []
-    already_present: list[str] = []
-    already_covered_by_builtin: list[str] = []
-    for value in requested:
-        if value in defaults:
-            already_covered_by_builtin.append(value)
-        elif value in entries:
-            already_present.append(value)
-        else:
-            entries.add(value)
-            added.append(value)
-
-    write_project_ignored_directories(workspace_root, entries)
-    return _mutation_payload(
-        workspace_root,
-        normalized,
-        added=added,
-        removed=[],
-        already_present=already_present,
-        already_covered_by_builtin=already_covered_by_builtin,
-        not_present=[],
-    )
+    result = add_ignore_patterns(workspace_root, requested, scope=ConfigScope.PROJECT)
+    return _mutation_payload(workspace_root, normalized, result)
 
 
-@mcp.tool()
+@tool()
 def synapse_remove_ignored_directories(
     directories: list[str],
     workspace_path: str = ".",
 ) -> dict[str, object]:
-    """Resume indexing directories; removes entries from the project config only.
+    """Resume indexing paths; edits the project .synapseignore only.
 
-    Built-in ignores and entries inherited from the global user config cannot be removed
-    here and raise an error naming where they come from. Entries that are not ignored
-    anywhere are reported in not_present and are not an error. Any invalid entry rejects the
-    whole call and writes nothing. Restored files re-enter the index on the next watch
-    sweep; call synapse_index_workspace to apply immediately.
+    A pattern the project file owns is deleted and reported in removed. A pattern inherited
+    from a built-in or the global config cannot be deleted there, so a negation is appended
+    instead and reported in negated — that is how a built-in gets turned off. '.git' is the
+    one exception and stays ignored. Patterns that are not ignored anywhere are reported in
+    not_present and are not an error. Any invalid entry rejects the whole call and writes
+    nothing. Restored files re-enter the index on the next watch sweep; call
+    synapse_index_workspace to apply immediately.
     """
     workspace_root = _workspace_root(workspace_path)
     requested, normalized = _normalized_directories(directories)
-    defaults = load_default_ignored_directories()
-    entries = set(load_project_config(workspace_root).ignored_directories)
-    global_entries = load_user_config().ignored_directories
-
-    for value in requested:
-        if value in defaults:
-            msg = (
-                f"Cannot remove built-in ignored directory {value!r}. "
-                "Built-ins ship with Synapse and are not removable."
-            )
-            raise ValueError(msg)
-        if value not in entries and value in global_entries:
-            msg = (
-                f"{value!r} is not in the project config; it is inherited from the global "
-                f"config at {config_file_path()}. Remove it with: "
-                f"synapse config ignored-dirs remove {value} --scope global"
-            )
-            raise ValueError(msg)
-
-    removed: list[str] = []
-    not_present: list[str] = []
-    for value in requested:
-        if value in entries:
-            entries.discard(value)
-            removed.append(value)
-        else:
-            not_present.append(value)
-
-    write_project_ignored_directories(workspace_root, entries)
-    return _mutation_payload(
-        workspace_root,
-        normalized,
-        added=[],
-        removed=removed,
-        already_present=[],
-        already_covered_by_builtin=[],
-        not_present=not_present,
-    )
+    result = remove_ignore_patterns(workspace_root, requested, scope=ConfigScope.PROJECT)
+    return _mutation_payload(workspace_root, normalized, result)

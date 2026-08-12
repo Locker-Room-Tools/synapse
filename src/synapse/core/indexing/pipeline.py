@@ -6,16 +6,25 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from synapse.core.index import SymbolIndex
+from synapse.core.index import SymbolIndex, refresh_repo_map
 from synapse.core.index.schema import (
     atomic_replace_database,
     cleanup_database_files,
     temporary_database_path,
 )
 from synapse.core.indexing.crawler import hash_source, iter_source_files
-from synapse.core.indexing.parser import ParsedSource, RawReference, build_relations, parse_source
+from synapse.core.indexing.parser import (
+    FileScope,
+    ParsedSource,
+    RawReference,
+    build_relations,
+    parse_source,
+)
 from synapse.core.indexing.references import (
+    REFERENCE_FINGERPRINT_KEY,
     reconcile_affected_references,
+    reference_extraction_fingerprint,
+    reference_index_is_stale,
     symbol_names,
 )
 from synapse.core.languages import detect_language
@@ -83,6 +92,9 @@ def index_source_file(
 def index_workspace(workspace_path: str | Path = ".", *, force: bool = False) -> IndexStats:
     """Index or re-index a workspace into the local SQLite cache."""
     root = require_workspace_path(workspace_path)
+    # A stale reference fingerprint means persisted relations were produced by older
+    # extraction semantics; incremental hashing would silently keep them forever.
+    force = force or reference_index_is_stale(root)
     if force:
         # Deferred: watch imports this package, so a module-level import would cycle.
         from synapse.core.watch.supervisor import WatchLock
@@ -98,6 +110,7 @@ def _index_workspace(root: Path, *, force: bool) -> IndexStats:
     active_db_path = temporary_db_path or target_db_path
     seen_paths: set[str] = set()
     raw_references_by_file: dict[str, list[RawReference]] = {}
+    scopes_by_file: dict[str, FileScope] = {}
     affected_names: set[str] = set()
     indexed_files = 0
     skipped_files = 0
@@ -157,6 +170,7 @@ def _index_workspace(root: Path, *, force: bool) -> IndexStats:
 
                 seen_paths.add(relative_path)
                 raw_references_by_file[relative_path] = parsed_source.references
+                scopes_by_file[relative_path] = parsed_source.scope
                 affected_names.update(symbol_names(parsed_source.symbols))
                 indexed_files += 1
 
@@ -184,7 +198,14 @@ def _index_workspace(root: Path, *, force: bool) -> IndexStats:
                 connection,
                 affected_names=affected_names,
                 raw_references_by_file=raw_references_by_file,
+                scopes_by_file=scopes_by_file,
             )
+            index.set_meta(
+                REFERENCE_FINGERPRINT_KEY,
+                reference_extraction_fingerprint(),
+                connection=connection,
+            )
+            refresh_repo_map(connection)
             current_files = index.list_indexed_files(connection=connection)
             languages = sorted({source_file.language for source_file in current_files})
             workspace_stats = index.workspace_stats(connection=connection)

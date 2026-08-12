@@ -27,9 +27,10 @@
    `synapse install codex`
 4. Restart the agent once.
 
-Replace `codex` with `claude-code` or `opencode`. No repository files are created. On the first
-code-navigation request, the global instruction calls `synapse_ensure_workspace`, which
-initializes the local index and daemon automatically.
+Replace `codex` with `claude-code`, `cline`, `continue`, `copilot`, `cursor`, `gemini`,
+`hermes`, `kiro`, `opencode`, `qwen`, or `windsurf`. No repository files are created. The
+first `synapse_orient` or `synapse_inspect` call initializes the local index and daemon
+automatically.
 
 See [Installation and lifecycle](docs/installation.md) for upgrades, custom scopes,
 troubleshooting, and uninstall instructions. See [MCP tools](docs/tools.md) for tool contracts
@@ -45,27 +46,50 @@ serving only use the local grammar cache and never download parsers implicitly.
 
 ## Available MCP tools
 
-Synapse exposes 17 deterministic MCP tools for initialization, symbol lookup, definitions, references,
-structural context, dependency navigation, project maps, indexing, and daemon health. The
-complete parameter and response reference is in [docs/tools.md](docs/tools.md).
+Synapse exposes 19 deterministic MCP tools. The default profile is exactly two:
+`synapse_orient` (ranked, production-first matches for literal repository terms, with
+compact symbol handles) and `synapse_inspect` (one-snapshot batch inspection of selected
+symbols: definitions, bounded source, call-proven callers/callees plus neutral incoming
+and outgoing references, all with stored resolution, confidence, and usage kind). Both
+initialize and refresh the workspace automatically. The full
+profile adds initialization, symbol lookup, definitions, references, structural context,
+dependency navigation, project maps, indexing, and daemon-health tools. The complete
+parameter and response reference is in [docs/tools.md](docs/tools.md).
 
 ## Configuration
 
-Synapse reads configuration from three layers, unioned together:
+Ignore rules come from three layers, applied in order — **the last matching rule wins**, so a
+later layer can re-include what an earlier one ignored:
 
 | Layer | Location | Written by |
 | --- | --- | --- |
-| built-in defaults | packaged with Synapse | not editable |
-| global user config | `~/.config/synapse/config.json` | `synapse config ignored-dirs ... --scope global` |
-| project config | `<workspace>/.synapse/config.json` | agents over MCP, or `synapse config ignored-dirs ...` |
+| built-in defaults | packaged with Synapse | negate a rule to turn it off |
+| global | `~/.config/synapse/ignore` | `synapse ignore add ... --scope global` |
+| project | `<workspace>/.synapseignore` | `synapse ignore ...`, or agents over MCP |
 
-`ignored_directories` accepts a bare name matched at any depth (`node_modules`), a
-root-anchored name (`/build`), or a workspace-relative path (`src/generated`). Globs,
-absolute paths, and `..` segments are rejected.
+`.synapseignore` uses **gitignore syntax** — bare names (`node_modules`), directory-only rules
+(`build/`), root anchoring (`/dist`), globs (`*.min.js`, `docs/**`), `#` comments, and `!`
+negation. Absolute paths and `..` segments are rejected. `.git` is always ignored.
 
-Agents configure Synapse through `synapse_get_config`, `synapse_add_ignored_directories`, and
-`synapse_remove_ignored_directories`, which always write the project layer. `.synapse/config.json`
-is **meant to be committed** so the whole team indexes the same tree.
+```bash
+synapse ignore init --node --dotnet
+```
+
+`init` seeds the file from ecosystem templates; run `synapse ignore presets` to see all 14 and
+which ones your workspace matches. With no flags it detects them from marker files. Synapse also
+creates the file automatically the first time it initializes a recognizable workspace — it never
+touches an existing one, and you can opt out with `SYNAPSE_NO_IGNORE_BOOTSTRAP=1` or
+`"auto_ignore_bootstrap": false` in `.synapse/config.json`.
+
+`.synapseignore` is a plain, flat file with no managed sections. It is **meant to be committed**
+so the whole team indexes the same tree; Synapse only ever appends to it or removes an exact line.
+
+`synapse ignore list` prints every effective rule in order with its layer, file, and line.
+Removing a rule that comes from a lower layer appends a negation rather than failing.
+
+Earlier versions kept an `ignored_directories` list in `config.json`. That still works, but an
+ignore file supersedes it, and the first write migrates the entries across; `synapse ignore
+migrate` does it explicitly. `watch.*` settings stay in `config.json` and are unaffected.
 
 A change needs no reindex: the next watch sweep purges newly-ignored files and picks up
 restored ones.
@@ -73,9 +97,15 @@ restored ones.
 ## Watch daemon
 
 Synapse requires a healthy dependency-free polling daemon before query tools can read an
-index. `synapse_ensure_workspace` starts or repairs it lazily, and the MCP entry point restores
+index. The navigation tools (or `synapse_ensure_workspace` on the full profile) start or
+repair it lazily, and the MCP entry point restores
 it for initialized workspaces after a reboot. Logs are written under the workspace data
 directory at `logs/watch.log`, and status is written to `watch.json` in the same data directory.
+
+A running daemon is not by itself enough to answer a question. Before serving evidence the
+navigation tools also check that the index exists, the parsers are installed, and the
+stored relations were produced by the current extraction semantics — a Synapse upgrade
+therefore triggers one automatic rebuild rather than silently reusing stale relations.
 
 Use `synapse watch status --workspace . --json` to inspect `running`, `backend`, `pending`, PID,
 timestamps, errors, and `staleness_seconds`. Stop a detached daemon with
@@ -88,7 +118,8 @@ The shipped backend is currently polling-only. Its interval defaults to the user
 
 ## Agent setup helpers
 
-- `synapse install <claude-code|codex|opencode> [--dry-run] [--offline] [--no-skill]`
+- `synapse install <agent> [--dry-run] [--offline] [--no-skill]` — see the
+  [support matrix](docs/installation.md#supported-agents) for every supported agent id
 - `synapse init --path <path> [--dry-run] [--offline]`
 - `synapse status --path <path> [--json]`
 - `synapse uninstall <client> --global`

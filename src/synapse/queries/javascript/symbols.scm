@@ -7,6 +7,9 @@
 (function_declaration
   name: (identifier) @name) @definition.function
 
+(generator_function_declaration
+  name: (identifier) @name) @definition.function
+
 (method_definition
   name: (property_identifier) @name) @definition.method
 

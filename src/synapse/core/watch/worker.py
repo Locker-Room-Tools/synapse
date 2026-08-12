@@ -8,10 +8,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
-from synapse.core.index import SymbolIndex
+from synapse.core.index import SymbolIndex, refresh_repo_map
 from synapse.core.indexing import index_source_file
 from synapse.core.indexing.crawler import hash_source
-from synapse.core.indexing.parser import RawReference
+from synapse.core.indexing.parser import FileScope, RawReference
 from synapse.core.indexing.references import (
     reconcile_affected_references,
     symbol_names,
@@ -81,6 +81,7 @@ class WatchWorker:
         skipped_files = 0
         removed_files = 0
         raw_references_by_file: dict[str, list[RawReference]] = {}
+        scopes_by_file: dict[str, FileScope] = {}
         affected_names: set[str] = set()
 
         with self.index.transaction() as connection:
@@ -107,6 +108,8 @@ class WatchWorker:
                 affected_names.update(batch_update.affected_names)
                 if batch_update.raw_references is not None:
                     raw_references_by_file[rel_path] = batch_update.raw_references
+                if batch_update.scope is not None:
+                    scopes_by_file[rel_path] = batch_update.scope
 
             reconcile_affected_references(
                 self.root,
@@ -114,7 +117,9 @@ class WatchWorker:
                 connection,
                 affected_names=affected_names,
                 raw_references_by_file=raw_references_by_file,
+                scopes_by_file=scopes_by_file,
             )
+            refresh_repo_map(connection)
 
             current_files_list = self.index.list_indexed_files(connection=connection)
             languages = sorted({source_file.language for source_file in current_files_list})
@@ -170,6 +175,7 @@ class WatchWorker:
             0,
             sorted(symbol_names(parsed_source.symbols)),
             parsed_source.references,
+            parsed_source.scope,
         )
 
 
@@ -180,3 +186,4 @@ class _FileUpdate:
     removed_files: int
     affected_names: list[str]
     raw_references: list[RawReference] | None
+    scope: FileScope | None = None

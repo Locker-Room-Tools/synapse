@@ -13,14 +13,23 @@ from synapse.cli.adapters import (
     install_global_instruction,
     install_global_skill,
     install_instruction_snippet,
+    install_project_skill,
     remove_global_instruction,
     remove_global_skill,
     remove_instruction_snippet,
+    remove_project_skill,
     resolve_instruction_path,
+    resolve_project_skill_path,
+)
+from synapse.cli.claude_hooks import (
+    install_claude_hook,
+    remove_claude_hook,
+    run_claude_pre_bash,
 )
 from synapse.cli.config import build_config_parser
 from synapse.cli.doctor import format_report, has_failures, report_to_json, run_doctor
 from synapse.cli.grammars import LanguagePackError, install_grammars, missing_grammars
+from synapse.cli.ignore import build_ignore_parser
 from synapse.cli.installer import (
     config_has_mcp_server,
     install_mcp_server,
@@ -51,6 +60,7 @@ from synapse.core.workspace import (
     normalize_workspace_path,
     require_workspace_path,
 )
+from synapse.mcp.profiles import ToolProfile
 from synapse.mcp.server import run
 
 
@@ -107,13 +117,15 @@ def _handle_install(args: Namespace) -> int:
         dry_run=True,
         portable=True,
     )
-    instruction_preview = install_global_instruction(
-        args.agent,
-        force=True,
-        dry_run=True,
-    )
+    instruction_preview = None
+    if adapter.global_instructions is not None:
+        instruction_preview = install_global_instruction(
+            args.agent,
+            force=True,
+            dry_run=True,
+        )
     skill_preview = None
-    if not args.no_skill:
+    if not args.no_skill and adapter.global_skill is not None:
         skill_preview = install_global_skill(
             args.agent,
             force=args.force,
@@ -134,8 +146,16 @@ def _handle_install(args: Namespace) -> int:
             force=args.force,
             portable=True,
         )
-        instruction_result = install_global_instruction(args.agent, force=True)
-        skill_result = None if args.no_skill else install_global_skill(args.agent, force=args.force)
+        instruction_result = None
+        if adapter.global_instructions is not None:
+            instruction_result = install_global_instruction(args.agent, force=True)
+        skill_result = None
+        if not args.no_skill and adapter.global_skill is not None:
+            skill_result = install_global_skill(args.agent, force=args.force)
+
+    hook_result = None
+    if adapter.supports_hook and not args.no_hook:
+        hook_result = install_claude_hook(dry_run=args.dry_run)
 
     heading = "Synapse global install preview." if args.dry_run else "Synapse installed globally."
     print(heading)
@@ -150,11 +170,17 @@ def _handle_install(args: Namespace) -> int:
     else:
         print("Grammars: local cache is ready")
     print(f"MCP config: {config_result.path} ({config_result.action})")
-    print(f"Global instructions: {instruction_result.path} ({instruction_result.status})")
+    if instruction_result is None:
+        print(f"Global instructions: not supported by {adapter.display_name}")
+    else:
+        print(f"Global instructions: {instruction_result.path} ({instruction_result.status})")
     if skill_result is None:
-        print("Global skill: skipped")
+        skipped = "skipped" if adapter.global_skill is not None else "not supported"
+        print(f"Global skill: {skipped}")
     else:
         print(f"Global skill: {skill_result.path} ({skill_result.status})")
+    if hook_result is not None:
+        print(f"Claude Code hook: {hook_result.path} ({hook_result.status})")
     if not args.dry_run:
         print()
         print(f"Restart {adapter.display_name} once to load Synapse.")
@@ -163,10 +189,13 @@ def _handle_install(args: Namespace) -> int:
 
 
 def _print_project_override_warning(agent: str) -> None:
+    adapter = get_adapter(agent)
+    if adapter.mcp.project is None:
+        return
     workspace_root = _detect_workspace_root(Path.cwd())
     if not config_has_mcp_server(agent, workspace_root, scope="project"):
         return
-    project_config = resolve_config_path(get_adapter(agent), workspace_root, "project")
+    project_config = resolve_config_path(adapter, workspace_root, "project")
     print()
     print(f"Project-scoped Synapse config detected at {project_config}.")
     print("It remains unchanged and takes precedence over the global integration.")
@@ -216,6 +245,9 @@ def _handle_init(args: Namespace) -> int:
 def _format_workspace_status(payload: dict[str, object]) -> str:
     daemon = payload["daemon"]
     assert isinstance(daemon, dict)
+    runtime = payload["runtime"]
+    assert isinstance(runtime, dict)
+    editable = runtime["editable"]
     lines = [
         "Synapse workspace status",
         "",
@@ -224,6 +256,10 @@ def _format_workspace_status(payload: dict[str, object]) -> str:
         f"Initialized: {payload['initialized']}",
         f"Daemon running: {daemon['running']}",
         f"Daemon degraded: {daemon['degraded']}",
+        "",
+        f"Synapse version: {runtime['package_version']}",
+        f"Loaded from: {runtime['package_location']}",
+        f"Editable install: {'unknown' if editable is None else editable}",
     ]
     return "\n".join(lines) + "\n"
 
@@ -243,16 +279,20 @@ def _print_legacy_codex_config_warning(
     workspace_root: Path,
     scope: str,
 ) -> None:
-    if agent != "codex" or scope != "project":
+    adapter = get_adapter(agent)
+    if not adapter.warn_legacy_user_config or scope != "project":
         return
-    if not config_has_mcp_server("codex", workspace_root, scope="user"):
+    if not config_has_mcp_server(agent, workspace_root, scope="user"):
         return
-    legacy_path = resolve_config_path(get_adapter("codex"), workspace_root, "user")
+    legacy_path = resolve_config_path(adapter, workspace_root, "user")
     print()
-    print(f"Legacy user-scoped Codex config detected at {legacy_path}; it was not removed.")
+    print(
+        f"Legacy user-scoped {adapter.display_name} config detected at {legacy_path}; "
+        "it was not removed."
+    )
     print(
         "After verifying the project config, remove it with: "
-        f"synapse uninstall codex --path {workspace_root} --scope user --keep-instructions"
+        f"synapse uninstall {agent} --path {workspace_root} --scope user --keep-instructions"
     )
 
 
@@ -272,7 +312,9 @@ def _print_setup_preview(
         print("Grammars: local cache is ready")
     print("Index: would initialize or update")
     print(f"MCP config: would install at {resolve_config_path(adapter, workspace_root, scope)}")
-    if args.no_instructions:
+    if adapter.project_instructions is None:
+        print(f"Instructions: not supported by {adapter.display_name}")
+    elif args.no_instructions:
         print("Instructions: skipped by --no-instructions")
     else:
         instruction_path = resolve_instruction_path(
@@ -281,6 +323,12 @@ def _print_setup_preview(
             output_path=args.instructions_output,
         )
         print(f"Instructions: would install at {instruction_path}")
+    if adapter.project_skill is None:
+        print(f"Skill: not supported by {adapter.display_name}")
+    elif args.no_skill:
+        print("Skill: skipped by --no-skill")
+    else:
+        print(f"Skill: would install at {resolve_project_skill_path(args.agent, workspace_root)}")
     print("Watch daemon: would ensure a healthy detached process")
     print("Doctor: would validate the completed installation")
     _print_legacy_codex_config_warning(args.agent, workspace_root, scope)
@@ -289,6 +337,12 @@ def _print_setup_preview(
 def _handle_setup(args: Namespace) -> int:
     workspace_root = _detect_workspace_root(require_workspace_path(args.path))
     adapter = get_adapter(args.agent)
+    if adapter.mcp.project is None:
+        msg = (
+            f"{adapter.display_name} does not support project-scope MCP config; "
+            f"run 'synapse install {adapter.id}' to configure it globally."
+        )
+        raise ValueError(msg)
     scope = args.scope or adapter.default_scope
     grammar_names = missing_grammars()
     if grammar_names and args.offline:
@@ -320,13 +374,16 @@ def _handle_setup(args: Namespace) -> int:
         force=args.force,
     )
     instructions_result = None
-    if not args.no_instructions:
+    if not args.no_instructions and adapter.project_instructions is not None:
         instructions_result = install_instruction_snippet(
             args.agent,
             workspace_root,
             output_path=args.instructions_output,
             force=args.force,
         )
+    skill_result = None
+    if not args.no_skill and adapter.project_skill is not None:
+        skill_result = install_project_skill(args.agent, workspace_root, force=args.force)
     watch_status = ensure_watch_daemon(workspace_root)
 
     print()
@@ -343,6 +400,8 @@ def _handle_setup(args: Namespace) -> int:
         print(f"Repository instructions: {instructions_result.path} ({instructions_result.status})")
     else:
         print("Repository instructions: skipped")
+    if skill_result is not None:
+        print(f"Repository skill: {skill_result.path} ({skill_result.status})")
     print(f"Watch daemon: running via {watch_status.backend} (pid {watch_status.pid})")
     _print_legacy_codex_config_warning(args.agent, workspace_root, scope)
 
@@ -357,7 +416,7 @@ def _handle_setup(args: Namespace) -> int:
 
 
 def _handle_serve(args: Namespace) -> int:
-    run(workspace_path=args.workspace)
+    run(workspace_path=args.workspace, profile=ToolProfile(args.profile))
     return 0
 
 
@@ -459,8 +518,12 @@ def _handle_mcp_install(args: Namespace) -> int:
     return 0
 
 
+def _handle_hook_claude_pre_bash(_args: Namespace) -> int:
+    return run_claude_pre_bash(sys.stdin, sys.stdout)
+
+
 def _handle_uninstall(args: Namespace) -> int:
-    get_adapter(args.agent)
+    adapter = get_adapter(args.agent)
     workspace_root = _detect_workspace_root(normalize_workspace_path(args.path))
     if args.global_scope:
         printed = False
@@ -472,16 +535,20 @@ def _handle_uninstall(args: Namespace) -> int:
             )
             print(f"Global MCP config {config_result.action}: {config_result.path}")
             printed = True
-        if not args.keep_instructions:
+        if not args.keep_instructions and adapter.global_instructions is not None:
             instructions_result = remove_global_instruction(
                 args.agent,
                 dry_run=args.dry_run,
             )
             print(f"Global instructions {instructions_result.status}: {instructions_result.path}")
             printed = True
-        if not args.keep_skill:
+        if not args.keep_skill and adapter.global_skill is not None:
             skill_result = remove_global_skill(args.agent, dry_run=args.dry_run)
             print(f"Global skill {skill_result.status}: {skill_result.path}")
+            printed = True
+        if adapter.supports_hook and not args.keep_hook:
+            hook_result = remove_claude_hook(dry_run=args.dry_run)
+            print(f"{adapter.display_name} hook {hook_result.status}: {hook_result.path}")
             printed = True
         if not printed:
             print("Nothing selected for uninstall.")
@@ -500,7 +567,7 @@ def _handle_uninstall(args: Namespace) -> int:
         if args.dry_run and config_result.content_preview:
             print()
             print(config_result.content_preview, end="")
-    if not args.keep_instructions:
+    if not args.keep_instructions and adapter.project_instructions is not None:
         instructions_result = remove_instruction_snippet(
             args.agent,
             workspace_root,
@@ -508,6 +575,14 @@ def _handle_uninstall(args: Namespace) -> int:
             dry_run=args.dry_run,
         )
         print(f"Instructions {instructions_result.status}: {instructions_result.path}")
+        printed = True
+    if not args.keep_skill and adapter.project_skill is not None:
+        project_skill_result = remove_project_skill(
+            args.agent,
+            workspace_root,
+            dry_run=args.dry_run,
+        )
+        print(f"Skill {project_skill_result.status}: {project_skill_result.path}")
         printed = True
     if not printed:
         print("Nothing selected for uninstall.")
@@ -542,6 +617,7 @@ def build_parser() -> ArgumentParser:
     install_parser.add_argument("--dry-run", action="store_true")
     install_parser.add_argument("--offline", action="store_true")
     install_parser.add_argument("--no-skill", action="store_true")
+    install_parser.add_argument("--no-hook", action="store_true")
     install_parser.add_argument("--force", action="store_true")
     install_parser.set_defaults(func=_handle_install)
 
@@ -575,6 +651,7 @@ def build_parser() -> ArgumentParser:
         help="Deprecated; instructions are installed by default",
     )
     setup_parser.add_argument("--instructions-output")
+    setup_parser.add_argument("--no-skill", action="store_true")
     setup_parser.add_argument("--force", action="store_true")
     setup_parser.set_defaults(func=_handle_setup)
 
@@ -593,12 +670,27 @@ def build_parser() -> ArgumentParser:
     uninstall_parser.add_argument("--keep-instructions", action="store_true")
     uninstall_parser.add_argument("--keep-config", action="store_true")
     uninstall_parser.add_argument("--keep-skill", action="store_true")
+    uninstall_parser.add_argument("--keep-hook", action="store_true")
     uninstall_parser.add_argument("--global", dest="global_scope", action="store_true")
     uninstall_parser.add_argument("--dry-run", action="store_true")
     uninstall_parser.set_defaults(func=_handle_uninstall)
 
+    hook_parser = subparsers.add_parser("hook", help="Internal agent hook entry points")
+    hook_subparsers = hook_parser.add_subparsers(dest="hook_command", required=True)
+    hook_pre_bash = hook_subparsers.add_parser(
+        "claude-pre-bash",
+        help="Claude Code PreToolUse hook: suggest Synapse tools for shell exploration",
+    )
+    hook_pre_bash.set_defaults(func=_handle_hook_claude_pre_bash)
+
     serve_parser = subparsers.add_parser("serve", help="Internal MCP stdio entry point")
     serve_parser.add_argument("--workspace")
+    serve_parser.add_argument(
+        "--profile",
+        choices=tuple(profile.value for profile in ToolProfile),
+        default=ToolProfile.DEFAULT.value,
+        help="Tool surface: 'default' (minimal coding-agent set) or 'full' (all tools)",
+    )
     serve_parser.set_defaults(func=_handle_serve)
 
     watch_parser = subparsers.add_parser("watch", help="Run or inspect the watch daemon")
@@ -642,6 +734,8 @@ def build_parser() -> ArgumentParser:
     doctor_parser.add_argument("--scope", choices=("project", "user"))
     doctor_parser.add_argument("--json", action="store_true")
     doctor_parser.set_defaults(func=_handle_doctor)
+
+    build_ignore_parser(subparsers)
 
     config_parser = subparsers.add_parser("config", help="Manage Synapse configuration")
     config_subparsers = config_parser.add_subparsers(dest="config_command")

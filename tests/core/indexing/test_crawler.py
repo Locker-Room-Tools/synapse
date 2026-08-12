@@ -80,14 +80,14 @@ def test_iter_source_files_anchors_leading_slash_entries_to_the_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """'/out' prunes the top-level directory while nested ones stay indexed."""
+    """'/artifacts' prunes the top-level directory while nested ones stay indexed."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    write_project_ignored_directories(tmp_path, {"/out"})
-    (tmp_path / "out").mkdir()
-    nested_out = tmp_path / "pkg" / "out"
-    nested_out.mkdir(parents=True)
-    (tmp_path / "out" / "skip.py").write_text("print('no')\n", encoding="utf-8")
-    keep_file = nested_out / "keep.py"
+    write_project_ignored_directories(tmp_path, {"/artifacts"})
+    (tmp_path / "artifacts").mkdir()
+    nested_artifacts = tmp_path / "pkg" / "artifacts"
+    nested_artifacts.mkdir(parents=True)
+    (tmp_path / "artifacts" / "skip.py").write_text("print('no')\n", encoding="utf-8")
+    keep_file = nested_artifacts / "keep.py"
     keep_file.write_text("print('ok')\n", encoding="utf-8")
 
     assert list(iter_source_files(tmp_path)) == [keep_file]
@@ -236,3 +236,50 @@ def test_iter_source_files_yields_dangling_file_symlinks(
     files = list(iter_source_files(tmp_path))
 
     assert [path.name for path in files] == ["dangling.py"]
+
+
+def test_iter_source_files_applies_file_patterns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A glob excludes matching files while their siblings stay indexed."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    (tmp_path / ".synapseignore").write_text("*.min.js\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.min.js").write_text("var a=1\n", encoding="utf-8")
+    keep_file = tmp_path / "src" / "app.js"
+    keep_file.write_text("var b=2\n", encoding="utf-8")
+
+    assert list(iter_source_files(tmp_path)) == [keep_file]
+
+
+def test_iter_source_files_honors_negation_within_a_visited_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later '!' rule re-includes one file that an earlier glob excluded."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    (tmp_path / ".synapseignore").write_text(
+        "src/vendor/*.js\n!src/vendor/keep.js\n", encoding="utf-8"
+    )
+    vendor = tmp_path / "src" / "vendor"
+    vendor.mkdir(parents=True)
+    (vendor / "bundle.js").write_text("var a=1\n", encoding="utf-8")
+    keep_file = vendor / "keep.js"
+    keep_file.write_text("var b=2\n", encoding="utf-8")
+
+    assert list(iter_source_files(tmp_path)) == [keep_file]
+
+
+def test_iter_source_files_keeps_a_file_named_like_an_ignored_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The built-in 'build' entry is directory-only, so a file named build.py survives."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    (tmp_path / "build").mkdir()
+    (tmp_path / "build" / "skip.py").write_text("print('no')\n", encoding="utf-8")
+    keep_file = tmp_path / "build.py"
+    keep_file.write_text("print('ok')\n", encoding="utf-8")
+
+    assert list(iter_source_files(tmp_path)) == [keep_file]

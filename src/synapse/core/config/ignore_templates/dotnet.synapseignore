@@ -1,0 +1,7 @@
+TestResults/
+packages/
+artifacts/
+*.Designer.cs
+*.generated.cs
+*.g.cs
+*.g.i.cs

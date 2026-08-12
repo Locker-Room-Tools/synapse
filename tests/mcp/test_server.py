@@ -13,12 +13,26 @@ def test_server_instructions_advertise_synapse_first_flow() -> None:
     instructions = mcp.instructions
 
     assert instructions is not None
-    assert "synapse_ensure_workspace" in instructions
-    assert "synapse_get_definition" in instructions
-    assert "synapse_find_references" in instructions
-    assert "synapse_project_map" in instructions
-    assert "synapse_get_dependencies" in instructions
-    assert "BEFORE grep" in instructions
+    assert "synapse_orient" in instructions
+    assert "synapse_inspect" in instructions
+    assert "repository vocabulary" in instructions
+    assert "never proof of absence" in instructions
+    assert "initialize the workspace automatically" in instructions.lower()
+
+
+def test_server_instructions_carry_the_orchestration_contract() -> None:
+    """The handshake states facet planning, small selection, gap closure, and stopping."""
+    instructions = " ".join((mcp.instructions or "").split())
+
+    assert "evidence facets" in instructions
+    assert "4-8 discriminative terms" in instructions
+    assert "2-3 initial facet-diverse anchors" in instructions
+    assert "1-2 returned relation handles" in instructions
+    assert "no budget parameter to raise" in instructions
+    assert "verified, partial, or missing" in instructions
+    assert "one bounded close attempt" in instructions
+    assert "verified or unresolved" in instructions
+    assert "broad repository search" in instructions
 
 
 def test_server_rejects_a_missing_workspace_before_starting(

@@ -6,13 +6,14 @@ import pytest
 
 from synapse.cli import doctor
 from synapse.cli.doctor import (
-    EXPECTED_TOOLS,
     DoctorReport,
+    expected_tools,
     format_report,
     has_failures,
     report_to_json,
     run_doctor,
 )
+from synapse.mcp.profiles import ToolProfile
 
 
 def _check_status(report: DoctorReport, name: str) -> str:
@@ -26,10 +27,13 @@ def _stub_probe(
     instructions: str | None = "use synapse tools",
     error: Exception | None = None,
 ) -> None:
-    async def fake_probe(_workspace_root: Path) -> tuple[list[str], int, str | None]:
+    async def fake_probe(
+        _workspace_root: Path, _profile: ToolProfile = ToolProfile.DEFAULT
+    ) -> tuple[list[str], int, str | None]:
         if error is not None:
             raise error
-        return sorted(tools if tools is not None else EXPECTED_TOOLS), 0, instructions
+        advertised = tools if tools is not None else expected_tools(ToolProfile.DEFAULT)
+        return sorted(advertised), 120, instructions
 
     monkeypatch.setattr(doctor, "_probe_mcp", fake_probe)
     monkeypatch.setattr(
@@ -117,7 +121,11 @@ def test_doctor_fails_when_tools_are_missing(
 ) -> None:
     """A server that omits expected tools is reported as a hard failure."""
     monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
-    _stub_probe(monkeypatch, tools=set(sorted(EXPECTED_TOOLS)[:3]), instructions=None)
+    _stub_probe(
+        monkeypatch,
+        tools=set(sorted(expected_tools(ToolProfile.DEFAULT))[:1]),
+        instructions=None,
+    )
     (tmp_path / "app.py").write_text("def alpha():\n    return 1\n", encoding="utf-8")
 
     report = run_doctor(tmp_path)

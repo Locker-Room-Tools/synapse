@@ -5,11 +5,17 @@ from pathlib import Path
 
 import pytest
 
+from synapse.core.languages.queries import load_query
 from synapse.core.languages.registry import (
     LANGUAGES,
     LanguageSpec,
+    ReferenceExtraction,
     _build_extension_map,
     detect_language,
+    reference_extraction,
+    reference_limitations,
+    reference_syntax,
+    reference_usage_kinds,
     to_treesitter_name,
     tree_sitter_language_names,
 )
@@ -225,3 +231,92 @@ def test_language_registry_has_no_duplicate_extensions() -> None:
         extension for language in LANGUAGES.values() for extension in language.extensions
     )
     assert counts.most_common(1)[0][1] == 1
+
+
+def test_reference_extraction_metadata_accessors() -> None:
+    """Coverage metadata is served per language with honest defaults."""
+    assert reference_extraction("csharp") is ReferenceExtraction.PARTIAL
+    assert "member-access" in reference_usage_kinds("csharp")
+    # Remaining C# gaps are semantic, not syntactic: a tree-sitter index cannot see
+    # these without type resolution, so they stay advertised as limitations.
+    assert reference_limitations("csharp") == (
+        "static-receiver-types",
+        "extension-methods",
+        "inherited-members",
+        "partial-classes",
+    )
+
+    # Python advertises structural resolution with its honest gaps.
+    assert reference_extraction("python") is ReferenceExtraction.PARTIAL
+    assert reference_usage_kinds("python") == ("invocation", "base-type", "decorator")
+    assert reference_limitations("python") == (
+        "inherited-members",
+        "union-return-types",
+        "cross-file-factory-returns",
+        "dynamic-receivers",
+        "import-scope-narrowing",
+        "unindexed-import-shadows",
+    )
+    python_syntax = reference_syntax("python")
+    assert python_syntax is not None
+    assert python_syntax.member_access_types == ("attribute",)
+    assert python_syntax.receiver_field == "object"
+    assert python_syntax.self_receivers == ("self", "cls")
+
+    # TypeScript, TSX, and JavaScript share one relabelled call-only query, so all
+    # three advertise the same call-proven kinds and the same honest gaps.
+    for language in ("javascript", "typescript", "tsx"):
+        assert reference_extraction(language) is ReferenceExtraction.PARTIAL
+        assert reference_usage_kinds(language) == ("invocation", "object-creation")
+        assert reference_limitations(language) == (
+            "dynamic-dispatch",
+            "member-call-receiver-types",
+            "import-alias-relations",
+            "local-variables",
+            "configuration-strings",
+            "non-call-references",
+        )
+        assert reference_syntax(language) is None
+
+    # Languages without explicit metadata stay partial with no advertised kinds.
+    assert reference_extraction("ruby") is ReferenceExtraction.PARTIAL
+    assert reference_usage_kinds("ruby") == ()
+    assert reference_limitations("ruby") == ()
+    assert reference_syntax("ruby") is None
+
+    with pytest.raises(ValueError, match="Unsupported language"):
+        reference_extraction("klingon")
+    with pytest.raises(ValueError, match="Unsupported language"):
+        reference_usage_kinds("klingon")
+    with pytest.raises(ValueError, match="Unsupported language"):
+        reference_limitations("klingon")
+    with pytest.raises(ValueError, match="Unsupported language"):
+        reference_syntax("klingon")
+
+
+def test_csharp_reference_syntax_names_only_installed_grammar_nodes() -> None:
+    """Every advertised usage kind is backed by a capture in the packaged query."""
+    syntax = reference_syntax("csharp")
+    assert syntax is not None
+    assert "member_access_expression" in syntax.member_access_types
+    assert "file_scoped_namespace_declaration" in syntax.namespace_types
+    assert "using_directive" in syntax.import_types
+    # `var` and `int` name no indexable declaration, so they bind no receiver type.
+    assert "implicit_type" in syntax.opaque_type_types
+    assert "predefined_type" in syntax.opaque_type_types
+
+    query = load_query("csharp", "references")
+    for usage_kind in reference_usage_kinds("csharp"):
+        assert f"@reference.{usage_kind.replace('-', '_')}" in query
+
+
+def test_ts_js_advertised_usage_kinds_are_backed_by_query_captures() -> None:
+    """Every advertised TS/JS usage kind is a labelled capture in the packaged query.
+
+    `tsx` resolves through the TypeScript query directory, so asserting it here
+    proves the sharing rather than assuming it.
+    """
+    for language in ("javascript", "typescript", "tsx"):
+        query = load_query(language, "references")
+        for usage_kind in reference_usage_kinds(language):
+            assert f"@reference.{usage_kind.replace('-', '_')}" in query, language

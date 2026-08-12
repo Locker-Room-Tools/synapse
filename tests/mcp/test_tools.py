@@ -5,10 +5,22 @@ from pathlib import Path
 
 import pytest
 
-from synapse.core.config import config_file_path, write_global_ignored_directories
+from synapse.core.config import (
+    active_ignore_matcher,
+    write_global_ignored_directories,
+    write_project_ignored_directories,
+)
+from synapse.core.index import SymbolIndex, symbol_handle
 from synapse.core.indexing import IndexStats
 from synapse.core.lifecycle import EnsureWorkspaceResult, WorkspaceNotReadyError
 from synapse.core.models import Confidence, Relation, RelationKind, Symbol, SymbolKind
+from synapse.core.navigation import (
+    INSPECT_DEFAULT_TOKEN_BUDGET,
+    ORIENT_DEFAULT_TOKEN_BUDGET,
+    InspectRequest,
+    OrientRequest,
+)
+from synapse.core.provenance import runtime_provenance
 from synapse.mcp import tools
 from synapse.mcp.workspace import configure_workspace
 
@@ -196,6 +208,7 @@ def test_symbol_lookup_tools_delegate_to_the_index(
         "items": [
             {
                 "symbol_id": "sym-1",
+                "handle": symbol_handle("sym-1"),
                 "language": "python",
                 "kind": "function",
                 "name": "helper",
@@ -210,6 +223,7 @@ def test_symbol_lookup_tools_delegate_to_the_index(
     }
     assert tools.synapse_get_definition(symbol_id="sym-1") == {
         "symbol_id": "sym-1",
+        "handle": symbol_handle("sym-1"),
         "language": "python",
         "kind": "function",
         "name": "helper",
@@ -221,6 +235,7 @@ def test_symbol_lookup_tools_delegate_to_the_index(
     }
     assert tools.synapse_get_definition(name="helper") == {
         "symbol_id": "sym-1",
+        "handle": symbol_handle("sym-1"),
         "language": "python",
         "kind": "function",
         "name": "helper",
@@ -235,6 +250,7 @@ def test_symbol_lookup_tools_delegate_to_the_index(
         "candidates": [
             {
                 "symbol_id": "sym-1",
+                "handle": symbol_handle("sym-1"),
                 "language": "python",
                 "kind": "function",
                 "name": "helper",
@@ -246,6 +262,7 @@ def test_symbol_lookup_tools_delegate_to_the_index(
             },
             {
                 "symbol_id": "sym-2",
+                "handle": symbol_handle("sym-2"),
                 "language": "python",
                 "kind": "function",
                 "name": "helper",
@@ -266,7 +283,12 @@ def test_symbol_lookup_tools_delegate_to_the_index(
         "total": 0,
         "truncated": False,
     }
-    assert tools.synapse_workspace_stats() == {"files": 1, "symbols": 1, "languages": []}
+    assert tools.synapse_workspace_stats() == {
+        "files": 1,
+        "symbols": 1,
+        "languages": [],
+        "runtime": runtime_provenance().to_payload(),
+    }
     monkeypatch.setattr(tools, "watch_status_payload", lambda path: {"running": False})
     assert tools.synapse_watch_status() == {"running": False}
     assert tools.synapse_project_map() == {
@@ -295,6 +317,8 @@ def test_symbol_lookup_tools_delegate_to_the_index(
                 "to_name": "method",
                 "from_file_path": "sample.py",
                 "to_file_path": "sample.py",
+                "line": None,
+                "byte_column": None,
                 "source": "tree-sitter",
                 "confidence": "high",
             }
@@ -348,7 +372,21 @@ def test_tool_docstrings_document_contracts() -> None:
     assert "workspace-relative" in (tools.synapse_get_file_outline.__doc__ or "")
     assert "workspace-relative" in (tools.synapse_get_file_dependencies.__doc__ or "")
     assert "diagnosis only" in (tools.synapse_watch_status.__doc__ or "")
-    assert "synapse_compact_context" in (tools.synapse_get_symbol_context.__doc__ or "")
+    assert "include_body=True" in (tools.synapse_get_symbol_context.__doc__ or "")
+    assert "{found: false" in (tools.synapse_get_symbol_context.__doc__ or "")
+    orient_doc = " ".join((tools.synapse_orient.__doc__ or "").split())
+    assert "never proof of absence" in orient_doc
+    assert "4-8 discriminative" in orient_doc
+    assert "up to 12" in orient_doc
+    assert "not a natural-language question" in orient_doc
+    assert "bounded server-side" in orient_doc
+    inspect_doc = " ".join((tools.synapse_inspect.__doc__ or "").split())
+    assert "1-8" in inspect_doc
+    assert "normally 2-3" in inspect_doc
+    assert "relation handles" in inspect_doc
+    assert "exact|scoped|unique-name|ambiguous|unresolved" in inspect_doc
+    assert "bounded server-side" in inspect_doc
+    assert "not proof" in inspect_doc
 
 
 def test_workspace_root_resolves_relative_paths_from_configured_workspace(
@@ -389,8 +427,12 @@ def test_two_workspaces_are_indexed_and_queried_independently(
     results_a = tools.synapse_search_symbols("func_a", workspace_path=str(workspace_a))
     results_b = tools.synapse_search_symbols("func_b", workspace_path=str(workspace_b))
 
-    assert [item["name"] for item in results_a["items"]] == ["func_a"]
-    assert [item["name"] for item in results_b["items"]] == ["func_b"]
+    items_a = results_a["items"]
+    items_b = results_b["items"]
+    assert isinstance(items_a, list)
+    assert isinstance(items_b, list)
+    assert [item["name"] for item in items_a] == ["func_a"]
+    assert [item["name"] for item in items_b] == ["func_b"]
 
     missing_a = tools.synapse_search_symbols("func_b", workspace_path=str(workspace_a))
     missing_b = tools.synapse_search_symbols("func_a", workspace_path=str(workspace_b))
@@ -424,6 +466,7 @@ def test_synapse_ensure_workspace_returns_lifecycle_payload(
         initialized=True,
         daemon={"running": True, "degraded": False, "backend": "polling", "pid": 123},
         index={"files": 3, "symbols": 7, "languages": ["python"]},
+        runtime=runtime_provenance().to_payload(),
     )
     monkeypatch.setattr(tools, "ensure_workspace", lambda path: expected)
 
@@ -440,6 +483,11 @@ def test_synapse_ensure_workspace_returns_lifecycle_payload(
             "pid": 123,
         },
         "index": {"files": 3, "symbols": 7, "languages": ["python"]},
+        "runtime": runtime_provenance().to_payload(),
+        # Set only when first-run init wrote a .synapseignore into the repository.
+        "ignore_bootstrap": None,
+        # Set only when the call repaired something, naming the reasons it acted on.
+        "repair": None,
     }
 
 
@@ -519,39 +567,97 @@ def test_synapse_get_config_describes_the_option_surface(
 
     result = tools.synapse_get_config(str(tmp_path))
 
-    option = result["options"]["ignored_directories"]
+    options = result["options"]
+    assert isinstance(options, dict)
+    option = options["ignore_rules"]
     assert result["project_config_exists"] is False
     assert result["project_config_path"] == str(tmp_path / ".synapse" / "config.json")
-    assert option["writes_to"] == str(tmp_path / ".synapse" / "config.json")
+    assert option["writes_to"] == str(tmp_path / ".synapseignore")
+    assert option["project_source"] == "none"
     assert option["layers"] == ["built-in", "global", "project"]
     assert option["case_sensitive"] is True
+    assert option["always_ignored"] == [".git"]
     assert option["add_with"] == "synapse_add_ignored_directories"
-    assert {"value": ".git", "sources": ["built-in"]} in option["effective"]
     assert "synapse_index_workspace" in option["takes_effect"]
     assert not (tmp_path / ".synapse").exists()
 
+    # Rules are ordered and carry provenance; there is deliberately no flat effective set.
+    assert "effective" not in option
+    assert {"pattern": ".git/", "scope": "built-in", "negated": False}.items() <= next(
+        rule for rule in option["rules"] if rule["pattern"] == ".git/"
+    ).items()
+    assert all(rule["directory_only"] for rule in option["rules"])
+    assert option["rules_total"] == len(option["rules"])
+    assert option["rules_complete"] is True
+    assert option["skipped_lines"] == []
+    assert option["shadowed_project_json"] == []
+    assert "no flat effective set exists" in option["coverage"]
 
-def test_synapse_add_ignored_directories_writes_project_config(
+
+def test_synapse_get_config_reports_skipped_lines_and_shadowed_entries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Adding writes the workspace config and reports normalization back to the agent."""
+    """A bad line and a superseded legacy config are both surfaced, never silently dropped."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    write_project_ignored_directories(tmp_path, {"legacy"})
+    (tmp_path / ".synapseignore").write_text("dist/\n[unterminated\n", encoding="utf-8")
+
+    with pytest.warns(UserWarning, match="supersedes ignored_directories"):
+        result = tools.synapse_get_config(str(tmp_path))
+
+    options = result["options"]
+    assert isinstance(options, dict)
+    option = options["ignore_rules"]
+    assert option["project_source"] == "ignore-file"
+    assert option["shadowed_project_json"] == ["legacy"]
+    assert [line["line"] for line in option["skipped_lines"]] == [2]
+    assert option["skipped_lines"][0]["text"] == "[unterminated"
+
+
+def test_synapse_add_ignored_directories_writes_the_ignore_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Adding creates .synapseignore and reports normalization back to the agent."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
 
-    result = tools.synapse_add_ignored_directories(["./src/generated/", "dist"], str(tmp_path))
+    result = tools.synapse_add_ignored_directories([" *.min.js ", "dist/"], str(tmp_path))
 
-    payload = json.loads((tmp_path / ".synapse" / "config.json").read_text(encoding="utf-8"))
-    assert result["added"] == ["src/generated"]
-    assert result["already_covered_by_builtin"] == ["dist"]
+    text = (tmp_path / ".synapseignore").read_text(encoding="utf-8")
+    assert result["added"] == ["*.min.js", "dist/"]
     assert result["already_present"] == []
-    assert result["normalized"] == {"./src/generated/": "src/generated"}
+    assert result["created"] is True
+    assert result["normalized"] == {" *.min.js ": "*.min.js"}
     assert result["scope"] == "project"
-    assert payload == {"ignored_directories": ["src/generated"]}
+    assert result["config_path"] == str(tmp_path / ".synapseignore")
+    assert text.endswith("*.min.js\ndist/\n")
 
     follow_up = tools.synapse_get_config(str(tmp_path))
-    option = follow_up["options"]["ignored_directories"]
-    assert follow_up["project_config_exists"] is True
-    assert {"value": "src/generated", "sources": ["project"]} in option["effective"]
+    follow_up_options = follow_up["options"]
+    assert isinstance(follow_up_options, dict)
+    option = follow_up_options["ignore_rules"]
+    assert option["project_source"] == "ignore-file"
+    assert [rule["pattern"] for rule in option["rules"] if rule["scope"] == "project"] == [
+        "*.min.js",
+        "dist/",
+    ]
+
+
+def test_synapse_add_ignored_directories_migrates_legacy_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Creating the ignore file moves legacy entries in, so a workspace never has two sources."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    write_project_ignored_directories(tmp_path, {"legacy"})
+
+    result = tools.synapse_add_ignored_directories(["*.min.js"], str(tmp_path))
+
+    payload = json.loads((tmp_path / ".synapse" / "config.json").read_text(encoding="utf-8"))
+    assert result["migrated_from_json"] == ["legacy"]
+    assert "legacy/" in (tmp_path / ".synapseignore").read_text(encoding="utf-8")
+    assert "ignored_directories" not in payload
 
 
 def test_synapse_add_ignored_directories_is_idempotent(
@@ -560,15 +666,15 @@ def test_synapse_add_ignored_directories_is_idempotent(
 ) -> None:
     """Re-adding an entry reports it as present and leaves the file byte-identical."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    tools.synapse_add_ignored_directories(["generated"], str(tmp_path))
-    config_path = tmp_path / ".synapse" / "config.json"
-    before = config_path.read_bytes()
+    tools.synapse_add_ignored_directories(["generated/"], str(tmp_path))
+    ignore_path = tmp_path / ".synapseignore"
+    before = ignore_path.read_bytes()
 
-    result = tools.synapse_add_ignored_directories(["generated", "generated"], str(tmp_path))
+    result = tools.synapse_add_ignored_directories(["generated/", "generated/"], str(tmp_path))
 
     assert result["added"] == []
-    assert result["already_present"] == ["generated"]
-    assert config_path.read_bytes() == before
+    assert result["already_present"] == ["generated/"]
+    assert ignore_path.read_bytes() == before
 
 
 def test_synapse_remove_ignored_directories_clears_project_entries(
@@ -577,55 +683,69 @@ def test_synapse_remove_ignored_directories_clears_project_entries(
 ) -> None:
     """Removing drops project entries and reports unknown ones without failing."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    tools.synapse_add_ignored_directories(["generated"], str(tmp_path))
+    tools.synapse_add_ignored_directories(["generated/"], str(tmp_path))
 
-    result = tools.synapse_remove_ignored_directories(["generated", "vendor"], str(tmp_path))
+    result = tools.synapse_remove_ignored_directories(["generated/", "vendor/"], str(tmp_path))
 
-    assert result["removed"] == ["generated"]
-    assert result["not_present"] == ["vendor"]
-    assert result["project_ignored_directories"] == []
+    assert result["removed"] == ["generated/"]
+    assert result["not_present"] == ["vendor/"]
+    assert result["negated"] == []
+    assert result["project_rules"] == []
 
 
-def test_synapse_remove_ignored_directories_rejects_built_ins(
+def test_synapse_remove_ignored_directories_negates_a_built_in(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Built-in ignores cannot be removed through the project layer."""
+    """A built-in cannot be deleted, so removing it appends a negation instead of failing."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
 
-    with pytest.raises(ValueError, match="not removable"):
-        tools.synapse_remove_ignored_directories([".git"], str(tmp_path))
+    result = tools.synapse_remove_ignored_directories(["node_modules/"], str(tmp_path))
+
+    assert result["negated"] == ["!node_modules/"]
+    assert result["removed"] == []
+    assert not active_ignore_matcher(tmp_path).ignores_child((), "node_modules")
 
 
-def test_synapse_remove_ignored_directories_points_at_the_global_config(
+def test_synapse_remove_ignored_directories_negates_a_global_entry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An inherited global entry cannot be removed here, so the error names the fix."""
+    """An entry inherited from the global config is negated locally, not an error."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     write_global_ignored_directories({"generated"})
 
-    with pytest.raises(ValueError, match="inherited from the global config") as excinfo:
-        tools.synapse_remove_ignored_directories(["generated"], str(tmp_path))
+    result = tools.synapse_remove_ignored_directories(["generated/"], str(tmp_path))
 
-    message = str(excinfo.value)
-    assert str(config_file_path()) in message
-    assert "--scope global" in message
+    assert result["negated"] == ["!generated/"]
+    assert not active_ignore_matcher(tmp_path).ignores_child(("pkg",), "generated")
 
 
-@pytest.mark.parametrize("directories", [[], ["../escape"], ["*.py"], ["/"]])
+def test_synapse_remove_ignored_directories_cannot_reinclude_git(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """'.git' stays ignored even after a negation is written for it."""
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+    tools.synapse_remove_ignored_directories([".git/"], str(tmp_path))
+
+    assert active_ignore_matcher(tmp_path).ignores_child((), ".git")
+
+
+@pytest.mark.parametrize("directories", [[], ["../escape"], ["[unterminated"], ["/"]])
 def test_config_mutations_reject_invalid_input_without_writing(
     directories: list[str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A rejected call leaves no project config behind."""
+    """A rejected call leaves no ignore file behind."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
 
     with pytest.raises(ValueError):
         tools.synapse_add_ignored_directories(directories, str(tmp_path))
 
-    assert not (tmp_path / ".synapse").exists()
+    assert not (tmp_path / ".synapseignore").exists()
 
 
 def test_config_mutations_are_all_or_nothing(
@@ -634,20 +754,232 @@ def test_config_mutations_are_all_or_nothing(
 ) -> None:
     """One bad entry rejects the whole call, leaving valid siblings unwritten."""
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
-    tools.synapse_add_ignored_directories(["generated"], str(tmp_path))
-    config_path = tmp_path / ".synapse" / "config.json"
-    before = config_path.read_bytes()
+    tools.synapse_add_ignored_directories(["generated/"], str(tmp_path))
+    ignore_path = tmp_path / ".synapseignore"
+    before = ignore_path.read_bytes()
 
     with pytest.raises(ValueError, match="Invalid ignored directory"):
-        tools.synapse_add_ignored_directories(["keep_me", "../escape"], str(tmp_path))
+        tools.synapse_add_ignored_directories(["keep_me/", "../escape"], str(tmp_path))
 
-    assert config_path.read_bytes() == before
+    assert ignore_path.read_bytes() == before
 
 
 def test_config_tool_docstrings_document_contracts() -> None:
     """The config tools carry their whole contract in the agent-facing docstring."""
     assert "Self-describing" in (tools.synapse_get_config.__doc__ or "")
-    assert "workspace-relative path" in (tools.synapse_add_ignored_directories.__doc__ or "")
+    assert "last matching rule" in (tools.synapse_get_config.__doc__ or "")
+    assert "gitignore pattern" in (tools.synapse_add_ignored_directories.__doc__ or "")
     assert "next watch sweep" in (tools.synapse_add_ignored_directories.__doc__ or "")
-    assert "Built-in" in (tools.synapse_remove_ignored_directories.__doc__ or "")
+    assert "negated" in (tools.synapse_remove_ignored_directories.__doc__ or "")
     assert "synapse_index_workspace" in (tools.synapse_remove_ignored_directories.__doc__ or "")
+
+
+def test_synapse_orient_delegates_to_core(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The orientation tool stays a thin delegator returning the core string."""
+    captured: dict[str, object] = {}
+
+    def fake_orient(index: SymbolIndex, request: OrientRequest, *, workspace_root: Path) -> str:
+        captured["request"] = request
+        captured["workspace_root"] = workspace_root
+        return '{"matches":[]}'
+
+    monkeypatch.setattr(tools, "_navigation_workspace", lambda path=".": tmp_path)
+    monkeypatch.setattr(tools, "orient_workspace", fake_orient)
+
+    result = tools.synapse_orient(
+        terms=["open_repository", "app/store.py"],
+        path_scope="app",
+    )
+
+    assert result == '{"matches":[]}'
+    assert captured["workspace_root"] == tmp_path
+    request = captured["request"]
+    assert isinstance(request, OrientRequest)
+    assert request.terms == ("open_repository", "app/store.py")
+    assert request.path_scope == "app"
+    assert request.token_budget == ORIENT_DEFAULT_TOKEN_BUDGET
+
+
+def test_synapse_orient_accepts_empty_terms_for_map_orientation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_orient(index: SymbolIndex, request: OrientRequest, *, workspace_root: Path) -> str:
+        captured["request"] = request
+        return "{}"
+
+    monkeypatch.setattr(tools, "_navigation_workspace", lambda path=".": tmp_path)
+    monkeypatch.setattr(tools, "orient_workspace", fake_orient)
+
+    tools.synapse_orient()
+    request = captured["request"]
+    assert isinstance(request, OrientRequest)
+    assert request.terms == ()
+
+
+def test_synapse_inspect_delegates_to_core(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The inspection tool stays a thin delegator returning the core string."""
+    captured: dict[str, object] = {}
+
+    def fake_inspect(index: SymbolIndex, request: InspectRequest, *, workspace_root: Path) -> str:
+        captured["request"] = request
+        captured["workspace_root"] = workspace_root
+        return '{"symbols":[]}'
+
+    monkeypatch.setattr(tools, "_navigation_workspace", lambda path=".": tmp_path)
+    monkeypatch.setattr(tools, "inspect_symbols", fake_inspect)
+
+    result = tools.synapse_inspect(["s_" + "A" * 22, "py:stable-id"])
+
+    assert result == '{"symbols":[]}'
+    assert captured["workspace_root"] == tmp_path
+    request = captured["request"]
+    assert isinstance(request, InspectRequest)
+    assert request.symbols == ("s_" + "A" * 22, "py:stable-id")
+    assert request.token_budget == INSPECT_DEFAULT_TOKEN_BUDGET
+
+
+def test_synapse_inspect_passes_continuation_tokens_through(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Continuation tokens ride the existing symbols list; MCP adds no parsing.
+
+    The wire schema is unchanged (list[str]); the token contract lives entirely in
+    core, so the tool must forward the string verbatim and document the round trip.
+    """
+    captured: dict[str, object] = {}
+
+    def fake_inspect(index: SymbolIndex, request: InspectRequest, *, workspace_root: Path) -> str:
+        captured["request"] = request
+        return "{}"
+
+    monkeypatch.setattr(tools, "_navigation_workspace", lambda path=".": tmp_path)
+    monkeypatch.setattr(tools, "inspect_symbols", fake_inspect)
+
+    token = "c_" + "A" * 22 + "@45:0011aabb"
+    tools.synapse_inspect([token, "s_" + "B" * 22])
+
+    request = captured["request"]
+    assert isinstance(request, InspectRequest)
+    assert request.symbols == (token, "s_" + "B" * 22)
+    inspect_doc = " ".join((tools.synapse_inspect.__doc__ or "").split())
+    assert "continuation token" in inspect_doc
+    assert "continuation_rejected" in inspect_doc
+
+
+def test_navigation_tools_delegate_readiness_to_core(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Readiness is one core call per navigation tool; MCP keeps no decision of its own."""
+    prepared: list[Path] = []
+
+    def fake_ready(path: str | Path) -> Path:
+        prepared.append(Path(path))
+        return tmp_path
+
+    monkeypatch.setattr(tools, "_workspace_root", lambda path=".": tmp_path)
+    monkeypatch.setattr(tools, "ensure_navigation_ready", fake_ready)
+    monkeypatch.setattr(tools, "orient_workspace", lambda index, request, *, workspace_root: "{}")
+    monkeypatch.setattr(tools, "inspect_symbols", lambda index, request, *, workspace_root: "{}")
+
+    tools.synapse_orient(terms=["anything"])
+    tools.synapse_inspect(symbols=["s_" + "A" * 22])
+
+    assert prepared == [tmp_path, tmp_path]
+    # The whole decision (uninitialized, degraded, missing grammars, stale references)
+    # lives in core.lifecycle; nothing here may branch on workspace state.
+    assert not hasattr(tools, "workspace_status_payload")
+
+
+class _EmptyIndex:
+    """Duck-typed index where nothing is found."""
+
+    def get_symbol(self, symbol_id: str) -> Symbol | None:
+        return None
+
+    def get_definition(self, name: str) -> list[Symbol]:
+        return []
+
+    def get_definition_page(
+        self,
+        name: str,
+        **_: object,
+    ) -> tuple[list[Symbol], dict[str, object]]:
+        return [], _page(returned=0, total=0)
+
+    def get_file_outline(self, file_path: str, **_: object) -> dict[str, object] | None:
+        return None
+
+    def get_file_dependencies(self, file_path: str, **_: object) -> dict[str, object] | None:
+        return None
+
+    def get_symbol_context(self, symbol_id: str, **_: object) -> dict[str, object] | None:
+        return None
+
+    def related_symbols(self, symbol_id: str, **_: object) -> dict[str, object] | None:
+        return None
+
+    def compact_context(self, symbol_id: str) -> dict[str, object] | None:
+        return None
+
+
+def test_not_found_is_a_uniform_envelope_never_none(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every optional-result tool returns the same {found: false} envelope."""
+    monkeypatch.setattr(tools, "_workspace_index", lambda path=".": _EmptyIndex())
+    monkeypatch.setattr(tools, "_workspace_root", lambda path=".": tmp_path)
+
+    results = {
+        "symbol": tools.synapse_get_definition(symbol_id="missing-id"),
+        "name": tools.synapse_get_definition(name="missing_name"),
+        "outline": tools.synapse_get_file_outline("missing.py"),
+        "file_deps": tools.synapse_get_file_dependencies("missing.py"),
+        "context": tools.synapse_get_symbol_context("missing-id"),
+        "related": tools.synapse_related_symbols("missing-id"),
+        "compact": tools.synapse_compact_context("missing-id"),
+    }
+
+    for result in results.values():
+        assert result["found"] is False
+        assert result["reason"] == "not-indexed"
+        assert "hint" in result
+    assert results["symbol"]["target"] == "missing-id"
+    assert results["outline"]["target"] == "missing.py"
+
+
+def test_navigation_tools_propagate_an_unrepairable_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A workspace that failed repair must raise, never return an orientation payload.
+
+    Handles are rendered from stable ids, so a payload produced over an index whose
+    persisted handles are incomplete would look entirely healthy and resolve to nothing.
+    """
+
+    def unrepairable(path: str | Path = ".") -> Path:
+        raise WorkspaceNotReadyError("Synapse workspace is still incomplete-handles")
+
+    monkeypatch.setattr(tools, "_navigation_workspace", unrepairable)
+    monkeypatch.setattr(
+        tools, "orient_workspace", lambda *a, **k: pytest.fail("oriented an unready workspace")
+    )
+    monkeypatch.setattr(
+        tools, "inspect_symbols", lambda *a, **k: pytest.fail("inspected an unready workspace")
+    )
+
+    with pytest.raises(WorkspaceNotReadyError, match="incomplete-handles"):
+        tools.synapse_orient(terms=["anything"])
+    with pytest.raises(WorkspaceNotReadyError, match="incomplete-handles"):
+        tools.synapse_inspect(symbols=["s_" + "A" * 22])

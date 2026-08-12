@@ -20,17 +20,6 @@ from synapse.cli.adapters import (
 from synapse.cli.installer import install_mcp_server
 
 
-@pytest.fixture
-def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Route every supported agent home to the temporary directory."""
-    home = tmp_path / "home"
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.delenv("CODEX_HOME", raising=False)
-    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-    return home
-
-
 @pytest.mark.parametrize(
     ("agent", "instruction", "skill"),
     [
@@ -98,14 +87,15 @@ def test_global_instruction_and_skill_are_idempotent(
     assert second_skill.status == "unchanged"
     assert instruction_text.count(BEGIN_MARKER) == 1
     assert instruction_text.count(END_MARKER) == 1
-    assert "synapse_ensure_workspace" in instruction_text
-    assert "before grep" in instruction_text
-    assert "exact-text search" in instruction_text
+    assert "synapse_orient" in instruction_text
+    assert "synapse_inspect" in instruction_text
+    assert "exact text" in instruction_text
     assert "<!-- SYNAPSE MANAGED SKILL -->" in skill_text
-    assert "synapse_get_definition" in skill_text
-    assert "synapse_find_references" in skill_text
-    assert "pagination" in skill_text
-    assert "Do not implement installation" in skill_text
+    assert "synapse_orient" in skill_text
+    assert "synapse_inspect" in skill_text
+    assert "Default workflow" in skill_text
+    assert "empty relations != proof of absence" in skill_text
+    assert (skill.path / "references" / "evidence-semantics.md").exists()
 
 
 def test_global_skill_refuses_unmanaged_conflict_without_force(
@@ -127,11 +117,12 @@ def test_global_skill_refuses_unmanaged_conflict_without_force(
 
 @pytest.mark.parametrize("agent", ["codex", "claude-code", "opencode"])
 def test_global_skill_files_are_agent_specific(isolated_home: Path, agent: str) -> None:
-    """Only Codex receives the OpenAI skill metadata alongside SKILL.md."""
+    """All agents receive references; only Codex receives OpenAI metadata."""
     install_global_skill(agent)
 
     target = resolve_global_skill_path(agent)
     assert (target / "SKILL.md").exists()
+    assert (target / "references" / "evidence-semantics.md").exists()
     if agent == "codex":
         assert (target / "agents" / "openai.yaml").exists()
     else:
