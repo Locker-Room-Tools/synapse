@@ -6,7 +6,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-08-12
+## [0.5.0] - 2026-08-13
 
 > **Breaking beta release.** Synapse remains pre-1.0, so minor releases may contain
 > incompatible changes. This release replaces the default MCP surface and several
