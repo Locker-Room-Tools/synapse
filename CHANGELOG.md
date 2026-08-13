@@ -147,7 +147,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no callers or callees at all; `coverage.extraction[].call_kinds: []` is the explicit
   signal.
 - **Breaking:** the default MCP profile is exactly the two navigation tools (measured
-  schema cost approximately 550 estimated tokens, gated at 700; previously five tools at
+  schema cost approximately 700 estimated tokens, gated at 800; previously five tools at
   roughly 1,507).
   The full profile contains 19 tools and retains `synapse_ensure_workspace` for explicit
   setup, diagnostics, and recovery.

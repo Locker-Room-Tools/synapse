@@ -8,7 +8,7 @@ tools before broad text search or reading whole files.
 The advertised tool surface is selected at server start: `synapse serve --profile default`
 (the default) exposes exactly the two navigation tools — `synapse_orient` and
 `synapse_inspect` — which keeps the static `tools/list` schema cost minimal (measured at
-roughly 550 estimated tokens for the whole surface, gated at 700). `--profile full`
+roughly 700 estimated tokens for the whole surface, gated at 800). `--profile full`
 additionally exposes `synapse_ensure_workspace` and the administrative, configuration,
 and primitive projection tools documented below (19 tools total). `synapse doctor`
 validates the default surface exactly.

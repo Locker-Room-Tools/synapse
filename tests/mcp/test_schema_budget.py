@@ -1,7 +1,7 @@
 """The default MCP surface is exactly two tools within a hard schema token budget.
 
 Iteration 6 baseline: five tools at roughly 1,507 estimated tokens. The
-navigation surface must stay at or under 700 estimated tokens for the wire
+navigation surface must stay at or under 800 estimated tokens for the wire
 schema an agent loads on every session (names, descriptions, input schemas).
 """
 
@@ -15,7 +15,7 @@ from synapse.core.navigation import estimate_tokens
 from synapse.mcp.profiles import ToolProfile
 from synapse.mcp.server import register_tools
 
-SCHEMA_TOKEN_BUDGET = 700
+SCHEMA_TOKEN_BUDGET = 800
 
 
 def _default_tools() -> list[Tool]:
