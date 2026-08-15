@@ -8,13 +8,15 @@ import pytest
 
 from synapse.cli.adapters import (
     ADAPTERS,
-    BEGIN_MARKER,
-    END_MARKER,
+    LEGACY_BEGIN_MARKER,
+    LEGACY_END_MARKER,
     install_instruction_snippet,
     project_snippet,
     remove_instruction_snippet,
     render_mcp_config,
 )
+
+PROJECT_HEADING = "## Synapse Context Engine (use first)"
 
 
 def test_render_mcp_config_pins_workspace_for_mcp_servers_agents(tmp_path: Path) -> None:
@@ -93,7 +95,7 @@ def test_render_mcp_config_uses_opencode_local_shape(tmp_path: Path) -> None:
 
 
 def test_install_instruction_snippet_creates_and_is_idempotent(tmp_path: Path) -> None:
-    """Instruction snippets are marker-wrapped and do not duplicate."""
+    """Instruction snippets are heading-anchored, markup-free, and do not duplicate."""
     result = install_instruction_snippet("codex", tmp_path)
     second = install_instruction_snippet("codex", tmp_path)
 
@@ -102,8 +104,8 @@ def test_install_instruction_snippet_creates_and_is_idempotent(tmp_path: Path) -
     assert result.path == target
     assert result.status == "created"
     assert second.status == "unchanged"
-    assert content.count(BEGIN_MARKER) == 1
-    assert content.count(END_MARKER) == 1
+    assert content.count(PROJECT_HEADING) == 1
+    assert "<!--" not in content
     assert "synapse_orient" in content
     assert "synapse_inspect" in content
     assert "repository vocabulary" in content
@@ -122,13 +124,13 @@ def test_agent_snippets_differ_only_in_doctor_line() -> None:
     assert len(bodies) == 1
 
 
-def test_install_instruction_snippet_requires_force_to_replace_marker_block(
+def test_install_instruction_snippet_requires_force_to_replace_managed_block(
     tmp_path: Path,
 ) -> None:
     """Existing Synapse blocks are protected unless force is explicit."""
     target = tmp_path / "AGENTS.md"
     target.write_text(
-        f"{BEGIN_MARKER}\nold content\n{END_MARKER}\n",
+        f"{PROJECT_HEADING}\n\nold content\n",
         encoding="utf-8",
     )
 
@@ -143,12 +145,34 @@ def test_install_instruction_snippet_requires_force_to_replace_marker_block(
     assert "synapse doctor --path . --agent opencode" in content
 
 
-def test_remove_instruction_snippet_removes_only_marker_block(tmp_path: Path) -> None:
-    """Uninstall removes the managed block while preserving surrounding content."""
+def test_install_instruction_snippet_migrates_a_legacy_marker_block(
+    tmp_path: Path,
+) -> None:
+    """A pre-0.5.1 marker-delimited block is replaced in place and the markers stripped."""
+    target = tmp_path / "AGENTS.md"
+    target.write_text(
+        f"# Guide\n\n{LEGACY_BEGIN_MARKER}\nold content\n{LEGACY_END_MARKER}\n\n## After\n",
+        encoding="utf-8",
+    )
+
+    result = install_instruction_snippet("codex", tmp_path, force=True)
+
+    content = target.read_text(encoding="utf-8")
+    assert result.status == "updated"
+    assert "old content" not in content
+    assert LEGACY_BEGIN_MARKER not in content
+    assert LEGACY_END_MARKER not in content
+    assert content.startswith("# Guide\n")
+    assert content.endswith("## After\n")
+    assert PROJECT_HEADING in content
+
+
+def test_remove_instruction_snippet_removes_only_managed_block(tmp_path: Path) -> None:
+    """Uninstall removes the managed heading block while preserving surrounding content."""
     target = tmp_path / "AGENTS.md"
     install_instruction_snippet("codex", tmp_path)
     target.write_text(
-        f"before\n\n{target.read_text(encoding='utf-8')}\nafter\n",
+        f"# Guide\n\nbefore\n\n{target.read_text(encoding='utf-8')}\n## After\n\nafter\n",
         encoding="utf-8",
     )
 
@@ -156,8 +180,23 @@ def test_remove_instruction_snippet_removes_only_marker_block(tmp_path: Path) ->
 
     content = target.read_text(encoding="utf-8")
     assert result.status == "removed"
-    assert BEGIN_MARKER not in content
-    assert END_MARKER not in content
+    assert PROJECT_HEADING not in content
+    assert content == "# Guide\n\nbefore\n\n## After\n\nafter\n"
+
+
+def test_remove_instruction_snippet_removes_a_legacy_marker_block(tmp_path: Path) -> None:
+    """Uninstall still recognizes and strips a pre-0.5.1 marker-delimited block."""
+    target = tmp_path / "AGENTS.md"
+    target.write_text(
+        f"before\n\n{LEGACY_BEGIN_MARKER}\nold content\n{LEGACY_END_MARKER}\n\nafter\n",
+        encoding="utf-8",
+    )
+
+    result = remove_instruction_snippet("codex", tmp_path)
+
+    content = target.read_text(encoding="utf-8")
+    assert result.status == "removed"
+    assert LEGACY_BEGIN_MARKER not in content
     assert content == "before\n\nafter\n"
 
 

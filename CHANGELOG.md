@@ -6,6 +6,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-14
+
+Instruction-only patch release: the navigation engine, MCP tool surface, wire
+schemas, and payload budgets are unchanged. Run `synapse install <agent>` again to
+refresh managed instruction files and the managed skill.
+
+### Changed
+- Rewrote the managed `synapse-code-context` skill around an operational facet
+  ledger: one facet per material clause of the request (including requested
+  deliverables such as risks or recommendations), three tracking states
+  (`verified`/`partial`/`missing`) with best evidence recorded at first sight, a
+  reliability-claim chain (initiating fault → permitting path → surviving guard →
+  observable outcome) that downgrades unverified risks to unresolved hypotheses,
+  and a no-tool pre-answer check that accounts for every facet before synthesis.
+  Bounded gap closure now prefers an offered continuation token over shell
+  re-reads, and a mostly-unmatched orientation is refined with path fragments
+  rather than more invented names.
+- Aligned the MCP server handshake and both adapter instruction snippets with the
+  same contract in single-sentence form (facet deliverables, full-coverage
+  answers, guard-verified risks); the detailed workflow lives only in the skill.
+- Managed-content ownership no longer uses HTML-comment markers. Installed skills
+  keep ownership outside agent-visible content in a hidden `.synapse-managed.json`
+  sidecar containing the exact SHA-256 of each managed file. Updates and removals
+  fail closed when those files drift, and unknown files are preserved. Instruction
+  blocks in shared `AGENTS.md`/`CLAUDE.md`-style files are anchored on their own
+  headings (a managed block extends to the next heading, so content appended directly
+  after it should start with a heading). Legacy marker-delimited installs are still
+  recognized and migrated on the next install or removal.
+- Added instruction-size ceilings to the test suite so no surface silently grows
+  into a duplicated checklist.
+
 ## [0.5.0] - 2026-08-13
 
 > **Breaking beta release.** Synapse remains pre-1.0, so minor releases may contain

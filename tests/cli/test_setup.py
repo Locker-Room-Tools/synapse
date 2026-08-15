@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 import synapse.cli.main as cli_main
-from synapse.cli.adapters import BEGIN_MARKER, END_MARKER, InstructionInstallResult
+from synapse.cli.adapters import InstructionInstallResult
 from synapse.cli.doctor import DoctorCheck, DoctorReport
 from synapse.cli.installer import (
     MANAGED_TOML_BEGIN,
@@ -249,8 +249,8 @@ def test_setup_repeated_run_completes_partial_managed_installation(
     assert config.count(MANAGED_TOML_BEGIN) == 1
     assert config.count(MANAGED_TOML_END) == 1
     assert instructions.startswith("# Existing repository rules\n")
-    assert instructions.count(BEGIN_MARKER) == 1
-    assert instructions.count(END_MARKER) == 1
+    assert instructions.count("## Synapse Context Engine (use first)") == 1
+    assert "<!--" not in instructions
 
 
 def test_setup_explicit_user_scope_is_respected(

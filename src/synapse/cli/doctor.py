@@ -12,10 +12,9 @@ from mcp.client.session import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
 from synapse.cli.adapters import (
-    BEGIN_MARKER,
-    END_MARKER,
     AgentAdapter,
     get_adapter,
+    has_managed_instruction_block,
     resolve_instruction_path,
 )
 from synapse.cli.installer import config_has_mcp_server, resolve_config_path
@@ -131,7 +130,7 @@ def _check_instructions(agent: str, workspace_root: Path) -> DoctorCheck:
             "instructions", "warn", f"instruction file not found at {instruction_path}"
         )
     instruction_text = instruction_path.read_text(encoding="utf-8")
-    if BEGIN_MARKER in instruction_text and END_MARKER in instruction_text:
+    if has_managed_instruction_block(instruction_text):
         return DoctorCheck(
             "instructions", "ok", f"Synapse instruction block found in {instruction_path}"
         )

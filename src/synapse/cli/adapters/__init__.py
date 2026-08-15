@@ -2,11 +2,14 @@
 
 from synapse.cli.adapters.instructions import (
     ADAPTERS_ROOT,
-    BEGIN_MARKER,
-    END_MARKER,
     GLOBAL_INSTRUCTION_SNIPPET,
+    LEGACY_BEGIN_MARKER,
+    LEGACY_END_MARKER,
+    MANAGED_HEADINGS,
     PROJECT_INSTRUCTION_SNIPPET,
+    find_managed_instruction_span,
     global_snippet,
+    has_managed_instruction_block,
     install_global_instruction,
     install_instruction_snippet,
     install_instructions,
@@ -34,7 +37,8 @@ from synapse.cli.adapters.paths import resolve_project_path, resolve_user_path
 from synapse.cli.adapters.registry import ADAPTERS, adapter_choices, get_adapter
 from synapse.cli.adapters.render import build_server_entry, render_mcp_config, server_command
 from synapse.cli.adapters.skills import (
-    MANAGED_SKILL_MARKER,
+    LEGACY_MANAGED_SKILL_MARKER,
+    MANAGED_SKILL_MANIFEST,
     MANAGED_SKILL_RELATIVE_PATHS,
     SKILLS_ROOT,
     SYNAPSE_SKILL,
@@ -51,10 +55,12 @@ from synapse.cli.adapters.skills import (
 __all__ = [
     "ADAPTERS",
     "ADAPTERS_ROOT",
-    "BEGIN_MARKER",
-    "END_MARKER",
     "GLOBAL_INSTRUCTION_SNIPPET",
-    "MANAGED_SKILL_MARKER",
+    "LEGACY_BEGIN_MARKER",
+    "LEGACY_END_MARKER",
+    "LEGACY_MANAGED_SKILL_MARKER",
+    "MANAGED_HEADINGS",
+    "MANAGED_SKILL_MANIFEST",
     "MANAGED_SKILL_RELATIVE_PATHS",
     "PROJECT_INSTRUCTION_SNIPPET",
     "SKILLS_ROOT",
@@ -71,8 +77,10 @@ __all__ = [
     "SkillInstallResult",
     "adapter_choices",
     "build_server_entry",
+    "find_managed_instruction_span",
     "get_adapter",
     "global_snippet",
+    "has_managed_instruction_block",
     "install_global_instruction",
     "install_global_skill",
     "install_instruction_snippet",

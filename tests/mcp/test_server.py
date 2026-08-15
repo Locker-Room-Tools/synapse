@@ -33,6 +33,8 @@ def test_server_instructions_carry_the_orchestration_contract() -> None:
     assert "one bounded close attempt" in instructions
     assert "verified or unresolved" in instructions
     assert "broad repository search" in instructions
+    assert "requested deliverables" in instructions
+    assert "guard or recovery path" in instructions
 
 
 def test_server_rejects_a_missing_workspace_before_starting(

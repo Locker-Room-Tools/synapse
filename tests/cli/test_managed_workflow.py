@@ -16,13 +16,34 @@ from synapse.cli.adapters import (
     project_snippet,
     resolve_global_skill_path,
 )
-from synapse.cli.adapters.skills import MANAGED_SKILL_MARKER, SYNAPSE_SKILL
+from synapse.cli.adapters.skills import (
+    LEGACY_MANAGED_SKILL_MARKER,
+    MANAGED_SKILL_MANIFEST,
+    SYNAPSE_SKILL,
+)
+from synapse.core.navigation import estimate_tokens
 from synapse.mcp.instructions import SERVER_INSTRUCTIONS
 
 SKILL_CONTRACT: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("navigation tools", ("synapse_orient", "synapse_inspect")),
-    ("default workflow", ("plan → orient → inspect", "close gaps → synthesize")),
-    ("fact planning", ("few concrete facts", "different relevant architectural layers")),
+    ("default workflow", ("plan → orient → inspect", "close gaps → check → synthesize")),
+    (
+        "clause-to-facet planning",
+        (
+            "each material clause",
+            "requested deliverables",
+            "different relevant architectural layers",
+        ),
+    ),
+    (
+        "facet ledger",
+        (
+            "verified, partial, or missing",
+            "best evidence (file:line)",
+            "stays closed",
+            "final-answer planning",
+        ),
+    ),
     (
         "bounded orientation",
         (
@@ -30,6 +51,7 @@ SKILL_CONTRACT: tuple[tuple[str, tuple[str, ...]], ...] = (
             "don't invent repository symbols",
             "don't path-scope prematurely",
             "refine once",
+            "path fragments from files already seen",
         ),
     ),
     (
@@ -41,7 +63,7 @@ SKILL_CONTRACT: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "relation follow-up",
-        ("specific open fact", "Do not inspect the same handle twice"),
+        ("specific open facet", "Do not inspect the same handle twice"),
     ),
     (
         "bounded gap closing",
@@ -49,13 +71,15 @@ SKILL_CONTRACT: tuple[tuple[str, tuple[str, ...]], ...] = (
             "verified",
             "unresolved",
             "one targeted closing attempt",
-            "Then stop investigating that fact",
+            "continuation token",
+            "Then stop investigating that facet",
         ),
     ),
     (
         "fallback conditions",
         (
             "truncated source slice",
+            "no continuation token was offered",
             "exact configuration string or local value",
             "generated files or unsupported syntax",
             "dynamic-dispatch gap",
@@ -66,7 +90,28 @@ SKILL_CONTRACT: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             "start with broad grep",
             "reproduce the whole investigation",
+            "reread ranges Synapse already returned",
             "upgrade heuristic relations into proven relations",
+        ),
+    ),
+    (
+        "reliability claims",
+        (
+            "initiating state or fault",
+            "code path that permits it",
+            "fails to eliminate it",
+            "observable outcome",
+            "unresolved hypothesis",
+        ),
+    ),
+    (
+        "pre-answer check",
+        (
+            "without further tool calls",
+            "explicitly unresolved",
+            "execution order",
+            "evidence strength actually held",
+            "not a license to keep exploring",
         ),
     ),
     (
@@ -95,6 +140,7 @@ SNIPPET_CONTRACT: tuple[str, ...] = (
     "no budget parameter to raise",
     "never proof of absence",
     "named partial/missing facet",
+    "requested deliverables",
 )
 
 
@@ -159,24 +205,30 @@ def test_installed_skill_describes_the_orchestration_workflow(
     installed_reference = (result.path / "references" / "evidence-semantics.md").read_text(
         encoding="utf-8"
     )
-    assert MANAGED_SKILL_MARKER in installed
+    assert "<!--" not in installed
+    assert "managed-by" not in installed
+    assert (result.path / MANAGED_SKILL_MANIFEST).is_file()
     _assert_describes_skill_contract(installed, f"installed SKILL.md for {agent}")
     assert installed_reference == _packaged_reference()
 
 
-def test_reinstall_replaces_stale_managed_skill_content(isolated_home: Path) -> None:
-    """A normal reinstall upgrades a previous managed skill to the canonical content."""
+def test_reinstall_migrates_a_legacy_marker_managed_skill(isolated_home: Path) -> None:
+    """A pre-0.5.1 skill stamped with the HTML marker upgrades without --force."""
     target = resolve_global_skill_path("claude-code")
     target.mkdir(parents=True)
     (target / "SKILL.md").write_text(
-        f"{MANAGED_SKILL_MARKER}\n\n# Old workflow\n\nCall synapse_search_symbols first.\n",
+        f"{LEGACY_MANAGED_SKILL_MARKER}\n\n# Old workflow\n\nCall synapse_search_symbols first.\n",
         encoding="utf-8",
     )
 
     result = install_global_skill("claude-code")
 
     assert result.status == "updated"
-    assert (target / "SKILL.md").read_text(encoding="utf-8") == _packaged_skill()
+    installed = (target / "SKILL.md").read_text(encoding="utf-8")
+    assert installed == _packaged_skill()
+    assert LEGACY_MANAGED_SKILL_MARKER not in installed
+    assert "managed-by" not in installed
+    assert (target / MANAGED_SKILL_MANIFEST).is_file()
 
 
 def test_always_on_surfaces_share_the_navigation_contract() -> None:
@@ -206,3 +258,40 @@ def test_no_surface_mandates_a_single_inspection_or_exact_call_count() -> None:
         normalized = _normalized(text)
         assert "synapse_inspect once" not in normalized, name
         assert "exactly two" not in normalized.lower(), name
+
+
+def test_detailed_surfaces_share_the_three_state_ledger() -> None:
+    """Skill, handshake, and project snippet name the same three facet states."""
+    surfaces = {
+        "packaged SKILL.md": _packaged_skill(),
+        "server instructions": SERVER_INSTRUCTIONS,
+        "project snippet": project_snippet("codex"),
+    }
+    for name, text in surfaces.items():
+        assert "verified, partial, or missing" in _normalized(text), name
+
+
+def test_agent_visible_managed_content_carries_no_html_comments() -> None:
+    """No HTML-comment markup enters agent context through managed content."""
+    surfaces = {
+        **_always_on_surfaces(),
+        "packaged SKILL.md": _packaged_skill(),
+        "packaged reference": _packaged_reference(),
+    }
+    for name, text in surfaces.items():
+        assert "<!--" not in text, name
+        assert "managed-by" not in text, name
+
+
+def test_static_instruction_surfaces_stay_within_token_ceilings() -> None:
+    """Instruction surfaces cannot silently grow into duplicated checklists."""
+    ceilings = {
+        "packaged SKILL.md": (_packaged_skill(), 1100),
+        "packaged reference": (_packaged_reference(), 600),
+        "server instructions": (SERVER_INSTRUCTIONS, 750),
+        "global snippet": (global_snippet(), 500),
+        "project snippet": (project_snippet("codex"), 700),
+    }
+    for name, (text, ceiling) in ceilings.items():
+        estimated = estimate_tokens(text)
+        assert estimated <= ceiling, f"{name} is {estimated} estimated tokens (ceiling {ceiling})"

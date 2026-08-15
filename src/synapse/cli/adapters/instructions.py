@@ -1,9 +1,11 @@
 """Installation and removal of Synapse-managed agent instructions.
 
-Two ownership modes exist. ``BLOCK`` splices a marker-delimited section into a
+Two ownership modes exist. ``BLOCK`` splices a heading-anchored section into a
 file the agent shares with the user (``CLAUDE.md``, ``AGENTS.md``). ``OWNED``
-writes a dedicated rule file that Synapse owns end to end; the same markers are
-kept inside it so ownership stays provable on uninstall.
+writes a dedicated rule file that Synapse owns end to end. Ownership is proven
+by the snippet's own heading line — no HTML-comment markers enter agent
+context. Blocks delimited by the pre-0.5.1 BEGIN/END markers are still
+recognized and migrated on the next install or removal.
 """
 
 from importlib import resources
@@ -17,18 +19,45 @@ from synapse.cli.adapters.model import (
 )
 from synapse.cli.adapters.paths import resolve_project_path, resolve_user_path
 from synapse.cli.adapters.registry import get_adapter
-from synapse.cli.marker_blocks import append_marker_block, find_marker_block, splice_marker_block
+from synapse.cli.marker_blocks import (
+    append_marker_block,
+    find_heading_block,
+    find_marker_block,
+    splice_marker_block,
+)
 from synapse.core.workspace import normalize_workspace_path
 
 ADAPTERS_ROOT = resources.files("synapse") / "adapters"
 PROJECT_INSTRUCTION_SNIPPET = ADAPTERS_ROOT / "project-instructions-snippet.md"
 GLOBAL_INSTRUCTION_SNIPPET = ADAPTERS_ROOT / "global-instructions-snippet.md"
 
-BEGIN_MARKER = "<!-- BEGIN SYNAPSE CONTEXT ENGINE -->"
-END_MARKER = "<!-- END SYNAPSE CONTEXT ENGINE -->"
-_PARTIAL_MARKERS_MESSAGE = (
-    "Instruction file contains partial Synapse markers; fix the file manually."
+MANAGED_HEADINGS: tuple[str, ...] = (
+    "## Synapse Context Engine (use first)",
+    "## Synapse code context",
 )
+LEGACY_BEGIN_MARKER = "<!-- BEGIN SYNAPSE CONTEXT ENGINE -->"
+LEGACY_END_MARKER = "<!-- END SYNAPSE CONTEXT ENGINE -->"
+_PARTIAL_MARKERS_MESSAGE = (
+    "Instruction file contains partial legacy Synapse markers; fix the file manually."
+)
+
+
+def find_managed_instruction_span(existing: str) -> tuple[int, int] | None:
+    """Locate the managed instruction block: legacy marker pair first, then heading."""
+    legacy = find_marker_block(
+        existing, LEGACY_BEGIN_MARKER, LEGACY_END_MARKER, partial_message=_PARTIAL_MARKERS_MESSAGE
+    )
+    if legacy is not None:
+        return legacy
+    return find_heading_block(existing, MANAGED_HEADINGS)
+
+
+def has_managed_instruction_block(existing: str) -> bool:
+    """Return whether the text contains a Synapse-managed instruction block."""
+    try:
+        return find_managed_instruction_span(existing) is not None
+    except ValueError:
+        return True
 
 
 def project_snippet(agent_id: str) -> str:
@@ -40,10 +69,6 @@ def project_snippet(agent_id: str) -> str:
 def global_snippet() -> str:
     """Return the agent-independent global bootstrap snippet."""
     return GLOBAL_INSTRUCTION_SNIPPET.read_text(encoding="utf-8")
-
-
-def _marked_block(snippet: str) -> str:
-    return f"{BEGIN_MARKER}\n{snippet.strip()}\n{END_MARKER}"
 
 
 def _owned_document(block: str, target: InstructionTarget) -> str:
@@ -92,10 +117,8 @@ def resolve_global_instruction_path(agent_id: str) -> Path:
     return resolve_user_path(target.location)
 
 
-def _replace_marked_block(existing: str, block: str, *, force: bool) -> tuple[str, str]:
-    span = find_marker_block(
-        existing, BEGIN_MARKER, END_MARKER, partial_message=_PARTIAL_MARKERS_MESSAGE
-    )
+def _replace_managed_block(existing: str, block: str, *, force: bool) -> tuple[str, str]:
+    span = find_managed_instruction_span(existing)
     if span is None:
         return append_marker_block(existing, block), "updated"
 
@@ -117,7 +140,7 @@ def install_instructions(
     dry_run: bool = False,
 ) -> InstructionInstallResult:
     """Install a Synapse instruction snippet at a resolved path."""
-    block = _marked_block(snippet)
+    block = snippet.strip()
     if target.mode is InstructionMode.OWNED:
         return _install_owned(path, block, target, force=force, dry_run=dry_run)
     return _install_block(path, block, force=force, dry_run=dry_run)
@@ -149,7 +172,7 @@ def _install_block(
         return InstructionInstallResult(path, "would-create" if dry_run else "created")
 
     existing = path.read_text(encoding="utf-8")
-    next_text, status = _replace_marked_block(existing, block, force=force)
+    next_text, status = _replace_managed_block(existing, block, force=force)
     if status == "unchanged":
         return InstructionInstallResult(path, status)
     if not dry_run:
@@ -176,7 +199,7 @@ def _install_owned(
     if existing == document:
         return InstructionInstallResult(path, "unchanged")
     if not force:
-        if BEGIN_MARKER not in existing:
+        if not has_managed_instruction_block(existing):
             msg = f"{path} already contains an unmanaged instruction file; use --force."
         else:
             msg = "Synapse instruction block already exists; use --force to replace it."
@@ -190,9 +213,7 @@ def _remove_block(path: Path, *, dry_run: bool) -> InstructionInstallResult:
     if not path.exists():
         return InstructionInstallResult(path, "absent")
     existing = path.read_text(encoding="utf-8")
-    span = find_marker_block(
-        existing, BEGIN_MARKER, END_MARKER, partial_message=_PARTIAL_MARKERS_MESSAGE
-    )
+    span = find_managed_instruction_span(existing)
     if span is None:
         return InstructionInstallResult(path, "absent")
     if dry_run:
@@ -208,7 +229,7 @@ def _remove_block(path: Path, *, dry_run: bool) -> InstructionInstallResult:
 def _remove_owned(path: Path, *, dry_run: bool) -> InstructionInstallResult:
     if not path.exists():
         return InstructionInstallResult(path, "absent")
-    if BEGIN_MARKER not in path.read_text(encoding="utf-8"):
+    if not has_managed_instruction_block(path.read_text(encoding="utf-8")):
         return InstructionInstallResult(path, "unmanaged")
     if dry_run:
         return InstructionInstallResult(path, "would-remove")

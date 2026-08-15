@@ -1,8 +1,9 @@
 ## Synapse code context
 
 Codebases on this machine are indexed by Synapse (MCP server `synapse`). For any code
-question, list the evidence facets the task needs, translate them into repository
-vocabulary (identifiers, file names, path fragments), then:
+question, list the evidence facets the task needs (including requested deliverables),
+translate them into repository vocabulary (identifiers, file names, path fragments),
+then:
 
 - `synapse_orient(terms=[...])` -> 4-8 discriminative terms; ranked production-first
   matches with compact handles, weak candidates, crowded/unmatched terms, and coverage
@@ -21,4 +22,5 @@ together in a single ToolSearch call before exploring. Treat returned source as 
 afterwards, use grep or file reads only to close a named partial/missing facet — an
 exact text match, or an unindexed gap the coverage block reports — never to repeat the
 whole investigation.
-The `synapse-code-context` skill carries the full facet-planning, ledger, stop workflow.
+The `synapse-code-context` skill carries the full facet-planning, ledger,
+reliability-claim, and pre-answer check workflow.

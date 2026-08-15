@@ -1,5 +1,6 @@
 """Tests for one-time global agent installation."""
 
+import hashlib
 import json
 import tomllib
 from pathlib import Path
@@ -8,8 +9,7 @@ import pytest
 
 from synapse.cli import main as cli_main
 from synapse.cli.adapters import (
-    BEGIN_MARKER,
-    END_MARKER,
+    MANAGED_SKILL_MANIFEST,
     install_global_instruction,
     install_global_skill,
     remove_global_skill,
@@ -18,6 +18,17 @@ from synapse.cli.adapters import (
     resolve_global_skill_path,
 )
 from synapse.cli.installer import install_mcp_server
+
+
+def _read_skill_manifest(target: Path) -> dict[str, object]:
+    return json.loads((target / MANAGED_SKILL_MANIFEST).read_text(encoding="utf-8"))
+
+
+def _write_skill_manifest(target: Path, payload: object) -> None:
+    (target / MANAGED_SKILL_MANIFEST).write_text(
+        f"{json.dumps(payload, sort_keys=True)}\n",
+        encoding="utf-8",
+    )
 
 
 @pytest.mark.parametrize(
@@ -76,6 +87,7 @@ def test_global_instruction_and_skill_are_idempotent(
     """Repeated installs neither duplicate managed instructions nor skill files."""
     instruction = install_global_instruction(agent)
     skill = install_global_skill(agent)
+    manifest_before = (skill.path / MANAGED_SKILL_MANIFEST).read_bytes()
     second_instruction = install_global_instruction(agent)
     second_skill = install_global_skill(agent)
 
@@ -85,17 +97,28 @@ def test_global_instruction_and_skill_are_idempotent(
     assert skill.status == "created"
     assert second_instruction.status == "unchanged"
     assert second_skill.status == "unchanged"
-    assert instruction_text.count(BEGIN_MARKER) == 1
-    assert instruction_text.count(END_MARKER) == 1
+    assert (skill.path / MANAGED_SKILL_MANIFEST).read_bytes() == manifest_before
+    assert instruction_text.count("## Synapse code context") == 1
+    assert "<!--" not in instruction_text
     assert "synapse_orient" in instruction_text
     assert "synapse_inspect" in instruction_text
     assert "exact text" in instruction_text
-    assert "<!-- SYNAPSE MANAGED SKILL -->" in skill_text
+    assert "<!--" not in skill_text
+    assert "managed-by" not in skill_text
     assert "synapse_orient" in skill_text
     assert "synapse_inspect" in skill_text
     assert "Default workflow" in skill_text
     assert "empty relations != proof of absence" in skill_text
     assert (skill.path / "references" / "evidence-semantics.md").exists()
+    manifest = _read_skill_manifest(skill.path)
+    assert manifest["managed_by"] == "synapse"
+    assert manifest["schema_version"] == 1
+    files = manifest["files"]
+    assert isinstance(files, dict)
+    for relative, digest in files.items():
+        assert isinstance(relative, str)
+        assert isinstance(digest, str)
+        assert digest == hashlib.sha256((skill.path / relative).read_bytes()).hexdigest()
 
 
 def test_global_skill_refuses_unmanaged_conflict_without_force(
@@ -104,7 +127,10 @@ def test_global_skill_refuses_unmanaged_conflict_without_force(
     """A user-owned skill is protected unless adoption is explicit."""
     target = resolve_global_skill_path("codex")
     target.mkdir(parents=True)
-    (target / "SKILL.md").write_text("# My skill\n", encoding="utf-8")
+    (target / "SKILL.md").write_text(
+        "# My skill\n\nDocument `managed-by: synapse` as an example.\n",
+        encoding="utf-8",
+    )
 
     with pytest.raises(FileExistsError, match="unmanaged skill"):
         install_global_skill("codex")
@@ -112,7 +138,63 @@ def test_global_skill_refuses_unmanaged_conflict_without_force(
     result = install_global_skill("codex", force=True)
 
     assert result.status == "updated"
-    assert "SYNAPSE MANAGED SKILL" in (target / "SKILL.md").read_text(encoding="utf-8")
+    installed = (target / "SKILL.md").read_text(encoding="utf-8")
+    assert "managed-by" not in installed
+    assert (target / MANAGED_SKILL_MANIFEST).is_file()
+
+
+def test_global_skill_updates_an_unchanged_manifest_owned_install(isolated_home: Path) -> None:
+    """A valid manifest authorizes replacing an older unmodified managed bundle."""
+    target = resolve_global_skill_path("claude-code")
+    target.mkdir(parents=True)
+    old_content = b"---\nname: synapse-code-context\n---\n\n# Old workflow\n"
+    (target / "SKILL.md").write_bytes(old_content)
+    _write_skill_manifest(
+        target,
+        {
+            "managed_by": "synapse",
+            "schema_version": 1,
+            "files": {"SKILL.md": hashlib.sha256(old_content).hexdigest()},
+        },
+    )
+
+    result = install_global_skill("claude-code")
+
+    assert result.status == "updated"
+    installed = (target / "SKILL.md").read_text(encoding="utf-8")
+    assert "# Old workflow" not in installed
+    assert "synapse_orient" in installed
+    files = _read_skill_manifest(target)["files"]
+    assert isinstance(files, dict)
+    assert set(files) == {
+        "SKILL.md",
+        "references/evidence-semantics.md",
+    }
+
+
+def test_global_skill_protects_untracked_file_at_a_new_managed_path(
+    isolated_home: Path,
+) -> None:
+    """An update cannot adopt a colliding untracked file without explicit force."""
+    install_global_skill("codex")
+    target = resolve_global_skill_path("codex")
+    manifest = _read_skill_manifest(target)
+    files = manifest["files"]
+    assert isinstance(files, dict)
+    files.pop("agents/openai.yaml")
+    _write_skill_manifest(target, manifest)
+    collision = target / "agents" / "openai.yaml"
+    collision.write_text("user-owned: true\n", encoding="utf-8")
+
+    with pytest.raises(FileExistsError, match="untracked files at new managed paths"):
+        install_global_skill("codex")
+
+    assert collision.read_text(encoding="utf-8") == "user-owned: true\n"
+
+    result = install_global_skill("codex", force=True)
+
+    assert result.status == "updated"
+    assert collision.read_text(encoding="utf-8") != "user-owned: true\n"
 
 
 @pytest.mark.parametrize("agent", ["codex", "claude-code", "opencode"])
@@ -123,16 +205,29 @@ def test_global_skill_files_are_agent_specific(isolated_home: Path, agent: str) 
     target = resolve_global_skill_path(agent)
     assert (target / "SKILL.md").exists()
     assert (target / "references" / "evidence-semantics.md").exists()
+    manifest = _read_skill_manifest(target)
+    files = manifest["files"]
+    assert isinstance(files, dict)
     if agent == "codex":
         assert (target / "agents" / "openai.yaml").exists()
+        assert set(files) == {
+            "SKILL.md",
+            "agents/openai.yaml",
+            "references/evidence-semantics.md",
+        }
     else:
         assert not (target / "agents").exists()
+        assert set(files) == {"SKILL.md", "references/evidence-semantics.md"}
 
 
 def test_global_skill_reinstall_removes_legacy_openai_yaml(isolated_home: Path) -> None:
     """Upgrading a pre-existing managed install drops files no longer owned by the agent."""
-    install_global_skill("claude-code")
     target = resolve_global_skill_path("claude-code")
+    target.mkdir(parents=True)
+    (target / "SKILL.md").write_text(
+        "<!-- SYNAPSE MANAGED SKILL -->\n\n# Legacy workflow\n",
+        encoding="utf-8",
+    )
     legacy = target / "agents" / "openai.yaml"
     legacy.parent.mkdir(parents=True)
     legacy.write_text("interface: {}\n", encoding="utf-8")
@@ -145,18 +240,128 @@ def test_global_skill_reinstall_removes_legacy_openai_yaml(isolated_home: Path) 
     assert (target / "SKILL.md").exists()
 
 
-def test_global_skill_removal_cleans_legacy_openai_yaml(isolated_home: Path) -> None:
-    """Removal deletes every path Synapse ever managed, including legacy layouts."""
+def test_global_skill_removal_preserves_untracked_files(isolated_home: Path) -> None:
+    """Removal deletes manifest-owned assets while preserving unrelated files."""
     install_global_skill("claude-code")
     target = resolve_global_skill_path("claude-code")
-    legacy = target / "agents" / "openai.yaml"
-    legacy.parent.mkdir(parents=True)
-    legacy.write_text("interface: {}\n", encoding="utf-8")
+    untracked = target / "notes.md"
+    untracked.write_text("Keep me.\n", encoding="utf-8")
 
     result = remove_global_skill("claude-code")
 
     assert result.status == "removed"
+    assert target.exists()
+    assert untracked.read_text(encoding="utf-8") == "Keep me.\n"
+    assert not (target / "SKILL.md").exists()
+    assert not (target / MANAGED_SKILL_MANIFEST).exists()
+
+
+def test_global_skill_removal_deletes_a_clean_managed_directory(isolated_home: Path) -> None:
+    """A clean manifest-owned bundle is removed completely."""
+    install_global_skill("codex")
+    target = resolve_global_skill_path("codex")
+
+    result = remove_global_skill("codex")
+
+    assert result.status == "removed"
     assert not target.exists()
+
+
+@pytest.mark.parametrize("mutation", ["changed", "missing", "symlink"])
+def test_modified_managed_skill_fails_closed(
+    isolated_home: Path,
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    """Changed manifest-owned files block update and removal without partial writes."""
+    install_global_skill("codex")
+    target = resolve_global_skill_path("codex")
+    skill = target / "SKILL.md"
+    if mutation == "changed":
+        skill.write_text("# User modification\n", encoding="utf-8")
+    elif mutation == "missing":
+        skill.unlink()
+    else:
+        skill.unlink()
+        skill.symlink_to(tmp_path / "outside.md")
+    manifest_before = (target / MANAGED_SKILL_MANIFEST).read_bytes()
+
+    with pytest.raises(FileExistsError, match="modified managed skill files"):
+        install_global_skill("codex")
+
+    assert remove_global_skill("codex").status == "modified"
+    assert (target / MANAGED_SKILL_MANIFEST).read_bytes() == manifest_before
+    if mutation == "changed":
+        assert skill.read_text(encoding="utf-8") == "# User modification\n"
+    elif mutation == "missing":
+        assert not skill.exists()
+    else:
+        assert skill.is_symlink()
+
+    recovered = install_global_skill("codex", force=True)
+
+    assert recovered.status == "updated"
+    assert skill.is_file()
+    assert not skill.is_symlink()
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        None,
+        {"managed_by": "synapse", "schema_version": 1, "files": {}},
+        {
+            "managed_by": "synapse",
+            "schema_version": 1,
+            "files": {"SKILL.md": "not-a-digest"},
+        },
+        {
+            "managed_by": "synapse",
+            "schema_version": 1,
+            "files": {"SKILL.md": "0" * 64, "../outside": "0" * 64},
+        },
+        {
+            "managed_by": "synapse",
+            "schema_version": 1,
+            "files": {"SKILL.md": "0" * 64, "unknown.md": "0" * 64},
+        },
+    ],
+)
+def test_invalid_skill_manifest_is_never_trusted(
+    isolated_home: Path,
+    payload: object,
+) -> None:
+    """Malformed and unsafe manifests grant no update or removal authority."""
+    target = resolve_global_skill_path("codex")
+    target.mkdir(parents=True)
+    skill = target / "SKILL.md"
+    skill.write_text("# User skill\n", encoding="utf-8")
+    manifest = target / MANAGED_SKILL_MANIFEST
+    if payload is None:
+        manifest.write_text("{broken", encoding="utf-8")
+    else:
+        _write_skill_manifest(target, payload)
+
+    with pytest.raises(FileExistsError, match="unmanaged skill"):
+        install_global_skill("codex")
+
+    assert remove_global_skill("codex").status == "unmanaged"
+    assert skill.read_text(encoding="utf-8") == "# User skill\n"
+    assert manifest.exists()
+
+
+def test_forced_dry_run_does_not_adopt_unmanaged_skill(isolated_home: Path) -> None:
+    """A dry-run reports adoption without writing assets or ownership metadata."""
+    target = resolve_global_skill_path("codex")
+    target.mkdir(parents=True)
+    skill = target / "SKILL.md"
+    skill.write_text("# User skill\n", encoding="utf-8")
+
+    result = install_global_skill("codex", force=True, dry_run=True)
+
+    assert result.status == "would-update"
+    assert skill.read_text(encoding="utf-8") == "# User skill\n"
+    assert not (target / MANAGED_SKILL_MANIFEST).exists()
 
 
 @pytest.mark.parametrize("agent", ["codex", "claude-code", "opencode"])

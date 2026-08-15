@@ -7,9 +7,10 @@ initialize the workspace automatically — no setup call is needed.
 
 Workflow:
 1. List the evidence facets the task needs (entrypoint, configuration, invocation,
-   persistence, error handling, ...), then translate them into likely
-   repository vocabulary: identifiers, file names, path fragments (including
-   translations of non-English task words).
+   persistence, error handling, and requested deliverables such as risks or
+   recommendations), then translate them into likely repository vocabulary:
+   identifiers, file names, path fragments (including translations of non-English
+   task words).
 2. Call synapse_orient with 4-8 discriminative terms (or no terms for a repository
    map). It returns ranked production-first matches with compact handles, weak
    candidates, crowded/unmatched terms, and coverage counts.
@@ -21,7 +22,10 @@ Workflow:
 4. Synthesize the answer yourself from that evidence. Mark each facet verified,
    partial, or missing; give a partial/missing facet one bounded close attempt (a
    returned relation handle, a refined orientation, or one facet-scoped exact
-   search), then report it verified or unresolved and stop.
+   search), then report it verified or unresolved and stop. Before answering,
+   account for every requested facet — answered or explicitly unresolved — and
+   assert a risk only after reading the guard or recovery path that fails to
+   stop it.
 
 Responses are bounded server-side and always report coverage; there is no budget
 parameter to raise. Treat returned source as read: after a successful inspection, do

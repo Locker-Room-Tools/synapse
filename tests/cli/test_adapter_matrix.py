@@ -15,7 +15,6 @@ import pytest
 
 from synapse.cli.adapters import (
     ADAPTERS,
-    BEGIN_MARKER,
     ConfigFormat,
     adapter_choices,
     get_adapter,
@@ -446,7 +445,8 @@ def test_project_instructions_are_marker_owned(
     assert created.status == "created"
     assert unchanged.status == "unchanged"
     content = path.read_text(encoding="utf-8")
-    assert content.count(BEGIN_MARKER) == 1
+    assert content.count("## Synapse Context Engine (use first)") == 1
+    assert "<!--" not in content
     assert f"synapse doctor --path . --agent {agent}" in content
     for key, value in adapter.project_instructions.frontmatter:
         assert f"{key}: {value}" in content

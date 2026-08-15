@@ -7,8 +7,9 @@ automatically.
 Canonical flow:
 
 1. List the evidence facets the task needs (entrypoint, configuration, invocation,
-   persistence, ...), then translate them into likely repository vocabulary: identifiers,
-   file names, path fragments (including translations of non-English task words).
+   persistence, and requested deliverables such as risks or recommendations), then
+   translate them into likely repository vocabulary: identifiers, file names, path
+   fragments (including translations of non-English task words).
 2. `synapse_orient(terms=[...])` with 4-8 discriminative terms -> ranked production-first
    matches with compact handles (`s_...`), match provenance, weak candidates,
    crowded/unmatched terms, and coverage. No terms -> repository-map orientation.
@@ -21,7 +22,8 @@ Canonical flow:
 4. Synthesize the answer from that evidence. Mark each facet verified, partial, or
    missing; close a partial/missing facet by following 1-2 returned relation handles,
    one refined `synapse_orient`, or one facet-scoped read, then report it verified or
-   unresolved. Two calls are the common fast path, not a cap.
+   unresolved. Account for every facet in the answer or mark it unresolved. Two calls
+   are the common fast path, not a cap.
 
 Responses are bounded server-side; there is no budget parameter to raise. Empty or
 truncated results carry a coverage block and are never proof of absence, and a complete

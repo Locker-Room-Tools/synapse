@@ -1,4 +1,36 @@
-"""Shared editing of Synapse-managed BEGIN/END marker blocks in text files."""
+"""Shared editing of Synapse-managed blocks in text files.
+
+Two block anchors exist: explicit BEGIN/END comment markers (TOML MCP configs,
+plus legacy instruction installs) and heading-anchored markdown blocks that
+carry no markup beyond the snippet's own heading.
+"""
+
+
+def find_heading_block(existing: str, headings: tuple[str, ...]) -> tuple[int, int] | None:
+    """Locate a managed markdown block anchored on one of its known heading lines.
+
+    The block spans from the first matching heading line to the next line that
+    starts a heading of any level, or the end of the text. Returns None when no
+    heading matches as a complete line.
+    """
+    for heading in headings:
+        start = _line_start(existing, heading)
+        if start == -1:
+            continue
+        boundary = existing.find("\n#", start + len(heading))
+        return start, len(existing) if boundary == -1 else boundary
+    return None
+
+
+def _line_start(text: str, line: str) -> int:
+    position = 0 if text.startswith(line) else text.find("\n" + line)
+    if position == -1:
+        return -1
+    start = position if position == 0 else position + 1
+    end = start + len(line)
+    if end < len(text) and text[end] != "\n":
+        return -1
+    return start
 
 
 def find_marker_block(
