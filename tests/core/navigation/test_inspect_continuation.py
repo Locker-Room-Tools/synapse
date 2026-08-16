@@ -225,6 +225,30 @@ def test_edited_file_is_rejected_never_spliced(tmp_path: Path) -> None:
     assert "edited" not in json.dumps(follow_up)
 
 
+def test_head_and_continuation_go_stale_together_after_an_edit(tmp_path: Path) -> None:
+    """One request mixing a handle and a token serves no bytes from a drifted file."""
+    index, workspace, _ = _long_symbol_index(tmp_path)
+    payload = _inspect(index, workspace, (symbol_handle(LONG_ID),))
+    token = payload["symbols"][0]["src"]["next"]
+
+    absolute = workspace / LONG_FILE
+    absolute.write_text(
+        "\n".join(f"edited {i}" for i in range(1, 131)),
+        encoding="utf-8",
+    )
+
+    mixed = _inspect(index, workspace, (symbol_handle(LONG_ID), token))
+
+    entry = mixed["symbols"][0]
+    assert entry["src_stale"] is True
+    assert "src" not in entry
+    assert "continuations" not in mixed
+    assert mixed["continuation_rejected"] == [{"token": token, "reason": "stale"}]
+    # Both windows verify against the same stored hash, so neither side can serve
+    # bytes from a different file version than the other.
+    assert "edited" not in json.dumps(mixed)
+
+
 def test_missing_source_file_rejects_the_token_honestly(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     index = build_index(tmp_path)

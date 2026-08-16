@@ -39,32 +39,6 @@ def hash_source(source_bytes: bytes) -> str:
     return hashlib.sha256(source_bytes).hexdigest()
 
 
-def read_symbol_source(root: Path, symbol: Symbol, *, max_lines: int) -> SourceSlice | None:
-    """Read at most ``max_lines`` lines of a symbol's definition from disk.
-
-    Returns None when the file is missing, unreadable, or the stored location
-    no longer fits the file (stale index).
-    """
-    return read_source_window(root, symbol, start_line=symbol.start_line, max_lines=max_lines)
-
-
-def read_source_window(
-    root: Path, symbol: Symbol, *, start_line: int, max_lines: int
-) -> SourceSlice | None:
-    """Read at most ``max_lines`` lines of a symbol's definition from ``start_line``.
-
-    The window is clipped to the symbol's stored span; ``truncated`` means stored
-    body remains beyond the returned window. Returns None when the file is
-    missing, unreadable, or ``start_line`` no longer fits the file (stale index).
-    """
-    absolute_path = root / symbol.file_path
-    try:
-        lines = absolute_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return None
-    return _window_from_lines(lines, symbol, start_line=start_line, max_lines=max_lines)
-
-
 def read_verified_source_window(
     root: Path, symbol: Symbol, *, start_line: int, max_lines: int, content_hash: str
 ) -> VerifiedWindow:
@@ -72,8 +46,9 @@ def read_verified_source_window(
 
     The bytes are read once and both hashed and sliced, so the verification and
     the returned text cannot disagree. A mismatch returns ``stale`` instead of a
-    slice: a continuation must never splice lines from a newer file version onto
-    a head slice served from an older one.
+    slice: head and continuation windows are both served through this check, so
+    post-index bytes are never presented as the stored span and two windows can
+    never come from different file versions.
     """
     absolute_path = root / symbol.file_path
     try:

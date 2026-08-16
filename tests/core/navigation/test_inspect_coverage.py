@@ -20,6 +20,7 @@ from tests.core.navigation.builders import (
     build_index,
     make_reference,
     make_symbol,
+    sync_disk_hashes,
 )
 
 
@@ -36,6 +37,7 @@ def _inspect(
     *,
     token_budget: int = 4000,
 ) -> dict[str, Any]:
+    sync_disk_hashes(index, workspace)
     payload = json.loads(
         inspect_symbols(
             index,
@@ -347,6 +349,7 @@ def _source_state(payload: dict[str, Any]) -> set[str]:
             "source_truncated",
             "source_shortened",
             "source_omitted",
+            "source_stale",
             "source_unavailable",
         )
         if coverage.get(key)
@@ -444,6 +447,71 @@ def test_unreadable_source_is_unavailable_and_nothing_else(tmp_path: Path) -> No
 
     payload = _inspect(index, workspace, (symbol_handle("py:ghost"),))
 
+    assert _source_state(payload) == {"source_unavailable"}
+
+
+def _inspect_unsynced(
+    index: SymbolIndex, workspace: Path, symbols: tuple[str, ...]
+) -> dict[str, Any]:
+    """Inspect without re-syncing stored hashes, so on-disk drift stays observable."""
+    payload = json.loads(
+        inspect_symbols(
+            index,
+            InspectRequest(symbols=symbols, token_budget=4000),
+            workspace_root=workspace,
+        )
+    )
+    assert isinstance(payload, dict)
+    return payload
+
+
+def test_edited_file_reports_stale_head_and_serves_no_edited_bytes(tmp_path: Path) -> None:
+    """A file changed after indexing yields an explicit stale head, never its new bytes."""
+    workspace, index = _indexed(tmp_path, {"app/mod.py": "def target():\n    return 'indexed'\n"})
+    handle = symbol_handle(_only_id(index, "target"))
+    (workspace / "app" / "mod.py").write_text(
+        "def target():\n    return 'edited'\n", encoding="utf-8"
+    )
+
+    payload = _inspect_unsynced(index, workspace, (handle,))
+
+    entry = payload["symbols"][0]
+    assert entry["src_stale"] is True
+    assert "src" not in entry
+    assert "src_unavailable" not in entry
+    assert "edited" not in json.dumps(payload)
+    assert payload["coverage"]["source_stale"] == [handle]
+    assert _source_state(payload) == {"source_stale"}
+
+
+def test_stale_head_recovers_after_reindexing(tmp_path: Path) -> None:
+    """Stale is a repairable state: reindexing serves the new content verified."""
+    workspace, index = _indexed(tmp_path, {"app/mod.py": "def target():\n    return 'indexed'\n"})
+    (workspace / "app" / "mod.py").write_text(
+        "def target():\n    return 'edited'\n", encoding="utf-8"
+    )
+    stale = _inspect_unsynced(index, workspace, (symbol_handle(_only_id(index, "target")),))
+    assert _source_state(stale) == {"source_stale"}
+
+    index_workspace(workspace)
+    payload = _inspect_unsynced(index, workspace, (symbol_handle(_only_id(index, "target")),))
+
+    entry = payload["symbols"][0]
+    assert "edited" in entry["src"]["text"]
+    assert _source_state(payload) == set()
+
+
+def test_stale_and_unavailable_are_distinct_causes(tmp_path: Path) -> None:
+    """A deleted file is unavailable; a drifted file is stale; neither borrows the other."""
+    workspace, index = _indexed(tmp_path, {"app/mod.py": "def target():\n    return 'indexed'\n"})
+    handle = symbol_handle(_only_id(index, "target"))
+    (workspace / "app" / "mod.py").unlink()
+
+    payload = _inspect_unsynced(index, workspace, (handle,))
+
+    entry = payload["symbols"][0]
+    assert entry["src_unavailable"] is True
+    assert "src_stale" not in entry
     assert _source_state(payload) == {"source_unavailable"}
 
 

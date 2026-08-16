@@ -6,7 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from synapse.core.index import SymbolIndex, is_symbol_handle, read_symbol_source, symbol_handle
+from synapse.core.index import (
+    SymbolIndex,
+    VerifiedWindow,
+    hash_source,
+    is_symbol_handle,
+    read_verified_source_window,
+    symbol_handle,
+)
 from synapse.core.index import writes as writes_module
 from synapse.core.models import Confidence, SourceFile, Symbol, SymbolKind
 from tests.core.index.legacy_databases import write_legacy_database
@@ -176,11 +183,12 @@ def test_files_matching_path_is_term_shape_aware(tmp_path: Path) -> None:
     assert path_like_page["total"] == 1
 
 
-def test_read_symbol_source_bounds_and_failures(tmp_path: Path) -> None:
-    """Slices are bounded with a truncation flag; missing or stale files return None."""
+def test_verified_head_reads_bound_and_fail_closed(tmp_path: Path) -> None:
+    """Head slices are bounded with a truncation flag and never serve drifted bytes."""
     source_path = tmp_path / "app" / "one.py"
     source_path.parent.mkdir(parents=True)
     source_path.write_text("\n".join(f"line {i}" for i in range(1, 11)), encoding="utf-8")
+    content_hash = hash_source(source_path.read_bytes())
     wide = Symbol(
         id="py:wide",
         language="python",
@@ -199,18 +207,34 @@ def test_read_symbol_source_bounds_and_failures(tmp_path: Path) -> None:
         confidence=Confidence.HIGH,
     )
 
-    bounded = read_symbol_source(tmp_path, wide, max_lines=3)
+    def _head(
+        root: Path, symbol: Symbol, max_lines: int, expected_hash: str = content_hash
+    ) -> VerifiedWindow:
+        return read_verified_source_window(
+            root,
+            symbol,
+            start_line=symbol.start_line,
+            max_lines=max_lines,
+            content_hash=expected_hash,
+        )
+
+    bounded = _head(tmp_path, wide, 3).slice
     assert bounded is not None
     assert bounded.text == "line 2\nline 3\nline 4"
     assert (bounded.start_line, bounded.end_line, bounded.truncated) == (2, 4, True)
 
-    full = read_symbol_source(tmp_path, wide, max_lines=40)
+    full = _head(tmp_path, wide, 40).slice
     assert full is not None
     assert full.truncated is False
     assert full.end_line == 9
 
-    missing = read_symbol_source(tmp_path / "elsewhere", wide, max_lines=3)
-    assert missing is None
+    missing = _head(tmp_path / "elsewhere", wide, 3)
+    assert missing.slice is None
+    assert missing.stale is False
+
+    drifted = _head(tmp_path, wide, 3, expected_hash="not-the-indexed-hash")
+    assert drifted.slice is None
+    assert drifted.stale is True
 
     stale = Symbol(
         id="py:stale",
@@ -229,4 +253,6 @@ def test_read_symbol_source_bounds_and_failures(tmp_path: Path) -> None:
         source="tree-sitter",
         confidence=Confidence.HIGH,
     )
-    assert read_symbol_source(tmp_path, stale, max_lines=3) is None
+    out_of_span = _head(tmp_path, stale, 3)
+    assert out_of_span.slice is None
+    assert out_of_span.stale is False

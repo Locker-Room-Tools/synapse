@@ -205,6 +205,9 @@ nothing about that language.
   - `source_truncated` — the definition outgrew the fixed 40-line slice cap
   - `source_shortened` — the wire budget removed lines the fixed slice would have held
   - `source_omitted` — the budget removed the slice entirely
+  - `source_stale` — the file changed on disk after indexing; the head slice is
+    verified against the stored content hash and drifted bytes are never served
+    (the entry carries `src_stale` instead of `src`)
   - `source_unavailable` — the indexed location cannot be read
 
   A body that outgrew the cap *and* was then shortened by the budget appears in both of

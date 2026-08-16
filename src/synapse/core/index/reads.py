@@ -7,7 +7,7 @@ from pathlib import Path
 
 from synapse.core.index.handles import is_symbol_handle, symbol_handle
 from synapse.core.index.integrity import IndexIntegrityError
-from synapse.core.index.source import read_symbol_source
+from synapse.core.index.source import read_verified_source_window
 from synapse.core.languages import reference_extraction as get_reference_extraction
 from synapse.core.languages import reference_limitations as get_reference_limitations
 from synapse.core.languages import reference_usage_kinds as get_reference_usage_kinds
@@ -1364,19 +1364,28 @@ class ReadProjections:
             ).fetchone()
         body: str | None = None
         body_truncated = False
+        body_stale = False
         if include_body and file_row is not None and file_row["project_root"] is not None:
-            body_slice = read_symbol_source(
-                Path(str(file_row["project_root"])), symbol, max_lines=max_body_lines
+            # Same fail-closed rule as navigation head slices: a file that changed
+            # after indexing must never serve post-index bytes as the stored span.
+            verified = read_verified_source_window(
+                Path(str(file_row["project_root"])),
+                symbol,
+                start_line=symbol.start_line,
+                max_lines=max_body_lines,
+                content_hash=str(file_row["content_hash"]),
             )
-            if body_slice is not None:
-                body = body_slice.text
-                body_truncated = body_slice.truncated
+            body_stale = verified.stale
+            if verified.slice is not None:
+                body = verified.slice.text
+                body_truncated = verified.slice.truncated
         return {
             "symbol": symbol_summary(symbol),
             "parent": symbol_summary(_map_symbol(parent_row)) if parent_row is not None else None,
             "children": [symbol_summary(_map_symbol(row)) for row in child_rows],
             "body": body,
             "body_truncated": body_truncated,
+            "body_stale": body_stale,
             "page": page_metadata(
                 child_total,
                 normalized_limit,
