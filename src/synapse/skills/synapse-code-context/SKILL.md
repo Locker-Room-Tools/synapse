@@ -11,19 +11,19 @@ Use Synapse before shell exploration for repository structure.
 Synapse provides structural evidence; you interpret and synthesize it.
 
 Default workflow:
-plan → orient → inspect → follow relations → close gaps → check → synthesize
+plan → orient → inspect → follow relations → close gaps → synthesize
 
 ## 1. Plan
 
-Derive one facet from each material clause of the request, including
+Derive facets from each material clause of the request, including
 requested deliverables (risks, recommendations, comparisons), not only
-code mechanics.
+code mechanics. Merge overlapping facets so the ledger stays small —
+typically 3–7.
 
-Keep the facets as a compact internal ledger. Track each facet as
-verified, partial, or missing, and record its best evidence (file:line)
-when first seen. A verified facet stays closed. The ledger survives
-replanning and drives final-answer planning: no facet is silently
-dropped.
+Track each facet as verified, partial, or missing, and record its best
+evidence (file:line) when first seen. A verified facet stays closed.
+The ledger survives replanning and drives final-answer planning: no
+facet is silently dropped.
 
 For cross-cutting questions, prefer anchors from different relevant
 architectural layers.
@@ -45,8 +45,7 @@ Rules:
 
 Inspect 2–3 diverse production anchors with `synapse_inspect`.
 
-Use returned source and relations as evidence, and record each facet's
-best evidence (file:line) in the ledger as it arrives.
+Use returned source and relations as evidence.
 Prefer production symbols unless tests are relevant.
 
 ## 4. Follow relations
@@ -99,34 +98,25 @@ details.
 
 ## 8. Reliability claims
 
-Assert a failure scenario or risk only when read evidence names:
+A reported risk is either a verified failure path or an explicitly
+unresolved hypothesis. Both are valid deliverables; never bridge the
+gap between them with plausible inference.
 
-1. the initiating state or fault;
-2. the code path that permits it;
-3. the guard, retry, or recovery path that fails to eliminate it;
-4. the observable outcome.
+A risk is verified only when read evidence names the initiating state
+or fault, the code path that permits it, the guard or recovery path
+that fails to eliminate it, and the observable outcome. If any step is
+unread — for example the guard sits beyond a truncated slice — fetch
+the offered continuation or label the risk an unresolved hypothesis
+instead of completing the chain by assumption.
 
-If the guard or recovery path is unread — for example the source slice
-was truncated before it — fetch the continuation or downgrade the claim
-to an unresolved hypothesis.
+## 9. Synthesize and stop
 
-## 9. Check
-
-Before answering, review the ledger without further tool calls:
-
-- every facet is answered or explicitly unresolved;
-- flow stages connect in execution order, not as isolated symbols;
-- each claim carries the evidence strength actually held;
-- evidence retrieved early is not dropped because later payloads are
-  more recent;
-- each asserted risk satisfies the reliability chain above.
-
-This check reviews evidence already held; it is not a license to keep
-exploring.
-
-## 10. Stop
-
-Stop when every facet is verified or unresolved.
+Stop when every facet is verified or unresolved. Write the answer from
+the ledger, not from the most recent payloads: account for every facet
+or mark it explicitly unresolved, connect flow stages in execution
+order, and give each claim only the evidence strength actually held.
+This is a review of evidence already held, not a reason for more tool
+calls.
 
 Clearly distinguish:
 

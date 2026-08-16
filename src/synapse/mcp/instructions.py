@@ -24,8 +24,8 @@ Workflow:
    returned relation handle, a refined orientation, or one facet-scoped exact
    search), then report it verified or unresolved and stop. Before answering,
    account for every requested facet — answered or explicitly unresolved — and
-   assert a risk only after reading the guard or recovery path that fails to
-   stop it.
+   report a risk as verified only after reading the guard or recovery path that
+   fails to stop it; otherwise label it an unresolved hypothesis.
 
 Responses are bounded server-side and always report coverage; there is no budget
 parameter to raise. Treat returned source as read: after a successful inspection, do

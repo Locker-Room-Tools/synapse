@@ -26,12 +26,14 @@ from synapse.mcp.instructions import SERVER_INSTRUCTIONS
 
 SKILL_CONTRACT: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("navigation tools", ("synapse_orient", "synapse_inspect")),
-    ("default workflow", ("plan → orient → inspect", "close gaps → check → synthesize")),
+    ("default workflow", ("plan → orient → inspect", "close gaps → synthesize")),
     (
         "clause-to-facet planning",
         (
             "each material clause",
             "requested deliverables",
+            "Merge overlapping facets",
+            "typically 3–7",
             "different relevant architectural layers",
         ),
     ),
@@ -97,21 +99,25 @@ SKILL_CONTRACT: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
         "reliability claims",
         (
+            "verified failure path",
+            "unresolved hypothesis",
+            "Both are valid deliverables",
             "initiating state or fault",
             "code path that permits it",
             "fails to eliminate it",
             "observable outcome",
-            "unresolved hypothesis",
+            "completing the chain by assumption",
         ),
     ),
     (
-        "pre-answer check",
+        "ledger-driven synthesis",
         (
-            "without further tool calls",
+            "from the ledger, not from the most recent payloads",
+            "account for every facet",
             "explicitly unresolved",
             "execution order",
             "evidence strength actually held",
-            "not a license to keep exploring",
+            "not a reason for more tool calls",
         ),
     ),
     (

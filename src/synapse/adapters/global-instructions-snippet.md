@@ -22,5 +22,5 @@ together in a single ToolSearch call before exploring. Treat returned source as 
 afterwards, use grep or file reads only to close a named partial/missing facet — an
 exact text match, or an unindexed gap the coverage block reports — never to repeat the
 whole investigation.
-The `synapse-code-context` skill carries the full facet-planning, ledger,
-reliability-claim, and pre-answer check workflow.
+The `synapse-code-context` skill carries the full facet-planning, ledger, and
+reliability-claim workflow.

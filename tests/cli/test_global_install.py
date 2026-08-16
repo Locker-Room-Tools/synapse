@@ -21,7 +21,9 @@ from synapse.cli.installer import install_mcp_server
 
 
 def _read_skill_manifest(target: Path) -> dict[str, object]:
-    return json.loads((target / MANAGED_SKILL_MANIFEST).read_text(encoding="utf-8"))
+    payload = json.loads((target / MANAGED_SKILL_MANIFEST).read_text(encoding="utf-8"))
+    assert isinstance(payload, dict)
+    return payload
 
 
 def _write_skill_manifest(target: Path, payload: object) -> None:

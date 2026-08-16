@@ -6,6 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-08-16
+
+Instruction-only recalibration of the 0.5.1 workflow after its focused matched
+comparison failed on factual accuracy and token economy. No engine, tool-surface,
+schema, or payload change.
+
+### Changed
+- Reframed the reliability-claim discipline: a reported risk is either a verified
+  failure path or an explicitly unresolved hypothesis, and both are valid
+  deliverables — the skill now forbids completing an evidence chain by assumption
+  instead of demanding a complete chain for every asserted risk. The server
+  handshake carries the same calibration in one sentence.
+- Bounded the facet ledger: facets are still derived from each material clause
+  (deliverables included) but merged so the ledger stays small (typically 3–7),
+  removing the facet-count-proportional retrieval pressure observed in the
+  matched run.
+- Replaced the standalone pre-answer checklist with a compact ledger-driven
+  synthesize-and-stop rule (write the answer from the ledger, not the most recent
+  payloads; no additional tool calls), after the checklist correlated with extra
+  broad searches and overlapping rereads.
+
 ## [0.5.1] - 2026-08-14
 
 Instruction-only patch release: the navigation engine, MCP tool surface, wire
