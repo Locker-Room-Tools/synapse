@@ -163,8 +163,8 @@ def test_fixed_caps_and_name_omissions_are_reported(tmp_path: Path) -> None:
         index,
         "app/big.py",
         [
-            make_symbol(f"py:handler-{i:02d}", f"handler_{i:02d}", "app/big.py", line=i + 1)
-            for i in range(40)
+            make_symbol(f"py:handler-{i:03d}", f"handler_{i:03d}", "app/big.py", line=i + 1)
+            for i in range(240)
         ],
     )
 
@@ -173,9 +173,11 @@ def test_fixed_caps_and_name_omissions_are_reported(tmp_path: Path) -> None:
     assert isinstance(coverage, dict)
 
     assert coverage["caps"]["names"] == 25
+    assert coverage["caps"]["crowded_names"] == 200
     assert coverage["caps"]["paths"] == 20
-    # 40 declarations match the name, the page returns 25, and the gap is stated.
-    assert coverage["name_omitted"] == 15
+    # 240 declarations match the crowded name, the crowded page returns 200, and
+    # the gap is stated.
+    assert coverage["name_omitted"] == 40
 
 
 def test_file_match_cap_reports_its_omission(tmp_path: Path) -> None:
@@ -373,26 +375,26 @@ def test_scoped_name_omission_counts_the_scoped_space(tmp_path: Path) -> None:
         index,
         "outside/noise.py",
         [
-            make_symbol(f"py:out-{i:02d}", f"widget_{i:02d}", "outside/noise.py", line=i + 1)
-            for i in range(40)
+            make_symbol(f"py:out-{i:03d}", f"widget_{i:03d}", "outside/noise.py", line=i + 1)
+            for i in range(240)
         ],
     )
     add_file(
         index,
         "inside/mod.py",
         [
-            make_symbol(f"py:in-{i:02d}", f"widget_in_{i:02d}", "inside/mod.py", line=i + 1)
-            for i in range(30)
+            make_symbol(f"py:in-{i:03d}", f"widget_in_{i:03d}", "inside/mod.py", line=i + 1)
+            for i in range(230)
         ],
     )
 
     unscoped = _orient(index, workspace, ("widget",))
     scoped = _orient(index, workspace, ("widget",), path_scope="inside")
 
-    # 70 workspace-wide against a 25-row page.
-    assert unscoped["coverage"]["name_omitted"] == 45
-    # 30 inside the scope against the same page.
-    assert scoped["coverage"]["name_omitted"] == 5
+    # 470 workspace-wide against a 200-row crowded page.
+    assert unscoped["coverage"]["name_omitted"] == 270
+    # 230 inside the scope against the same page.
+    assert scoped["coverage"]["name_omitted"] == 30
 
 
 def test_scoping_to_tests_still_reaches_the_test_twin(tmp_path: Path) -> None:
@@ -561,8 +563,8 @@ def test_name_omission_describes_only_the_declaration_search_space(tmp_path: Pat
         index,
         "app/decls.py",
         [
-            make_symbol(f"py:decl-{i:02d}", f"widget_decl_{i:02d}", "app/decls.py", line=i + 1)
-            for i in range(30)
+            make_symbol(f"py:decl-{i:03d}", f"widget_decl_{i:03d}", "app/decls.py", line=i + 1)
+            for i in range(230)
         ],
     )
 
@@ -570,8 +572,9 @@ def test_name_omission_describes_only_the_declaration_search_space(tmp_path: Pat
     coverage = payload["coverage"]
     assert isinstance(coverage, dict)
 
-    # 30 declarations against a 25-row page. The 40 imports are not part of the space.
-    assert coverage["name_omitted"] == 5
+    # 230 declarations against a 200-row crowded page. The 40 imports are not part
+    # of the space.
+    assert coverage["name_omitted"] == 30
 
 
 def test_a_small_crowded_scope_inside_a_large_workspace_is_crowded(
@@ -681,7 +684,9 @@ def test_exact_matches_survive_a_crowded_term(tmp_path: Path) -> None:
     payload = _orient(index, workspace, ("handler",), path_scope="inside")
 
     assert payload["crowded_terms"] == {"handler": 31}
-    assert [str(entry["n"]) for entry in payload["matches"]] == ["handler"]
+    names = [str(entry["n"]) for entry in payload["matches"]]
+    assert names[0] == "handler"
+    assert all(name == "handler" or name.startswith("handler_") for name in names)
 
 
 def test_unscoped_crowding_is_deterministic(tmp_path: Path) -> None:

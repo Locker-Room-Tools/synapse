@@ -1,5 +1,6 @@
 """Literal term-to-declaration matching primitives for orientation."""
 
+import re
 from enum import StrEnum
 
 from synapse.core.index import kind_rank
@@ -57,6 +58,20 @@ def prefix_at_word_start(name: str, prefix: str) -> bool:
             return True
         index = name.find(camel, index + 1)
     return False
+
+
+_SUBTOKEN_RE = re.compile(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+")
+
+
+def subtoken_match(name: str, term: str) -> bool:
+    """Whether ``term`` equals a whole camelCase/snake_case subtoken of ``name``.
+
+    Word-boundary equality, not containment: ``index`` is a subtoken of
+    ``SymbolIndexWriter`` and ``symbol_index_writer`` but ``ndex`` and ``inde``
+    are not. Acronym runs stay whole (``HTTPServer`` -> ``http``, ``server``).
+    """
+    lowered = term.lower()
+    return any(token.lower() == lowered for token in _SUBTOKEN_RE.findall(name))
 
 
 def generic_limit(symbol_count: int) -> int:

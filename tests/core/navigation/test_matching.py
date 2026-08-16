@@ -9,6 +9,7 @@ from synapse.core.navigation.matching import (
     match_tier,
     name_matches,
     prefix_at_word_start,
+    subtoken_match,
 )
 from tests.core.navigation.builders import make_symbol
 
@@ -58,3 +59,25 @@ def test_effective_kind_rank_promotes_callable_values() -> None:
     plain_constant = make_symbol("ts:plain", "LIMIT", "app/config.ts", kind=SymbolKind.CONSTANT)
     assert effective_kind_rank(arrow) == kind_rank(SymbolKind.FUNCTION)
     assert effective_kind_rank(plain_constant) == kind_rank(SymbolKind.CONSTANT)
+
+
+def test_subtoken_match_is_word_boundary_equality() -> None:
+    """A term matches only as a whole camel/snake subtoken, never by containment."""
+    assert subtoken_match("symbol_index_writer", "index")
+    assert subtoken_match("SymbolIndexWriter", "index")
+    assert subtoken_match("GetUserSessionAsync", "session")
+    assert subtoken_match("handler_02", "handler")
+    assert subtoken_match("handler", "handler")
+    # Containment without a word boundary is not evidence.
+    assert not subtoken_match("prehandlerish", "handler")
+    assert not subtoken_match("session", "sess")
+    assert not subtoken_match("SymbolIndexWriter", "symbolindex")
+
+
+def test_subtoken_match_splits_acronym_runs_and_digits() -> None:
+    """Acronym runs stay whole and digit groups are their own subtokens."""
+    assert subtoken_match("HTTPServer", "http")
+    assert subtoken_match("HTTPServer", "server")
+    assert not subtoken_match("HTTPServer", "https")
+    assert subtoken_match("parse_v2_payload", "v2")
+    assert subtoken_match("Base64URL", "base64")

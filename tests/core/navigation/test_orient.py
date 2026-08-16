@@ -134,7 +134,8 @@ def test_prefix_outranks_substring(tmp_path: Path) -> None:
     assert names.index("service_builder") < names.index("microservice")
 
 
-def test_crowded_term_reports_count_and_keeps_exact_hits(tmp_path: Path) -> None:
+def test_crowded_term_reports_count_and_ranks_exact_hits_first(tmp_path: Path) -> None:
+    """Crowding still reports; exact leads; whole-subtoken hits are kept, not dropped."""
     index = build_index(tmp_path)
     swarm = [
         make_symbol(f"py:handler-{i}", f"handler_{i:02d}", "app/handlers.py", line=i + 1)
@@ -149,8 +150,54 @@ def test_crowded_term_reports_count_and_keeps_exact_hits(tmp_path: Path) -> None
     assert isinstance(crowded, dict)
     assert crowded["handler"] == 31
     names = _match_names(payload)
-    assert names == ["handler"]
+    assert names[0] == "handler"
+    # `handler` is a whole subtoken of every swarm name, so the crowd stays
+    # reachable behind the exact hit instead of being suppressed outright.
+    assert all(name == "handler" or name.startswith("handler_") for name in names)
     assert "unmatched_terms" not in payload
+
+
+def test_crowded_term_still_drops_mid_word_substring_hits(tmp_path: Path) -> None:
+    """Only word-boundary evidence survives crowding; containment alone does not."""
+    index = build_index(tmp_path)
+    swarm = [
+        make_symbol(f"py:handler-{i}", f"handler_{i:02d}", "app/handlers.py", line=i + 1)
+        for i in range(30)
+    ]
+    add_file(index, "app/handlers.py", swarm)
+    add_file(
+        index,
+        "app/mid.py",
+        [make_symbol("py:mid", "prehandlerish", "app/mid.py", line=1)],
+    )
+
+    payload = _orient(index, tmp_path, terms=("handler",))
+
+    assert "prehandlerish" not in _match_names(payload)
+    crowded = payload["crowded_terms"]
+    assert isinstance(crowded, dict)
+    # The mid-word hit still counts toward crowding; it is only excluded from matches.
+    assert crowded["handler"] == 31
+
+
+def test_crowded_channel_candidates_never_displace_exact_matches(tmp_path: Path) -> None:
+    """Unit-level port of the offline displacement gate: the channel adds, never evicts."""
+    index = build_index(tmp_path)
+    add_file(
+        index,
+        "app/gold.py",
+        [make_symbol("py:gold", "resolve_workspace", "app/gold.py", line=1)],
+    )
+    swarm = [
+        make_symbol(f"py:h-{i:02d}", f"handler_{i:02d}", "app/handlers.py", line=i + 1)
+        for i in range(30)
+    ]
+    add_file(index, "app/handlers.py", swarm)
+
+    payload = _orient(index, tmp_path, terms=("resolve_workspace", "handler"))
+
+    names = _match_names(payload)
+    assert names[0] == "resolve_workspace"
 
 
 def test_unmatched_terms_are_reported_never_silently_dropped(tmp_path: Path) -> None:
