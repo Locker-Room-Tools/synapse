@@ -1,6 +1,7 @@
 """FastMCP server skeleton for Synapse."""
 
 from pathlib import Path
+from weakref import WeakKeyDictionary
 
 from mcp.server.fastmcp import FastMCP
 
@@ -12,12 +13,14 @@ from synapse.mcp.workspace import configure_workspace
 
 mcp = FastMCP("synapse", instructions=SERVER_INSTRUCTIONS)
 
-_registered: dict[int, set[str]] = {}
+# Keyed by the live server, never by id(): a dead server's entry must die with it,
+# or a new server allocated at a recycled address inherits its registration state.
+_registered: WeakKeyDictionary[FastMCP, set[str]] = WeakKeyDictionary()
 
 
 def register_tools(server: FastMCP, profile: ToolProfile) -> None:
     """Register the profile's tools on a server, skipping already-registered names."""
-    names = _registered.setdefault(id(server), set())
+    names = _registered.setdefault(server, set())
     for spec in specs_for_profile(profile):
         if spec.func.__name__ not in names:
             server.tool(structured_output=spec.structured_output)(spec.func)

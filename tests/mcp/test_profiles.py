@@ -43,6 +43,20 @@ def test_register_tools_exposes_exactly_the_profile_surface() -> None:
     assert _registered_names(server) == DEFAULT_TOOLS
 
 
+def test_register_tools_state_does_not_leak_across_server_instances() -> None:
+    """A fresh server must never inherit a collected server's registration state.
+
+    The registry was once keyed by id(server); CPython reuses addresses of
+    collected objects, so a fresh probe server could look already-registered
+    and expose zero tools. Repeated create-register-drop cycles make address
+    reuse overwhelmingly likely within the loop.
+    """
+    for _ in range(50):
+        server = FastMCP("synapse-test")
+        register_tools(server, ToolProfile.DEFAULT)
+        assert _registered_names(server) == DEFAULT_TOOLS
+
+
 def test_register_tools_is_idempotent_and_can_widen_to_full() -> None:
     server = FastMCP("synapse-test")
     register_tools(server, ToolProfile.DEFAULT)
