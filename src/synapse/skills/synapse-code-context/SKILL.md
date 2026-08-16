@@ -65,7 +65,9 @@ For a partial or missing facet, make one targeted closing attempt:
 - a refined orientation;
 - narrow shell fallback.
 
-Then stop investigating that facet and report it verified or unresolved.
+Then stop investigating that facet and report it verified or
+unresolved; a facet carrying a requested deliverable may take one
+further facet-scoped attempt first.
 
 ## 6. Shell fallback
 
@@ -108,6 +110,11 @@ that fails to eliminate it, and the observable outcome. If any step is
 unread — for example the guard sits beyond a truncated slice — fetch
 the offered continuation or label the risk an unresolved hypothesis
 instead of completing the chain by assumption.
+
+Treat each requested risk as its own ledger facet with its own closing
+attempt: inspect the guard, probe, or recovery path it depends on
+before selecting it. Prefer a verified chain over a striking claim you
+could not verify.
 
 ## 9. Synthesize and stop
 

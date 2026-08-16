@@ -139,9 +139,12 @@ def test_inspection_returns_definition_relations_and_source_verbatim(tmp_path: P
     assert entry["parent"]["n"] == "Service"
     assert entry["lines"] == [5, 12]
 
+    assert entry["siblings"] == [{"h": symbol_handle("py:service"), "n": "Service", "l": 1}]
+
     callers = entry["callers"]
     assert len(callers) == 1
     assert callers[0]["n"] == "handle_login"
+    assert callers[0]["l"] == 3
     site = callers[0]["sites"][0]
     assert site["res"] == "exact"
     assert site["conf"] == "high"
@@ -151,6 +154,7 @@ def test_inspection_returns_definition_relations_and_source_verbatim(tmp_path: P
     callees = entry["callees"]
     assert len(callees) == 1
     assert callees[0]["n"] == "hash_password"
+    assert callees[0]["l"] == 2
     assert callees[0]["sites"][0]["res"] == "scoped"
 
     # A `mention` is not a call kind Python advertises, so it stays neutral evidence

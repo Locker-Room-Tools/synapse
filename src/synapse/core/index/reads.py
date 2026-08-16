@@ -353,6 +353,31 @@ class ReadProjections:
         ).fetchall()
         return [_map_symbol(row) for row in rows]
 
+    def top_level_symbols_by_paths(
+        self,
+        paths: Sequence[str],
+        *,
+        per_file_limit: int,
+    ) -> dict[str, tuple[list[Symbol], int]]:
+        """Bounded top-level declarations per file, plus the exact per-file total."""
+        result: dict[str, tuple[list[Symbol], int]] = {}
+        for path in sorted(set(paths)):
+            rows = self.connection.execute(
+                """
+                SELECT * FROM symbols
+                WHERE file_path = ? AND container_id IS NULL
+                ORDER BY start_line, id
+                LIMIT ?
+                """,
+                (path, per_file_limit),
+            ).fetchall()
+            total_row = self.connection.execute(
+                "SELECT COUNT(*) FROM symbols WHERE file_path = ? AND container_id IS NULL",
+                (path,),
+            ).fetchone()
+            result[path] = ([_map_symbol(row) for row in rows], int(total_row[0]))
+        return result
+
     def search_symbols(
         self,
         query: str,

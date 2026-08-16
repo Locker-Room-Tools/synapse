@@ -51,6 +51,7 @@ CONTINUATION_FLOOR_LINES = 10
 MAX_GROUPS_PER_DIRECTION = 12
 MAX_SITES_PER_GROUP = 3
 MAX_CHILDREN = 12
+MAX_SIBLINGS = 10
 MAX_HYPOTHESES = 5
 REDUCED_GROUPS = 6
 REDUCED_CHILDREN = 5
@@ -94,6 +95,8 @@ class _Selected:
     children: list[Symbol] = field(default_factory=list)
     children_total: int = 0
     children_cap: int = MAX_CHILDREN
+    siblings: list[Symbol] = field(default_factory=list)
+    siblings_discovered: int = 0
     src: SourceSlice | None = None
     src_max: int = MAX_SOURCE_LINES
     src_dropped: bool = False
@@ -124,10 +127,22 @@ class _Continuation:
     dropped: bool = False
 
 
-def _group_sort_key(group: _Group) -> tuple[tuple[int, int, int, int, str], int, str]:
+def _group_sort_key(
+    group: _Group,
+    *,
+    visible_last_line: int | None = None,
+) -> tuple[int, tuple[int, int, int, int, str], int, str]:
+    # A group whose every site lies beyond the fixed source-slice boundary is the
+    # only record of that relation the agent can see, so it is retained ahead of
+    # groups already readable in the returned source. The boundary derives from the
+    # immutable MAX_SOURCE_LINES cap, never the budget-shortened window, keeping the
+    # ordering a fixed point of the drop loop.
     best = min(edge_sort_key(site) for site in group.sites)
     endpoint_id = group.endpoint.id if group.endpoint is not None else f"~{group.endpoint_name}"
-    return best, 0 if group.is_call else 1, endpoint_id
+    beyond = visible_last_line is not None and all(
+        (site.start_line or 0) > visible_last_line for site in group.sites
+    )
+    return (0 if beyond else 1), best, 0 if group.is_call else 1, endpoint_id
 
 
 def _build_groups(
@@ -136,6 +151,7 @@ def _build_groups(
     endpoint_side: str,
     symbols_by_id: dict[str, Symbol],
     is_call_site: Callable[[Relation], bool],
+    visible_last_line: int | None = None,
 ) -> list[_Group]:
     """Group references by far endpoint AND call evidence.
 
@@ -174,7 +190,7 @@ def _build_groups(
     groups = list(grouped.values())
     for group in groups:
         group.sites.sort(key=edge_sort_key)
-    groups.sort(key=_group_sort_key)
+    groups.sort(key=partial(_group_sort_key, visible_last_line=visible_last_line))
     return groups
 
 
@@ -196,6 +212,7 @@ def _group_entry(group: _Group, files: FileTable) -> dict[str, object]:
         entry["h"] = symbol_handle(group.endpoint.id)
         entry["n"] = group.endpoint.name
         entry["f"] = files.index(group.endpoint.file_path)
+        entry["l"] = group.endpoint.start_line
     else:
         if group.endpoint_name is not None:
             entry["n"] = group.endpoint_name
@@ -403,6 +420,7 @@ def _build_selected(
             endpoint_side="to",
             symbols_by_id=endpoints,
             is_call_site=_is_call_site,
+            visible_last_line=symbol.start_line + MAX_SOURCE_LINES - 1,
         )[:MAX_GROUPS_PER_DIRECTION]
         item.callees = [group for group in kept_outgoing if group.is_call]
         item.refs_out = [group for group in kept_outgoing if not group.is_call]
@@ -412,6 +430,17 @@ def _build_selected(
             symbol.name, limit=MAX_HYPOTHESES
         )
         selected.append(item)
+
+    if selected:
+        rosters = reads.top_level_symbols_by_paths(
+            sorted({item.symbol.file_path for item in selected}),
+            per_file_limit=MAX_SIBLINGS + 1,
+        )
+        for item in selected:
+            roster, total = rosters.get(item.symbol.file_path, ([], 0))
+            item.siblings = [s for s in roster if s.id != item.symbol.id][:MAX_SIBLINGS]
+            top_level = item.symbol.container_id is None
+            item.siblings_discovered = max(0, total - 1 if top_level else total)
 
     parsed_by_key = {key: parse_continuation(key) for key in continuation_keys}
     continuation_handles = sorted(
@@ -543,6 +572,12 @@ def inspect_symbols(
             kept_children = item.children[: item.children_cap]
             entry["children"] = [symbol_ref(child, files) for child in kept_children]
             entry["children_total"] = item.children_total
+        if item.siblings:
+            entry["siblings"] = [
+                {"h": symbol_handle(s.id), "n": s.name, "l": s.start_line} for s in item.siblings
+            ]
+        if item.siblings_discovered > len(item.siblings):
+            entry["siblings_omitted"] = item.siblings_discovered - len(item.siblings)
         if item.src is not None and not item.src_dropped:
             end_line = min(item.src.end_line, item.src.start_line + item.src_max - 1)
             lines = item.src.text.splitlines()[: item.src_max]
@@ -684,6 +719,13 @@ def inspect_symbols(
     return enforce_budget(assemble, steps, minimal, token_budget=token_budget, shrink_key="symbols")
 
 
+def _pop_sibling(item: _Selected) -> bool:
+    if not item.siblings:
+        return False
+    item.siblings.pop()
+    return True
+
+
 def _pop_hypothesis(item: _Selected) -> bool:
     if item.hypotheses:
         item.hypotheses.pop()
@@ -795,6 +837,12 @@ def _drop_steps(selected: list[_Selected], continuations: list[_Continuation]) -
     for item in reverse:
         for _ in item.hypotheses:
             steps.append(_step("hypothesis", item, _pop_hypothesis))
+    # Siblings are parser-proven facts but carry no reference evidence: a pure
+    # discoverability affordance recoverable by one follow-up call, so they yield
+    # before any stored provenance about the inspected symbol.
+    for item in reverse:
+        for _ in item.siblings:
+            steps.append(_step("sibling", item, _pop_sibling))
     for item in reverse:
         for _ in range(max(0, len(item.refs_out) - FLOOR_REF_GROUPS)):
             steps.append(_step("ref-group", item, _pop_ref_out_group))

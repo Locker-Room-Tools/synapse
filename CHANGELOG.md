@@ -6,6 +6,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-08-16
+
+Instruction and read-side projection release; no schema, write-path, tool-surface,
+or payload-budget change. Run `synapse install <agent>` again to refresh the managed
+skill.
+
+### Added
+- `synapse_inspect` entries now carry a `siblings` roster: the other top-level
+  declarations of the inspected symbol's file, each with a handle, name, and
+  definition line, capped at 10 with an exact `siblings_omitted` count. Module-level
+  neighbours are now reachable without knowing their names — previously a pure-MCP
+  agent had no route to a same-file sibling (no relation edge exists between
+  siblings, and module-level symbols have no parent container).
+
+### Changed
+- Risk investigation discipline (0.5.3 candidate): each requested risk is its own
+  ledger facet with its own closing attempt — inspect the guard, probe, or recovery
+  path before selecting a risk, preferring a verified chain over a more striking
+  unverified one. A facet carrying a requested deliverable may take one further
+  facet-scoped closing attempt before being reported unresolved.
+
+### Fixed
+- Callee and outgoing-reference groups whose every call site lies beyond the fixed
+  40-line source slice are now retained in preference to groups already visible in
+  the returned source when the response budget forces drops; previously exactly the
+  relations the agent could not see were dropped first.
+- Resolved relation endpoints now carry their definition line (`l`), making every
+  endpoint a complete file:line citation.
+
 ## [0.5.2] - 2026-08-16
 
 Instruction-only recalibration of the 0.5.1 workflow after its focused matched

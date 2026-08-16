@@ -75,6 +75,7 @@ SKILL_CONTRACT: tuple[tuple[str, tuple[str, ...]], ...] = (
             "one targeted closing attempt",
             "continuation token",
             "Then stop investigating that facet",
+            "one further facet-scoped attempt",
         ),
     ),
     (
@@ -107,6 +108,8 @@ SKILL_CONTRACT: tuple[tuple[str, tuple[str, ...]], ...] = (
             "fails to eliminate it",
             "observable outcome",
             "completing the chain by assumption",
+            "its own ledger facet",
+            "before selecting it",
         ),
     ),
     (
