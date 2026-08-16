@@ -189,11 +189,15 @@ def _rank_key(
         (term_totals.get(term, _RARE_SENTINEL) for term in candidate.name_terms),
         default=_RARE_SENTINEL,
     )
+    # Production-first, then evidence volume before evidence strength: a candidate
+    # matching several of the supplied terms outranks one matching a single term
+    # exactly — corroboration across the agent's vocabulary discriminates better
+    # than the tier of any one match. Tier still decides between equal term counts.
     return (
-        match_tier(candidate.match),
         1 if is_test_path(symbol.file_path) else 0,
         1 if is_generated_path(symbol.file_path) else 0,
         -len(candidate.name_terms | candidate.path_terms),
+        match_tier(candidate.match),
         rarest,
         -min(candidate.trusted_in, CENTRALITY_BUCKET_CAP),
         0 if candidate.entrypoint else 1,

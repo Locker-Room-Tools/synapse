@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `synapse_orient` now ranks candidates matching more of the supplied terms first,
+  with match strength (exact/prefix/substring/path) deciding between equal term
+  counts; previously a single exact-term match outranked a candidate corroborated
+  by several terms. Production-first ordering (test/generated demotion) is
+  unchanged and still dominates.
+
 ### Fixed
 - Initial head slices are now verified against the indexer's canonical content hash
   with the same single-read, fail-closed check continuation windows already use: a
