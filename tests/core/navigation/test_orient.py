@@ -76,6 +76,46 @@ def test_exact_production_match_ranks_before_test_twin_and_decoy(tmp_path: Path)
     assert payload["payload_complete"] is True
 
 
+def test_multi_term_evidence_outranks_a_single_exact_match(tmp_path: Path) -> None:
+    """Corroboration across supplied terms beats the tier of any one match."""
+    index = build_index(tmp_path)
+    add_file(
+        index,
+        "app/store.py",
+        [make_symbol("py:multi", "symbol_index_writer", "app/store.py", line=1)],
+    )
+    add_file(
+        index,
+        "app/other.py",
+        [make_symbol("py:single", "index", "app/other.py", line=1)],
+    )
+    payload = _orient(index, tmp_path, terms=("symbol", "index", "writer"))
+
+    names = _match_names(payload)
+    # `index` matches one term exactly; `symbol_index_writer` matches all three
+    # as substrings and must rank first.
+    assert names.index("symbol_index_writer") < names.index("index")
+
+
+def test_test_path_demotion_still_dominates_term_count(tmp_path: Path) -> None:
+    """A test twin matching more terms never outranks a production match."""
+    index = build_index(tmp_path)
+    add_file(
+        index,
+        "app/store.py",
+        [make_symbol("py:prod", "index_writer", "app/store.py", line=1)],
+    )
+    add_file(
+        index,
+        "tests/test_store.py",
+        [make_symbol("py:test", "symbol_index_writer", "tests/test_store.py", line=1)],
+    )
+    payload = _orient(index, tmp_path, terms=("symbol", "index", "writer"))
+
+    names = _match_names(payload)
+    assert names.index("index_writer") < names.index("symbol_index_writer")
+
+
 def test_prefix_outranks_substring(tmp_path: Path) -> None:
     index = build_index(tmp_path)
     add_file(
