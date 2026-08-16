@@ -11,6 +11,11 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # mcp 2.x renames the FastMCP server API; upgrading is a planned code
+      # migration, not a dependency bump (see PR #14).
+      - dependency-name: "mcp"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"
