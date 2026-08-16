@@ -22,6 +22,7 @@ from synapse.core.config.ignores import (
     rule_text_for_json_entry,
     validate_ignore_pattern,
 )
+from synapse.core.workspace import atomic_write_text
 
 _PACKAGE_CONFIG = resources.files("synapse.core") / "default_ignored_directories.json"
 _DEFAULT_DEBOUNCE_MS = 250
@@ -448,22 +449,6 @@ def _read_raw_payload(path: Path) -> dict[str, object]:
     return payload
 
 
-def _atomic_write_text(path: Path, text: str) -> Path:
-    """Write text through a pid-suffixed temporary file and os.replace.
-
-    Newlines are written verbatim so a file's existing line endings survive a rewrite.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    try:
-        with temporary_path.open("w", encoding="utf-8", newline="") as handle:
-            handle.write(text)
-        os.replace(temporary_path, path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
-    return path
-
-
 def _read_text_verbatim(path: Path) -> str:
     """Read a file without translating its line endings."""
     with path.open(encoding="utf-8", newline="") as handle:
@@ -476,7 +461,7 @@ def _write_ignored_directories(path: Path, entries: Iterable[str]) -> Path:
     payload["ignored_directories"] = sorted(
         {normalize_ignore_entry(entry, source=str(path)) for entry in entries}
     )
-    return _atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    return atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
 def write_project_ignored_directories(workspace_root: Path, entries: Iterable[str]) -> Path:
@@ -519,7 +504,7 @@ def _drop_json_ignored_directories(path: Path) -> None:
     payload = _read_raw_payload(path)
     if payload.pop("ignored_directories", None) is None:
         return
-    _atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    atomic_write_text(path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
 def _pattern_lines(text: str) -> list[str]:
@@ -590,7 +575,7 @@ def add_ignore_patterns(
             continue
         added.append(pattern)
 
-    _atomic_write_text(ignore_file, _append_patterns(text, added))
+    atomic_write_text(ignore_file, _append_patterns(text, added))
     if created:
         _drop_json_ignored_directories(json_path)
 
@@ -637,7 +622,7 @@ def remove_ignore_patterns(
             continue
         not_present.append(pattern)
 
-    _atomic_write_text(ignore_file, _append_patterns(ending.join(lines), negated))
+    atomic_write_text(ignore_file, _append_patterns(ending.join(lines), negated))
     if created:
         _drop_json_ignored_directories(json_path)
 
@@ -675,7 +660,7 @@ def migrate_ignores(
     entries = tuple(sorted(_read_json_ignored_directories(json_path)))
     migrated = [rule_text_for_json_entry(entry) for entry in entries]
     body = "".join(f"{pattern}\n" for pattern in migrated)
-    _atomic_write_text(
+    atomic_write_text(
         ignore_file, f"{IGNORE_FILE_HEADER}\n{body}" if migrated else IGNORE_FILE_HEADER
     )
     _drop_json_ignored_directories(json_path)
@@ -700,7 +685,7 @@ def write_ignore_file(
     ignore_file, json_path = _ignore_file_for(workspace_root, scope)
     created = not ignore_file.exists()
     lines = tuple(patterns)
-    _atomic_write_text(ignore_file, header + "\n" + "".join(f"{line}\n" for line in lines))
+    atomic_write_text(ignore_file, header + "\n" + "".join(f"{line}\n" for line in lines))
 
     entries = tuple(sorted(_read_json_ignored_directories(json_path)))
     _drop_json_ignored_directories(json_path)

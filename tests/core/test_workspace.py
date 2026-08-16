@@ -73,6 +73,53 @@ def test_data_dir_path_does_not_create_storage(
     assert not data_root.exists()
 
 
+def test_corrupt_metadata_reads_as_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unparseable or truncated metadata means uninitialized, never a crash."""
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    write_metadata(workspace_root, last_indexed_at=None, languages=[])
+
+    target = metadata_path(workspace_root)
+    for corrupt in ('{"name": "half', "[]", '{"name": "only-a-name"}', ""):
+        target.write_text(corrupt, encoding="utf-8")
+        assert read_metadata(workspace_root) is None
+
+
+def test_write_metadata_recovers_from_a_corrupt_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A corrupt metadata file is replaced with fresh metadata, not propagated."""
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+    metadata_path(workspace_root).write_text('{"broken', encoding="utf-8")
+
+    written = write_metadata(workspace_root, last_indexed_at=None, languages=["python"])
+
+    assert read_metadata(workspace_root) == written
+    assert written.created_at
+
+
+def test_metadata_write_leaves_no_temporary_residue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The atomic write path replaces the file and cleans up its temporary."""
+    workspace_root = tmp_path / "workspace"
+    workspace_root.mkdir()
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
+
+    write_metadata(workspace_root, last_indexed_at=None, languages=[])
+
+    siblings = sorted(p.name for p in metadata_path(workspace_root).parent.iterdir())
+    assert siblings == ["metadata.json"]
+
+
 def test_detect_workspace_root_prefers_nearest_git_ancestor_over_project_markers(
     tmp_path: Path,
 ) -> None:
