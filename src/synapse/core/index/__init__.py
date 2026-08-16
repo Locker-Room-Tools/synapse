@@ -38,8 +38,6 @@ from synapse.core.index.source import (
     SourceSlice,
     VerifiedWindow,
     hash_source,
-    read_source_window,
-    read_symbol_source,
     read_verified_source_window,
 )
 from synapse.core.index.symbol_index import SymbolIndex
@@ -70,8 +68,6 @@ __all__ = [
     "hash_source",
     "repair_symbol_handles",
     "is_symbol_handle",
-    "read_source_window",
-    "read_symbol_source",
     "read_verified_source_window",
     "symbol_handle",
     "import_matches_file",

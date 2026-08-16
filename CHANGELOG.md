@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Initial head slices are now verified against the indexer's canonical content hash
+  with the same single-read, fail-closed check continuation windows already use: a
+  file edited after indexing reports an explicit `src_stale` entry and a
+  `coverage.source_stale` handle list instead of serving post-index bytes as the
+  stored span, and head and continuation windows can never mix two file versions;
+  previously the head read returned whatever bytes were on disk. The full-profile
+  `synapse_get_symbol_context` body read gets the same verification and now reports
+  `body_stale`.
 - Workspace metadata is now written atomically (temporary file plus rename), and a
   corrupt or truncated `metadata.json` reads as "not initialized" so the ensure path
   regenerates it; previously a crash mid-write could leave invalid JSON that made

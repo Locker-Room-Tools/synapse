@@ -16,6 +16,7 @@ from tests.core.navigation.builders import (
     make_contains,
     make_reference,
     make_symbol,
+    sync_disk_hashes,
 )
 
 
@@ -116,6 +117,7 @@ def _inspect(
     symbols: tuple[str, ...],
     token_budget: int = 2400,
 ) -> dict[str, Any]:
+    sync_disk_hashes(index, workspace)
     result = inspect_symbols(
         index,
         InspectRequest(symbols=symbols, token_budget=token_budget),

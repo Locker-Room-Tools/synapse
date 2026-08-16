@@ -10,7 +10,6 @@ from synapse.core.index import (
     SourceSlice,
     SymbolIndex,
     is_symbol_handle,
-    read_symbol_source,
     read_verified_source_window,
     symbol_handle,
 )
@@ -101,6 +100,7 @@ class _Selected:
     src_max: int = MAX_SOURCE_LINES
     src_dropped: bool = False
     src_missing: bool = False
+    src_stale: bool = False
     callers: list[_Group] = field(default_factory=list)
     callees: list[_Group] = field(default_factory=list)
     refs_in: list[_Group] = field(default_factory=list)
@@ -228,7 +228,7 @@ def _group_entry(group: _Group, files: FileTable) -> dict[str, object]:
 def _src_truncated(item: _Selected) -> bool:
     """The definition outgrew the fixed slice cap.
 
-    Reads ``SourceSlice.truncated``, which ``read_symbol_source`` sets when the body
+    Reads ``SourceSlice.truncated``, which the verified head read sets when the body
     exceeded ``MAX_SOURCE_LINES``. Deliberately independent of ``src_max``: the budget
     lowering that bound is a different cause with its own field, and folding the two
     together reported an under-cap body as fixed-cap-truncated.
@@ -388,6 +388,19 @@ def _build_selected(
     def _is_call_site(relation: Relation) -> bool:
         return is_call_usage(site_languages.get(relation.from_file_path), relation.usage_kind)
 
+    parsed_by_key = {key: parse_continuation(key) for key in continuation_keys}
+    continuation_handles = sorted(
+        {parsed.handle for parsed in parsed_by_key.values() if parsed is not None}
+    )
+    continuation_symbols = (
+        reads.get_symbols_by_handles(continuation_handles) if continuation_handles else {}
+    )
+    # Hashes are fetched before any disk read so the head slice can be verified
+    # against the same stored hash the continuation path uses.
+    hash_paths = {symbol.file_path for symbol in resolved.values()}
+    hash_paths.update(symbol.file_path for symbol in continuation_symbols.values())
+    content_hashes = reads.content_hashes_by_path(sorted(hash_paths)) if hash_paths else {}
+
     selected: list[_Selected] = []
     for symbol in resolved.values():
         item = _Selected(symbol=symbol, handle=symbol_handle(symbol.id))
@@ -424,8 +437,20 @@ def _build_selected(
         )[:MAX_GROUPS_PER_DIRECTION]
         item.callees = [group for group in kept_outgoing if group.is_call]
         item.refs_out = [group for group in kept_outgoing if not group.is_call]
-        item.src = read_symbol_source(workspace_root, symbol, max_lines=MAX_SOURCE_LINES)
-        item.src_missing = item.src is None
+        item.content_hash = content_hashes.get(symbol.file_path, "")
+        if item.content_hash:
+            verified = read_verified_source_window(
+                workspace_root,
+                symbol,
+                start_line=symbol.start_line,
+                max_lines=MAX_SOURCE_LINES,
+                content_hash=item.content_hash,
+            )
+            item.src = verified.slice
+            item.src_stale = verified.stale
+        # A symbol without a stored file hash cannot be verified; failing closed
+        # (unavailable) beats serving bytes that may not match the stored span.
+        item.src_missing = item.src is None and not item.src_stale
         item.hypotheses, item.hypotheses_total = reads.unresolved_references_by_name(
             symbol.name, limit=MAX_HYPOTHESES
         )
@@ -441,19 +466,6 @@ def _build_selected(
             item.siblings = [s for s in roster if s.id != item.symbol.id][:MAX_SIBLINGS]
             top_level = item.symbol.container_id is None
             item.siblings_discovered = max(0, total - 1 if top_level else total)
-
-    parsed_by_key = {key: parse_continuation(key) for key in continuation_keys}
-    continuation_handles = sorted(
-        {parsed.handle for parsed in parsed_by_key.values() if parsed is not None}
-    )
-    continuation_symbols = (
-        reads.get_symbols_by_handles(continuation_handles) if continuation_handles else {}
-    )
-    hash_paths = {item.symbol.file_path for item in selected}
-    hash_paths.update(symbol.file_path for symbol in continuation_symbols.values())
-    content_hashes = reads.content_hashes_by_path(sorted(hash_paths)) if hash_paths else {}
-    for item in selected:
-        item.content_hash = content_hashes.get(item.symbol.file_path, "")
 
     continuations: list[_Continuation] = []
     rejected: list[tuple[str, str]] = []
@@ -599,6 +611,10 @@ def inspect_symbols(
                     # the two can never disagree. Present exactly when `next` is.
                     src["remaining_lines"] = symbol.end_line - end_line
             entry["src"] = src
+        elif item.src_stale:
+            # The file changed on disk after indexing; the stored span cannot be
+            # served without presenting post-index bytes as indexed evidence.
+            entry["src_stale"] = True
         elif item.src_missing:
             entry["src_unavailable"] = True
         if item.callers:
@@ -670,6 +686,7 @@ def inspect_symbols(
             ("source_truncated", [i.handle for i in active if _src_truncated(i)]),
             ("source_shortened", [i.handle for i in active if _src_shortened(i)]),
             ("source_omitted", [i.handle for i in active if i.src_dropped]),
+            ("source_stale", [i.handle for i in active if i.src_stale]),
             ("source_unavailable", [i.handle for i in active if i.src_missing]),
         ):
             if handles:

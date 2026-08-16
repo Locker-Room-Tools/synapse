@@ -5,7 +5,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import cast
 
-from synapse.core.index import SymbolIndex
+from synapse.core.index import SymbolIndex, hash_source
 from synapse.core.indexing.parser import build_relations, parse_file
 from synapse.core.models import (
     Confidence,
@@ -34,7 +34,7 @@ def _build_index(tmp_path: Path) -> tuple[SymbolIndex, list[Symbol]]:
             path="sample.py",
             language="python",
             project_root=str(workspace_root),
-            content_hash="hash-1",
+            content_hash=hash_source(file_path.read_bytes()),
             indexed_at="2026-06-16T00:00:00+00:00",
         )
     )

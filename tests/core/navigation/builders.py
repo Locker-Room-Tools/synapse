@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from synapse.core.index import SymbolIndex
+from synapse.core.index import SymbolIndex, hash_source
 from synapse.core.models import (
     Confidence,
     Relation,
@@ -117,3 +117,20 @@ def add_file(
         )
     )
     index.replace_symbols_for_file(file_path, symbols, relations or [])
+
+
+def sync_disk_hashes(index: SymbolIndex, workspace: Path) -> None:
+    """Store the real on-disk hash for every indexed file present under workspace.
+
+    Verified source reads fail closed on the synthetic placeholder hash, so any
+    fixture that writes real source files must sync before inspecting.
+    """
+    with index.transaction() as connection:
+        rows = connection.execute("SELECT path FROM files").fetchall()
+        for row in rows:
+            absolute = workspace / str(row["path"])
+            if absolute.is_file():
+                connection.execute(
+                    "UPDATE files SET content_hash = ? WHERE path = ?",
+                    (hash_source(absolute.read_bytes()), str(row["path"])),
+                )

@@ -15,7 +15,7 @@ from synapse.core.index import SymbolIndex, symbol_handle
 from synapse.core.models import SymbolKind
 from synapse.core.navigation import InspectRequest, inspect_symbols
 
-from .builders import add_file, build_index, make_contains, make_symbol
+from .builders import add_file, build_index, make_contains, make_symbol, sync_disk_hashes
 
 
 def _workspace(tmp_path: Path) -> Path:
@@ -36,6 +36,7 @@ def _inspect(
     symbols: tuple[str, ...],
     token_budget: int = 2400,
 ) -> dict[str, Any]:
+    sync_disk_hashes(index, workspace)
     result = inspect_symbols(
         index,
         InspectRequest(symbols=symbols, token_budget=token_budget),

@@ -22,6 +22,7 @@ from tests.core.navigation.builders import (
     build_index,
     make_reference,
     make_symbol,
+    sync_disk_hashes,
 )
 
 ANCHORS = ("handler_a", "handler_b", "handler_c")
@@ -105,6 +106,7 @@ def _inspect_wire(
     symbols: tuple[str, ...],
     token_budget: int = 2400,
 ) -> str:
+    sync_disk_hashes(index, workspace)
     return inspect_symbols(
         index,
         InspectRequest(symbols=symbols, token_budget=token_budget),
