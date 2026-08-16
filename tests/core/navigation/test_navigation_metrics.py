@@ -209,7 +209,14 @@ def test_fixed_caps_and_budget_omissions_are_reported_honestly(
 
     orient_coverage = orient_payload["coverage"]
     assert isinstance(orient_coverage, dict)
-    assert set(orient_coverage["caps"]) == {"names", "paths", "matches", "weak", "files"}
+    assert set(orient_coverage["caps"]) == {
+        "names",
+        "crowded_names",
+        "paths",
+        "matches",
+        "weak",
+        "files",
+    }
     assert (
         orient_coverage["returned"] + orient_coverage["omitted"] == (orient_coverage["discovered"])
     )

@@ -31,6 +31,7 @@ from synapse.core.navigation.matching import (
     match_tier,
     name_matches,
     prefix_at_word_start,
+    subtoken_match,
 )
 from synapse.core.navigation.render import FileTable
 
@@ -39,6 +40,9 @@ MAX_MATCHES = 12
 MAX_WEAK = 8
 MIN_MATCHES_BEFORE_HARD_CAP = 3
 SEARCH_PAGE_LIMIT = 25
+# Crowded terms retrieve a larger internal page so whole-subtoken matches beyond
+# the ordinary page can still be accepted; matches the reads-layer MAX_PAGE_LIMIT.
+CROWDED_PAGE_LIMIT = 200
 PATH_MATCH_LIMIT = 20
 MAX_FILE_MATCHES = 8
 CENTRALITY_BUCKET_CAP = 10
@@ -268,7 +272,10 @@ def _match_all_terms(
         # afterwards lets out-of-scope rows or import statements consume it and hide a
         # real in-scope declaration.
         page_symbols, _ = reads.search_symbol_names_page(
-            cleaned, path_scope=scope, declarations_only=True, limit=SEARCH_PAGE_LIMIT
+            cleaned,
+            path_scope=scope,
+            declarations_only=True,
+            limit=CROWDED_PAGE_LIMIT if generic else SEARCH_PAGE_LIMIT,
         )
         name_omitted += max(0, total - len(page_symbols))
         for symbol in page_symbols:
@@ -282,9 +289,14 @@ def _match_all_terms(
                 match = TermMatch.PREFIX
             else:
                 match = TermMatch.SUBSTRING
-            if generic and match is not TermMatch.EXACT:
-                # Crowded terms still surface their exact hits; weaker hits would
-                # only flood the ranking, so the term is reported in crowded_terms.
+            if (
+                generic
+                and match is not TermMatch.EXACT
+                and not subtoken_match(symbol.name, cleaned)
+            ):
+                # A crowded term keeps its exact hits and whole-subtoken hits; bare
+                # mid-word substring hits would only flood the ranking, so the term
+                # is still reported in crowded_terms.
                 matched_any = True
                 continue
             _merge(candidates, symbol, match, cleaned, via_path=False)
@@ -542,6 +554,7 @@ def orient_workspace(
             "languages": language_names,
             "caps": {
                 "names": SEARCH_PAGE_LIMIT,
+                "crowded_names": CROWDED_PAGE_LIMIT,
                 "paths": PATH_MATCH_LIMIT,
                 "matches": MAX_MATCHES,
                 "weak": MAX_WEAK,

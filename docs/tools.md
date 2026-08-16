@@ -49,9 +49,14 @@ The first call for any code question: ranked, production-first orientation.
   trusted centrality (exact/scoped incoming references, bucketed), entrypoint and
   repository-map anchors. A simple crowd penalty keeps generic terms from
   dominating: a term whose workspace-wide declaration-match count exceeds
-  `max(25, symbols/100)` is reported in `crowded_terms` with its count, and its
-  non-exact candidates surface only as weak candidates. There is no intent,
-  ontology, cluster, facet, or paraphrase inference.
+  `max(25, symbols/100)` is reported in `crowded_terms` with its count, and only
+  its exact-name and whole-subtoken candidates are accepted — a crowded term that
+  equals a whole camelCase/snake_case word of a declaration name (`session` in
+  `GetUserSessionAsync`) still reaches that declaration, while bare mid-word
+  substring hits are excluded. Crowded terms retrieve from a larger bounded page
+  (`caps.crowded_names`, 200 rows); anything beyond it is counted in
+  `name_omitted`. There is no intent, ontology, cluster, facet, or paraphrase
+  inference.
 - Name and path are **separate retrieval channels**. The name channel matches
   declaration names and qualified names only; it never matches file paths, so a
   large file whose path contains the term cannot fill the bounded page and hide
