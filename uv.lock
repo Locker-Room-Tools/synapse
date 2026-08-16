@@ -442,7 +442,7 @@ wheels = [
 
 [[package]]
 name = "locker-room-tools-synapse-mcp"
-version = "0.5.3"
+version = "0.5.4"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },

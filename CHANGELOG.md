@@ -6,15 +6,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-08-17
+
+Discovery-recall and read-path trust release: crowded orientation terms reach
+multi-subtoken declarations, corroborating candidates outrank a lone exact match,
+and source slices are hash-verified end to end. No schema, writer-contract, or
+tool-surface change.
+
 ### Added
 - Crowded orientation terms now accept declarations whose camelCase/snake_case
   subtoken split contains the term as a whole word (`session` reaches
   `GetUserSessionAsync`), retrieved from a larger bounded internal page reported
   as `caps.crowded_names` (200 rows) with the shortfall counted in `name_omitted`;
   previously a crowded term kept only exact-name matches, which suppressed
-  multi-subtoken declarations entirely — the dominant candidate-recall failure in
-  the 2026-08-16 offline audit (233 of 253 unreachable targets). Mid-word
-  substring hits remain excluded and `crowded_terms` reporting is unchanged.
+  multi-subtoken declarations entirely — the dominant candidate-recall failure
+  found in testing. Mid-word substring hits remain excluded and `crowded_terms`
+  reporting is unchanged.
 
 ### Changed
 - `synapse_orient` now ranks candidates matching more of the supplied terms first,
