@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Workspace metadata is now written atomically (temporary file plus rename), and a
+  corrupt or truncated `metadata.json` reads as "not initialized" so the ensure path
+  regenerates it; previously a crash mid-write could leave invalid JSON that made
+  every status, ensure, and watch probe raise instead of self-healing.
+
 ## [0.5.3] - 2026-08-16
 
 Instruction and read-side projection release; no schema, write-path, tool-surface,

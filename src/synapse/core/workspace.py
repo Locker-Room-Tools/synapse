@@ -126,20 +126,47 @@ def _utc_now() -> str:
     return datetime.now(tz=UTC).isoformat()
 
 
+def atomic_write_text(path: Path, text: str) -> Path:
+    """Write text through a pid-suffixed temporary file and os.replace.
+
+    Newlines are written verbatim so a file's existing line endings survive a rewrite.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary_path.open("w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        os.replace(temporary_path, path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return path
+
+
 def read_metadata(path: Path | str) -> WorkspaceMetadata | None:
-    """Load workspace metadata if it exists."""
+    """Load workspace metadata, treating missing or unreadable metadata as absent.
+
+    Metadata is regenerable state: a corrupt or truncated file must read as "not
+    initialized" so the ensure path rewrites it instead of crashing every status,
+    ensure, and watch probe that asks whether the workspace is initialized.
+    """
     file_path = metadata_file_path(path)
-    if not file_path.exists():
+    try:
+        payload = json.loads(file_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
         return None
-    payload = json.loads(file_path.read_text(encoding="utf-8"))
-    return WorkspaceMetadata(
-        name=str(payload["name"]),
-        path=str(payload["path"]),
-        workspace_id=str(payload["workspace_id"]),
-        created_at=str(payload["created_at"]),
-        last_indexed_at=payload.get("last_indexed_at"),
-        languages=sorted(str(language) for language in payload.get("languages", [])),
-    )
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return WorkspaceMetadata(
+            name=str(payload["name"]),
+            path=str(payload["path"]),
+            workspace_id=str(payload["workspace_id"]),
+            created_at=str(payload["created_at"]),
+            last_indexed_at=payload.get("last_indexed_at"),
+            languages=sorted(str(language) for language in payload.get("languages", [])),
+        )
+    except (KeyError, TypeError):
+        return None
 
 
 def write_metadata(
@@ -159,8 +186,8 @@ def write_metadata(
         last_indexed_at=last_indexed_at,
         languages=sorted(set(languages)),
     )
-    metadata_path(normalized_path).write_text(
+    atomic_write_text(
+        metadata_path(normalized_path),
         json.dumps(asdict(metadata), indent=2, sort_keys=True),
-        encoding="utf-8",
     )
     return metadata
