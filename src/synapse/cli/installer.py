@@ -8,12 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from synapse.cli.adapters import (
+    ADAPTERS,
     AgentAdapter,
     ConfigFormat,
     McpTarget,
     build_server_entry,
     get_adapter,
     render_mcp_config,
+    resolve_project_path,
     resolve_user_path,
 )
 from synapse.cli.adapters.model import JsonObject
@@ -195,6 +197,39 @@ def config_has_mcp_server(
         return read_entry(data, adapter.mcp) is not None
     except (OSError, ValueError, tomllib.TOMLDecodeError):
         return False
+
+
+def _skill_path(adapter: AgentAdapter, workspace_root: str | Path, scope: str) -> Path | None:
+    spec = adapter.global_skill if scope == "user" else adapter.project_skill
+    if spec is None:
+        return None
+    if scope == "user":
+        return resolve_user_path(spec)
+    return resolve_project_path(spec, workspace_root)
+
+
+def agents_sharing_skill(
+    agent_id: str,
+    workspace_root: str | Path,
+    scope: str,
+) -> tuple[AgentAdapter, ...]:
+    """Return other installed adapters whose skill dir resolves to the same path.
+
+    Several adapters share one skills directory (``.agents/skills/``,
+    ``.github/skills/``), so the shared skill must survive until the last of
+    them is uninstalled. An adapter counts only while its resolved MCP config
+    still contains a Synapse entry.
+    """
+    target = _skill_path(get_adapter(agent_id), workspace_root, scope)
+    if target is None:
+        return ()
+    return tuple(
+        other
+        for other_id, other in sorted(ADAPTERS.items())
+        if other_id != agent_id
+        and _skill_path(other, workspace_root, scope) == target
+        and config_has_mcp_server(other_id, workspace_root, scope=scope)
+    )
 
 
 def _install_structured_config(
@@ -423,6 +458,7 @@ __all__ = [
     "MANAGED_TOML_END",
     "InstallResult",
     "JsonObject",
+    "agents_sharing_skill",
     "config_has_mcp_server",
     "install_mcp_server",
     "render_managed_toml_block",
