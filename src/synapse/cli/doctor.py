@@ -74,7 +74,7 @@ async def _probe_mcp(
                 tool_names = sorted(tool.name for tool in tools_response.tools)
                 result = await session.call_tool(
                     "synapse_orient",
-                    {"terms": [], "token_budget": 400},
+                    {"terms": []},
                 )
     content: Any = getattr(result, "content", [])
     if isinstance(content, list):
