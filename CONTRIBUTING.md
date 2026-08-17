@@ -63,8 +63,8 @@ uv run pytest -q --cov=synapse
 needs full type hints. Coverage has an 85% floor. No new errors, no lowered floor.
 
 CI additionally runs the suite on Ubuntu across Python 3.12–3.14, shards it across
-Windows, and builds the wheel to verify it ships the packaged data (query files, adapter
-snippets, and the managed skill). If you add packaged data, make sure it lands inside
+Windows, audits locked dependencies with `pip-audit`, and builds the wheel to verify it
+ships the packaged data (query files, adapter snippets, and the managed skill). If you add packaged data, make sure it lands inside
 `src/synapse/` so the wheel picks it up.
 
 ## Adding a language
@@ -75,9 +75,14 @@ Languages are data, not code. There is no per-language branching in the parser.
    `src/synapse/queries/<lang>/references.scm`.
 2. Register the language in
    [src/synapse/core/languages/registry.py](src/synapse/core/languages/registry.py),
-   mapping its captures onto Container / Entity / Worker.
-3. Add parser tests alongside the existing tiers in
-   `tests/core/indexing/test_parser_tier*.py`.
+   mapping its captures onto Container / Entity / Worker. There is no separate grammar
+   list — `synapse grammars install` derives the set from `LanguageSpec.tree_sitter_name`,
+   so the grammar must be one `tree-sitter-language-pack` ships.
+3. Add a sample tuple to the matching `TIER*_SAMPLES` table in
+   `tests/core/indexing/test_parser_tier*.py` (or a dedicated test in `test_parser.py`
+   for Tier-1 coverage), add the language to the corresponding `TIERn_LANGUAGES` list in
+   `tests/core/languages/test_queries.py`, and add an extension line to
+   `test_detect_language_by_extension` in `tests/core/languages/test_registry.py`.
 
 If a language seems to need a special case in the parser, raise an issue first — that
 usually means the model or the query needs adjusting instead.
@@ -91,10 +96,14 @@ MCP tools are the agent-facing contract, so they are deterministic and token-fru
   tool differs from neighbouring ones.
 - Keep the presentation layer thin. `mcp` may import `core`; `core` must never import
   `mcp`.
+- Register it with `@tool()` (full profile) or `@tool(ToolProfile.DEFAULT, ...)` in
+  `src/synapse/mcp/tools.py`; the wire name is the function name and there is no second
+  list to edit. Bump the hard tool count asserted in `tests/mcp/test_profiles.py`.
 - Add tests under `tests/mcp/` that exercise the tool as a thin delegator, and unit-test
   the underlying logic directly in `tests/core/`.
-- Update the tool list in [AGENTS.md](AGENTS.md) and the reference in
-  [docs/tools.md](docs/tools.md).
+- Update the tool roster and the `(N tools total)` count in [AGENTS.md](AGENTS.md), the
+  reference in [docs/tools.md](docs/tools.md), and the roster line in
+  [docs/architecture.md](docs/architecture.md).
 
 ## Conventions
 

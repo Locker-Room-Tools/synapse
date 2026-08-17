@@ -81,8 +81,10 @@ package's internal decomposition, not separate import targets.
   trust policy — containment and exact/scoped references are trusted, unique-name
   and unclassified stay heuristic, stored resolution and confidence are carried
   verbatim (`traversal`), ranked orientation (`orient`), one-snapshot batch
-  inspection (`inspection`), shared payload plumbing — a deduplicated file table
-  rebuilt on every assembly pass and compact symbol references (`render`), and the
+  inspection (`inspection`), stateless source-continuation tokens and their
+  span/content fingerprint validation (`continuation`), shared payload plumbing — a
+  deduplicated file table rebuilt on every assembly pass and compact symbol
+  references (`render`), and the
   deterministic output budget with explicit truncation metadata (`budget`).
   Every read runs on one consistent SQLite snapshot via `SymbolIndex.read_session()`.
   Orientation evaluates up to 12 caller-supplied terms literally through
@@ -128,7 +130,9 @@ package's internal decomposition, not separate import targets.
   source is removed; the first-requested symbol degrades last), then a minimal
   envelope, then a fixed truncation-only envelope. `payload_complete` reports payload truncation only;
   coverage counts report evidence bounds; task completeness is never claimed.
-- **`mcp.server` / `mcp.tools` / `mcp.profiles`**: expose deterministic, token-frugal
+- **`mcp.server` / `mcp.tools` / `mcp.profiles` / `mcp.workspace` / `mcp.instructions`**
+  (`workspace` resolves the default workspace root, `instructions` holds the server
+  handshake text): expose deterministic, token-frugal
   tools to agents through profile-tiered registration (`synapse serve --profile
   default|full`). The default profile is exactly the two-call navigation surface
   (`synapse_orient`, `synapse_inspect`) — both delegate the whole readiness
@@ -214,6 +218,13 @@ package's internal decomposition, not separate import targets.
   delegate to `cli.ignore` so installed agent instructions keep working.
 - **`adapters`** (`src/synapse/adapters/`, packaged data): the shared instruction snippet
   templates. One project template renders per agent from an `{agent_id}` placeholder.
+- **`queries`** (`src/synapse/queries/<language>/{symbols,references}.scm`, packaged data):
+  the declarative tree-sitter queries; their bytes feed the reference-extraction
+  fingerprint. The directory name is the registry `query_dir`, which can differ from the
+  language id (`csharp` reads `queries/c_sharp/`).
+- **`skills`** (`src/synapse/skills/synapse-code-context/`, packaged data): the managed
+  cross-agent workflow skill installed by `synapse install`; the CI wheel gate asserts it
+  ships.
 - **`cli.adapters`**: the declarative agent seam. `model.py` defines the capability model,
   `registry.py` holds one data-only entry per agent, and `paths.py`, `instructions.py`,
   `skills.py`, `render.py` are agent-agnostic. Adding an agent is a registry entry plus tests —

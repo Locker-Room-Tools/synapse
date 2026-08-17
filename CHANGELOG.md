@@ -6,6 +6,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-08-17
+
+Agent-integration release: supported adapters grow from 12 to 22 and the pre-shell
+hook seam becomes declarative, so Crush and Qwen Code join Claude Code. No schema,
+navigation-engine, or tool-surface change. Run `synapse install <agent>` again to
+refresh managed integration files.
+
+### Added
+- Ten agent adapters, each verified against primary vendor documentation or upstream
+  source before shipping: `kimi` (Kimi Code CLI), `droid` (Factory Droid), `crush`
+  (Crush), `amp` (Amp), `zed` (Zed), `antigravity` (Google Antigravity), `goose`
+  (Goose), `openclaw` (OpenClaw), `copilot-vscode` (GitHub Copilot for VS Code) and
+  `roo` (Roo Code). An agent whose global or project path could not be pinned to a
+  documented location degrades to the single scope that is safe (Goose and OpenClaw
+  are global-only; Copilot VS Code and Roo are project-only) rather than guessing a
+  path. See [docs/installation.md](docs/installation.md#supported-agents) for the
+  full path matrix.
+- Claude Code now installs a project skill at `.claude/skills/synapse-code-context`,
+  closing the only local-skill gap in the original adapter set.
+- The suggest-only pre-shell hook now covers Crush (`~/.config/crush/crush.json`) and
+  Qwen Code (`~/.qwen/settings.json`) alongside Claude Code. Only agents whose hook
+  system can inject context *while allowing the call* qualify: Gemini CLI has no
+  `PreToolUse` event, Factory Droid excludes `additionalContext` from it, and Cursor
+  delivers its agent message only on denial, so none of them get a hook rather than a
+  repurposed denial. `synapse hook <codec>` exposes one entry point per agent codec;
+  the existing `claude-pre-bash` codec name and its emitted payload are unchanged.
+- Adapter model extensions backing the new agents: `McpTarget.command_field` (Goose
+  spells the executable `cmd`, not `command`) and `PathSpec.env_var_full` (Cline's
+  `CLINE_MCP_SETTINGS_PATH` replaces a whole path rather than a prefix).
+
+### Changed
+- An instruction block that is provably Synapse-managed is now replaced in place
+  without `--force`, so several adapters sharing one `AGENTS.md` or
+  `.github/copilot-instructions.md` leave exactly one Synapse block no matter how many
+  of them are installed; previously the second installer hit a conflict and required
+  `--force`. Content Synapse does not own is still never overwritten.
+
+### Fixed
+- The `cline` adapter wrote three paths Cline never reads. MCP settings are now
+  `~/.cline/data/settings/cline_mcp_settings.json` (Cline's own docs advertise
+  `~/.cline/mcp.json`, but its shared resolver reads the settings file —
+  [cline#11671](https://github.com/cline/cline/issues/11671)), and rules and skills
+  live directly under `~/.cline/`, outside the `CLINE_DATA_DIR` subtree. **Upgrading
+  from 0.5.4 or earlier:** the old `~/.cline/mcp.json`,
+  `~/.cline/data/settings/rules/synapse.md` and `~/.cline/data/settings/skills/` are
+  no longer managed — run `synapse uninstall cline --global` on the older version
+  before upgrading, or delete them by hand.
+- Uninstalling one agent no longer deletes a skills directory another installed agent
+  still resolves to. `.agents/skills/` (Amp, Zed, Antigravity, Goose),
+  `.github/skills/` (both Copilot adapters) and the global `~/.agents/skills/` (Zed,
+  Goose) are now kept, with the remaining owners named in the output, until the last
+  of them is uninstalled; previously the first uninstall removed the shared skill out
+  from under the others.
+
 ## [0.5.4] - 2026-08-17
 
 Discovery-recall and read-path trust release: crowded orientation terms reach
