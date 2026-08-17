@@ -25,21 +25,22 @@ agent once. The install command:
 2. Adds a portable user-scoped MCP entry that runs `synapse serve`.
 3. Adds a short marker-managed global instruction.
 4. Installs the managed `synapse-code-context` skill.
-5. Claude Code only: registers a suggest-only `PreToolUse` hook in
-   `~/.claude/settings.json` that reminds the agent about Synapse tools when it runs
-   shell exploration commands (grep/cat/find) in an indexed workspace. The hook never
-   blocks or auto-approves anything.
+5. Where the agent supports it, registers a suggest-only pre-shell hook that reminds the
+   agent about Synapse tools when it runs shell exploration commands (grep/cat/find) in an
+   indexed workspace. The hook never blocks or auto-approves anything, and stays silent on
+   any error. See [Hooks](#hooks) for which agents qualify.
 
 Use `--dry-run` to detect conflicts without writing files or downloading grammars. Use
 `--offline` to reject missing grammars instead of downloading them, `--no-skill` to install
-only the mandatory instruction, `--no-hook` to skip the Claude Code hook, or `--force` to
+only the mandatory instruction, `--no-hook` to skip the hook, or `--force` to
 replace an existing conflicting Synapse MCP entry or unmanaged skill.
 
 ## Supported agents
 
-Every path below was verified against official documentation on 2026-07-29. Capabilities are
-independent: an agent may support global MCP but no project MCP, or skills but no always-on
-instruction file. Unsupported capabilities are skipped with a message, never guessed.
+Every path below was verified against official documentation on 2026-08-17, and against upstream
+source code where the documentation was ambiguous or wrong. Capabilities are independent: an
+agent may support global MCP but no project MCP, or skills but no always-on instruction file.
+Unsupported capabilities are skipped with a message, never guessed.
 
 ### Global files
 
@@ -53,14 +54,29 @@ instruction file. Unsupported capabilities are skipped with a message, never gue
 | GitHub Copilot CLI | `copilot` | `~/.copilot/mcp-config.json` | `~/.copilot/copilot-instructions.md` | `~/.copilot/skills/synapse-code-context` | `COPILOT_HOME` |
 | Cursor | `cursor` | `~/.cursor/mcp.json` | *(unsupported)* | `~/.cursor/skills/synapse-code-context` | — |
 | Windsurf | `windsurf` | `~/.codeium/windsurf/mcp_config.json` | `~/.codeium/windsurf/memories/global_rules.md` | `~/.codeium/windsurf/skills/synapse-code-context` | — |
-| Cline CLI | `cline` | `~/.cline/mcp.json` | `~/.cline/data/settings/rules/synapse.md` | `~/.cline/data/settings/skills/synapse-code-context` | `CLINE_DATA_DIR` |
+| Cline | `cline` | `~/.cline/data/settings/cline_mcp_settings.json` | `~/.cline/rules/synapse.md` | `~/.cline/skills/synapse-code-context` | `CLINE_DATA_DIR`, `CLINE_MCP_SETTINGS_PATH` |
 | Kiro CLI | `kiro` | `~/.kiro/settings/mcp.json` | `~/.kiro/steering/synapse.md` | `~/.kiro/skills/synapse-code-context` | `KIRO_HOME` |
-| Qwen Code | `qwen` | `~/.qwen/settings.json` | `~/.qwen/QWEN.md` | `~/.qwen/skills/synapse-code-context` | `QWEN_HOME` |
+| Qwen Code | `qwen` | `~/.qwen/settings.json` (hook: same file) | `~/.qwen/QWEN.md` | `~/.qwen/skills/synapse-code-context` | `QWEN_HOME` |
 | Continue CLI | `continue` | `~/.continue/config.yaml` | *(unsupported)* | *(unsupported)* | `CONTINUE_GLOBAL_DIR` |
+| Kimi Code CLI | `kimi` | `~/.kimi-code/mcp.json` | `~/.kimi-code/AGENTS.md` | `~/.kimi-code/skills/synapse-code-context` | `KIMI_CODE_HOME` |
+| Factory Droid | `droid` | `~/.factory/mcp.json` | `~/.factory/AGENTS.md` | `~/.factory/skills/synapse-code-context` | — |
+| Crush | `crush` | `~/.config/crush/crush.json` (hook: same file) | `~/.config/crush/CRUSH.md` | `~/.config/crush/skills/synapse-code-context` | `XDG_CONFIG_HOME` |
+| Amp | `amp` | `~/.config/amp/settings.json` | `~/.config/amp/AGENTS.md` | `~/.config/amp/skills/synapse-code-context` | `XDG_CONFIG_HOME` |
+| Zed | `zed` | `~/.config/zed/settings.json` | `~/.config/zed/AGENTS.md` | `~/.agents/skills/synapse-code-context` | `XDG_CONFIG_HOME` |
+| Google Antigravity | `antigravity` | `~/.gemini/config/mcp_config.json` | `~/.gemini/GEMINI.md` | `~/.gemini/config/skills/synapse-code-context` | — |
+| Goose | `goose` | `~/.config/goose/config.yaml` | `~/.config/goose/.goosehints` | `~/.agents/skills/synapse-code-context` | `XDG_CONFIG_HOME` |
+| OpenClaw | `openclaw` | `~/.openclaw/openclaw.json` | *(unsupported)* | `~/.openclaw/skills/synapse-code-context` | `OPENCLAW_HOME` |
+| GitHub Copilot (VS Code) | `copilot-vscode` | *(unsupported)* | *(unsupported)* | *(unsupported)* | — |
+| Roo Code | `roo` | *(unsupported)* | *(unsupported)* | `~/.roo/skills/synapse-code-context` | — |
 
-Home overrides are **per path**, not per agent. `CLINE_DATA_DIR` is the clearest case: it
-replaces `~/.cline/data/`, so it relocates Cline's global rules and skill but *not*
-`~/.cline/mcp.json`.
+Home overrides are **per path**, not per agent. Cline is the clearest case: `CLINE_DATA_DIR`
+replaces `~/.cline/data/`, which holds only the MCP settings file, while the global rules and
+skill sit directly under `~/.cline/` and do not move. `CLINE_MCP_SETTINGS_PATH` overrides the
+MCP settings file outright and wins over `CLINE_DATA_DIR`.
+
+Copilot (VS Code) and Roo Code are project-scope only, so `synapse install copilot-vscode`
+reports its global MCP config as unsupported and writes nothing; use
+`synapse setup <agent> --path .` instead.
 
 ### Project files
 
@@ -68,7 +84,7 @@ replaces `~/.cline/data/`, so it relocates Cline's global rules and skill but *n
 
 | Agent | MCP config | Instructions | Skill |
 |---|---|---|---|
-| Claude Code | `.mcp.json` | `CLAUDE.md` | *(unsupported)* |
+| Claude Code | `.mcp.json` | `CLAUDE.md` | `.claude/skills/synapse-code-context` |
 | Codex | `.codex/config.toml` | `AGENTS.md` | *(unsupported)* |
 | OpenCode | `opencode.json` | `AGENTS.md` | *(unsupported)* |
 | Hermes | *(unsupported)* | `.hermes.md` | *(unsupported)* |
@@ -76,13 +92,28 @@ replaces `~/.cline/data/`, so it relocates Cline's global rules and skill but *n
 | GitHub Copilot CLI | `.github/mcp.json` | `.github/copilot-instructions.md` | `.github/skills/synapse-code-context` |
 | Cursor | `.cursor/mcp.json` | `.cursor/rules/synapse.mdc` | `.cursor/skills/synapse-code-context` |
 | Windsurf | *(unsupported)* | `.windsurf/rules/synapse.md` | `.windsurf/skills/synapse-code-context` |
-| Cline CLI | `.cline/mcp.json` | `.cline/rules/synapse.md` | `.cline/skills/synapse-code-context` |
+| Cline | `.cline/mcp.json` | `.cline/rules/synapse.md` | `.cline/skills/synapse-code-context` |
 | Kiro CLI | `.kiro/settings/mcp.json` | `.kiro/steering/synapse.md` | `.kiro/skills/synapse-code-context` |
 | Qwen Code | `.qwen/settings.json` | `QWEN.md` | `.qwen/skills/synapse-code-context` |
 | Continue CLI | `.continue/mcpServers/synapse.yaml` | `.continue/rules/synapse.md` | *(unsupported)* |
+| Kimi Code CLI | `.kimi-code/mcp.json` | `AGENTS.md` | `.kimi-code/skills/synapse-code-context` |
+| Factory Droid | `.factory/mcp.json` | `AGENTS.md` | `.factory/skills/synapse-code-context` |
+| Crush | `crush.json` | `CRUSH.md` | `.crush/skills/synapse-code-context` |
+| Amp | `.amp/settings.json` | `AGENTS.md` | `.agents/skills/synapse-code-context` |
+| Zed | `.zed/settings.json` | `.rules` | `.agents/skills/synapse-code-context` |
+| Google Antigravity | `.agents/mcp_config.json` | `.agents/rules/synapse.md` | `.agents/skills/synapse-code-context` |
+| Goose | *(unsupported)* | `.goosehints` | `.agents/skills/synapse-code-context` |
+| OpenClaw | *(unsupported)* | *(unsupported)* | *(unsupported)* |
+| GitHub Copilot (VS Code) | `.vscode/mcp.json` | `.github/copilot-instructions.md` | `.github/skills/synapse-code-context` |
+| Roo Code | `.roo/mcp.json` | `.roo/rules/synapse.md` | `.roo/skills/synapse-code-context` |
 
-Hermes and Windsurf document no project MCP path, so `synapse setup hermes` and
-`synapse setup windsurf` fail with a message pointing at `synapse install`.
+Hermes, Windsurf, Goose and OpenClaw document no project MCP path, so `synapse setup` for those
+agents fails with a message pointing at `synapse install`.
+
+Several adapters share `AGENTS.md` (Codex, OpenCode, Kimi, Amp, Droid), and both Copilot
+adapters share `.github/copilot-instructions.md`. The file keeps **exactly one** Synapse block
+no matter how many of them you install: a block Synapse already owns is replaced in place. Text
+Synapse does not own is never overwritten — the block is appended after it.
 
 ### Per-agent notes
 
@@ -102,11 +133,15 @@ Hermes and Windsurf document no project MCP path, so `synapse setup hermes` and
   documented as "Devin Desktop", where `.windsurf/rules/` is a supported legacy fallback
   behind `.devin/rules/`. Synapse writes `.windsurf/` to stay consistent with the
   `~/.codeium/windsurf/` MCP and skill paths, which were not rebranded.
-- **Cline CLI** — this adapter targets the CLI only. The VS Code extension keeps MCP config in
-  an undocumented globalStorage location, which Synapse will not write. Two official pages
-  disagree on the global rules/skills root; Synapse follows the CLI reference directory tree
-  (`~/.cline/data/settings/`), which is also the only reading consistent with
-  `CLINE_DATA_DIR`'s documented meaning.
+- **Cline** — Cline's own docs advertise `~/.cline/mcp.json`, but its shared resolver reads
+  `~/.cline/data/settings/cline_mcp_settings.json`; the discrepancy is a known upstream docs bug
+  ([cline#11671](https://github.com/cline/cline/issues/11671)). Synapse follows the code. Because
+  `~/.cline/` is documented as applying across the CLI, IDE and SDK, this one adapter covers the
+  VS Code extension too; the historical extension-local globalStorage file is never written.
+  **Upgrading from 0.5.4 or earlier:** that release wrote `~/.cline/mcp.json`,
+  `~/.cline/data/settings/rules/synapse.md` and `~/.cline/data/settings/skills/`. Those paths are
+  no longer managed, so delete them by hand — or run `synapse uninstall cline --global` on the
+  older version *before* upgrading.
 - **Kiro CLI** — `inclusion: always` is documented on the IDE steering page, not the CLI
   steering page, which shows no frontmatter at all. This is a cross-surface inference.
 - **Gemini CLI / Qwen Code / Copilot CLI** — the context filename is user-configurable
@@ -116,6 +151,39 @@ Hermes and Windsurf document no project MCP path, so `synapse setup hermes` and
   file is absent, and uninstall removes the Synapse list entry without deleting the file. The
   project target is a standalone block file Synapse owns end to end. Continue is the only
   adapter whose servers are a YAML **list** matched on an inner `name` field.
+- **Goose** — the only adapter that spells the executable `cmd` instead of `command`, and its
+  entries carry a required, non-defaulted `enabled: true`. MCP config is global-only, but Goose
+  does read a project `.goosehints`, so project instructions and skill are still supported.
+- **Crush** — every MCP entry needs `"type": "stdio"`, and the schema is
+  `additionalProperties: false`, so Synapse emits exactly `type`, `command`, `args`. Hooks and
+  MCP servers share one `crush.json`; installing both leaves a single file and uninstalling both
+  removes it. Upstream now prefers a `crushrc` shell script and documents `crush.json` as
+  deprecated but still supported — Synapse writes the JSON form.
+- **Amp** — servers live under the single literal settings key `"amp.mcpServers"` (one key
+  containing a dot, not a nested path), which is why the same key works inside VS Code settings.
+  Workspace-config servers require in-app approval before Amp will start them. Amp documents no
+  `.amp/skills/`, so the project skill goes to the shared `.agents/skills/`.
+- **Zed** — Zed picks the **first** match from a fixed list of nine instruction filenames, in
+  which `.rules` ranks first, so Synapse writes `.rules` to guarantee the block is the file Zed
+  reads. Zed settings are JSONC; Synapse writes strict JSON, which Zed accepts, but a config
+  that already contains comments cannot be round-tripped and is reported as an error rather than
+  rewritten. The `"source": "custom"` field seen in older third-party guides is absent from
+  current docs and is not emitted.
+- **Google Antigravity** — the global skills directory is `~/.gemini/config/skills/`, *not* the
+  `~/.agents/skills/` that Zed and Goose use. Synapse writes the owned `.agents/rules/synapse.md`
+  rather than joining `AGENTS.md`, keeping one fewer writer on that shared file.
+- **OpenClaw** — a single global config, with servers nested under `mcp.servers` rather than a
+  top-level `mcpServers`. Its config format is JSON5, but OpenClaw itself reserializes to strict
+  JSON on write, so Synapse's strict-JSON round-trip loses nothing it would have kept. OpenClaw's
+  "workspace" is the agent home (`~/.openclaw/workspace`), not your repository, so there is no
+  project instruction target — a repo-root `AGENTS.md` would never be read.
+- **GitHub Copilot (VS Code)** — reads `.vscode/mcp.json` under the root key **`servers`**, not
+  `mcpServers`. Project scope only: the user-profile `mcp.json` path is undocumented and moves
+  with VS Code builds and profiles, so Synapse will not guess it. This adapter shares
+  `.github/copilot-instructions.md` and `.github/skills/` with the `copilot` CLI adapter.
+- **Roo Code** — project MCP only. The global `mcp_settings.json` lives under a storage base the
+  user can relocate, so it is not safely addressable; the global *skills* directory `~/.roo/skills/`
+  is a documented plain path and is supported. Roo rule files use no frontmatter convention.
 
 ### Merge safety
 
@@ -127,16 +195,41 @@ content use explicit managed markers. Repeated installation updates only Synapse
 and preserves neighboring user configuration. Invalid configuration produces a clear error and
 the file is left untouched.
 
+### Hooks
+
+The Synapse hook is **suggest-only**: it adds a line of context reminding the agent to prefer
+`synapse_orient`/`synapse_inspect` when it is about to run `grep`, `rg`, `cat`, `find` or `tree`
+in an indexed workspace. It never blocks, never auto-approves, and returns silently on any error.
+
+An agent therefore qualifies only if its hook system can **inject context while allowing the
+call**. A hook that can only block or deny cannot express a nudge, and Synapse will not repurpose
+a denial to deliver one.
+
+| Agent | Hook file | Qualifies |
+|---|---|---|
+| Claude Code | `~/.claude/settings.json` | yes — `hookSpecificOutput.additionalContext` |
+| Crush | `~/.config/crush/crush.json` | yes — `context`, with the decision omitted so the normal permission prompt still runs |
+| Qwen Code | `~/.qwen/settings.json` | yes — `additionalContext`, alongside a required explicit `"allow"` decision |
+| Gemini CLI | — | no — has no `PreToolUse` event; `BeforeTool` has no `additionalContext` |
+| Factory Droid | — | no — docs explicitly exclude `additionalContext` from `PreToolUse` |
+| Cursor | — | no — `agent_message` is documented only for denials |
+| Cline | — | no — context lands on the *next* turn, too late to redirect the current call |
+
+Crush and Qwen keep hooks in the same file as their MCP config; installing both leaves one file,
+and uninstalling both removes it. Skip the hook with `synapse install <agent> --no-hook`, and
+keep it on uninstall with `synapse uninstall <agent> --global --keep-hook`.
+
+Qwen's documentation states that `PreToolUse` supports context injection, but every worked
+example pairs `additionalContext` with a `deny` decision, so delivery on the allow path is
+unconfirmed upstream. If your Qwen build ignores it, `--no-hook` disables it cleanly.
+
 ### Investigated and deferred
 
 These agents were researched against official documentation and deliberately not implemented.
 
 | Agent | Blocker |
 |---|---|
-| Goose | Uses `extensions:` with `cmd`/`envs`/`env_keys` rather than an MCP server map, and `goose configure` may rewrite the file. No verified instruction, rule, or skill contract. |
-| Roo Code | `.roo/mcp.json` is clean, but the global path is an undocumented VS Code globalStorage location coupled to the extension publisher id, with the filename varying between `mcp_settings.json` and `cline_mcp_settings.json`. |
 | Amazon Q Developer CLI | `~/.aws/amazonq/mcp.json` is now legacy, read only when an agent sets `useLegacyMcpJson: true` (default undocumented). The current per-agent file contract has no single canonical target to merge into. |
-| Zed | `settings.json` is JSONC; a plain JSON round-trip would silently delete user comments. Whether `context_servers` is settable per project is undocumented. |
 | JetBrains Junie | No technical blocker — `.junie/mcp/mcp.json` and `~/.junie/mcp/mcp.json` fit the adapter model. Held back only by the scope of this release. |
 | Trae | No officially documented config file path; MCP setup is an in-IDE flow. The `~/.trae/mcp.json` path in circulation comes from a third-party repository. |
 | Aider | No MCP client at all — MCP support is an open feature request, so there is nothing to configure. |

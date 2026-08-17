@@ -27,8 +27,9 @@
    `synapse install codex`
 4. Restart the agent once.
 
-Replace `codex` with `claude-code`, `cline`, `continue`, `copilot`, `cursor`, `gemini`,
-`hermes`, `kiro`, `opencode`, `qwen`, or `windsurf`. No repository files are created. The
+Replace `codex` with `amp`, `antigravity`, `claude-code`, `cline`, `continue`, `copilot`,
+`copilot-vscode`, `crush`, `cursor`, `droid`, `gemini`, `goose`, `hermes`, `kimi`, `kiro`,
+`opencode`, `openclaw`, `qwen`, `roo`, `windsurf`, or `zed`. No repository files are created. The
 first `synapse_orient` or `synapse_inspect` call initializes the local index and daemon
 automatically.
 

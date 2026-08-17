@@ -310,10 +310,11 @@ Synapse uses five global layers to make agents reach for structural context firs
    call is needed because the navigation tools initialize lazily.
 3. Entry-tool docstrings describe when to prefer structural tools over text search.
 4. The managed `synapse-code-context` skill supplies the detailed multi-tool workflow.
-5. For Claude Code, a suggest-only `PreToolUse` hook (`synapse hook claude-pre-bash`)
-   injects a Synapse reminder when shell exploration commands run inside an indexed
-   workspace. It never blocks or auto-approves the command and returns only
-   `additionalContext`.
+5. For agents whose hooks can add context while allowing the call (Claude Code, Crush,
+   Qwen Code), a suggest-only pre-shell hook (`synapse hook <codec>-pre-bash`) injects a
+   Synapse reminder when shell exploration commands run inside an indexed workspace. It
+   never blocks or auto-approves the command. The decision logic is shared in
+   `cli/hooks/core.py`; only the wire shape differs per agent (`cli/hooks/codecs.py`).
 
 The instruction is the mandatory trigger and does not depend on skill activation. The skill
 is supplementary because implicit skill matching alone is not a reliable initialization
