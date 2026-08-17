@@ -54,7 +54,8 @@ symbols: definitions, bounded source, call-proven callers/callees plus neutral i
 and outgoing references, all with stored resolution, confidence, and usage kind). Both
 initialize and refresh the workspace automatically. The full
 profile adds initialization, symbol lookup, definitions, references, structural context,
-dependency navigation, project maps, indexing, and daemon-health tools. The complete
+dependency navigation, project maps, indexing, daemon-health, and
+configuration/ignore-management tools. The complete
 parameter and response reference is in [docs/tools.md](docs/tools.md).
 
 ## Configuration
@@ -119,15 +120,20 @@ The shipped backend is currently polling-only. Its interval defaults to the user
 
 ## Agent setup helpers
 
-- `synapse install <agent> [--dry-run] [--offline] [--no-skill]` — see the
-  [support matrix](docs/installation.md#supported-agents) for every supported agent id
+- `synapse install <agent> [--dry-run] [--offline] [--no-skill] [--no-hook] [--force]` —
+  writes the MCP entry, instructions, the managed skill, and (on agents that support
+  context-injecting hooks: Claude Code, Qwen, Crush) a suggest-only pre-shell hook; see
+  the [support matrix](docs/installation.md#supported-agents) and
+  [Hooks](docs/installation.md#hooks)
 - `synapse init --path <path> [--dry-run] [--offline]`
 - `synapse status --path <path> [--json]`
-- `synapse uninstall <client> --global`
-- `synapse setup <client> --path <path>` for advanced project-scoped integration
-- `synapse mcp install <client> --workspace <path> [--scope project|user] [--print]`
-- `synapse uninstall <client> --path <path> [--scope project|user]`
-- `synapse doctor --path <path> [--agent <client>] [--scope project|user]`
+- `synapse uninstall <agent> --global [--keep-skill] [--keep-hook] [--keep-instructions]
+  [--keep-config] [--dry-run]` — removes the MCP entry, managed skill, and hook;
+  index/cache data is untouched
+- `synapse setup <agent> --path <path>` for advanced project-scoped integration
+- `synapse mcp install <agent> --workspace <path> [--scope project|user] [--print]`
+- `synapse uninstall <agent> --path <path> [--scope project|user]`
+- `synapse doctor --path <path> [--agent <agent>] [--scope project|user]`
 
 Project setup, `mcp install`, manual indexing, `serve`, and foreground watch mode remain
 available for advanced integration and diagnostics.
