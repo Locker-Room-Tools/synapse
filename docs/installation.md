@@ -115,6 +115,10 @@ adapters share `.github/copilot-instructions.md`. The file keeps **exactly one**
 no matter how many of them you install: a block Synapse already owns is replaced in place. Text
 Synapse does not own is never overwritten — the block is appended after it.
 
+The same sharing applies to skills directories (`.agents/skills/` for Amp, Zed, and Goose;
+`.github/skills/` for both Copilot adapters): uninstalling one agent keeps the shared skill as
+long as another installed agent still resolves to it, and the last uninstall removes it.
+
 ### Per-agent notes
 
 - **Hermes** — Synapse never writes `SOUL.md`; Hermes documents it as personality and tone

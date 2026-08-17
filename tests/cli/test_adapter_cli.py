@@ -5,8 +5,13 @@ from pathlib import Path
 import pytest
 
 from synapse.cli import main as cli_main
-from synapse.cli.adapters import ADAPTERS, get_adapter, resolve_global_skill_path
-from synapse.cli.installer import resolve_config_path
+from synapse.cli.adapters import (
+    ADAPTERS,
+    get_adapter,
+    install_project_skill,
+    resolve_global_skill_path,
+)
+from synapse.cli.installer import install_mcp_server, resolve_config_path
 
 GLOBAL_ONLY = [agent for agent, adapter in ADAPTERS.items() if adapter.mcp.project is None]
 PROJECT_CAPABLE = [agent for agent, adapter in ADAPTERS.items() if adapter.mcp.project is not None]
@@ -114,6 +119,55 @@ def test_install_and_uninstall_round_trip_through_cli(
         assert not config_path.exists(), agent
     if adapter.global_skill is not None:
         assert not resolve_global_skill_path(agent).exists()
+
+
+def test_shared_global_skill_survives_until_last_agent(
+    isolated_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Goose and Zed share ~/.agents/skills; the skill outlives the first uninstall."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data"))
+    assert cli_main.main(["install", "goose", "--offline"]) == 0
+    assert cli_main.main(["install", "zed", "--offline"]) == 0
+    skill_dir = resolve_global_skill_path("goose")
+    assert skill_dir == resolve_global_skill_path("zed")
+    capsys.readouterr()
+
+    assert cli_main.main(["uninstall", "goose", "--global"]) == 0
+    assert "Global skill kept (still used by Zed)" in capsys.readouterr().out
+    assert (skill_dir / "SKILL.md").exists()
+
+    assert cli_main.main(["uninstall", "zed", "--global"]) == 0
+    assert "Global skill removed" in capsys.readouterr().out
+    assert not skill_dir.exists()
+
+
+def test_shared_project_skill_survives_until_last_agent(
+    isolated_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Both Copilot adapters share .github/skills at project scope."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data"))
+    workspace = str(tmp_path)
+    for agent in ("copilot", "copilot-vscode"):
+        install_mcp_server(agent, tmp_path, scope="project")
+        install_project_skill(agent, tmp_path)
+    skill_dir = tmp_path / ".github" / "skills" / "synapse-code-context"
+    assert (skill_dir / "SKILL.md").exists()
+
+    assert cli_main.main(["uninstall", "copilot", "--path", workspace]) == 0
+    assert "Skill kept (still used by GitHub Copilot (VS Code))" in capsys.readouterr().out
+    assert (skill_dir / "SKILL.md").exists()
+
+    assert cli_main.main(["uninstall", "copilot-vscode", "--path", workspace]) == 0
+    assert "Skill removed" in capsys.readouterr().out
+    assert not skill_dir.exists()
 
 
 @pytest.mark.parametrize("agent", sorted(GLOBAL_ONLY))

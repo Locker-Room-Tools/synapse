@@ -18,6 +18,7 @@ from synapse.cli.adapters import (
     remove_global_skill,
     remove_instruction_snippet,
     remove_project_skill,
+    resolve_global_skill_path,
     resolve_instruction_path,
     resolve_project_skill_path,
 )
@@ -32,6 +33,7 @@ from synapse.cli.hooks import (
 )
 from synapse.cli.ignore import build_ignore_parser
 from synapse.cli.installer import (
+    agents_sharing_skill,
     config_has_mcp_server,
     install_mcp_server,
     resolve_config_path,
@@ -551,8 +553,14 @@ def _handle_uninstall(args: Namespace) -> int:
             print(f"Global instructions {instructions_result.status}: {instructions_result.path}")
             printed = True
         if not args.keep_skill and adapter.global_skill is not None:
-            skill_result = remove_global_skill(args.agent, dry_run=args.dry_run)
-            print(f"Global skill {skill_result.status}: {skill_result.path}")
+            sharers = agents_sharing_skill(args.agent, workspace_root, "user")
+            if sharers:
+                names = ", ".join(sharer.display_name for sharer in sharers)
+                path = resolve_global_skill_path(args.agent)
+                print(f"Global skill kept (still used by {names}): {path}")
+            else:
+                skill_result = remove_global_skill(args.agent, dry_run=args.dry_run)
+                print(f"Global skill {skill_result.status}: {skill_result.path}")
             printed = True
         if adapter.hook is not None and not args.keep_hook:
             hook_result = remove_hook(args.agent, dry_run=args.dry_run)
@@ -585,12 +593,18 @@ def _handle_uninstall(args: Namespace) -> int:
         print(f"Instructions {instructions_result.status}: {instructions_result.path}")
         printed = True
     if not args.keep_skill and adapter.project_skill is not None:
-        project_skill_result = remove_project_skill(
-            args.agent,
-            workspace_root,
-            dry_run=args.dry_run,
-        )
-        print(f"Skill {project_skill_result.status}: {project_skill_result.path}")
+        sharers = agents_sharing_skill(args.agent, workspace_root, "project")
+        if sharers:
+            names = ", ".join(sharer.display_name for sharer in sharers)
+            path = resolve_project_skill_path(args.agent, workspace_root)
+            print(f"Skill kept (still used by {names}): {path}")
+        else:
+            project_skill_result = remove_project_skill(
+                args.agent,
+                workspace_root,
+                dry_run=args.dry_run,
+            )
+            print(f"Skill {project_skill_result.status}: {project_skill_result.path}")
         printed = True
     if not printed:
         print("Nothing selected for uninstall.")
