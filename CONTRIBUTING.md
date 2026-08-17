@@ -8,6 +8,12 @@ adding an MCP tool).
 [docs/architecture.md](docs/architecture.md) explains the module layout. Read both before
 changing project structure.
 
+The recurring maintenance tasks each have a step-by-step checklist under
+[.claude/skills/](.claude/skills/) (adding a language, adding an agent adapter, adding an
+MCP tool, changing index persistence, cutting a release, running an A/B evaluation).
+Claude Code loads them as skills; for everyone else they are plain markdown checklists
+that stay in sync with the test suites they cite.
+
 ## Setup
 
 ```bash
