@@ -115,9 +115,13 @@ adapters share `.github/copilot-instructions.md`. The file keeps **exactly one**
 no matter how many of them you install: a block Synapse already owns is replaced in place. Text
 Synapse does not own is never overwritten — the block is appended after it.
 
-The same sharing applies to skills directories (`.agents/skills/` for Amp, Zed, and Goose;
-`.github/skills/` for both Copilot adapters): uninstalling one agent keeps the shared skill as
-long as another installed agent still resolves to it, and the last uninstall removes it.
+The same block rule covers the shared global instruction file `~/.gemini/GEMINI.md`, which
+Gemini CLI and Google Antigravity both read.
+
+The same sharing applies to skills directories (`.agents/skills/` for Amp, Zed, Antigravity,
+and Goose; `.github/skills/` for both Copilot adapters; the global `~/.agents/skills/` for Zed
+and Goose): uninstalling one agent keeps the shared skill as long as another installed agent
+still resolves to it, and the last uninstall removes it — at project and user scope alike.
 
 ### Per-agent notes
 
@@ -157,7 +161,9 @@ long as another installed agent still resolves to it, and the last uninstall rem
   adapter whose servers are a YAML **list** matched on an inner `name` field.
 - **Goose** — the only adapter that spells the executable `cmd` instead of `command`, and its
   entries carry a required, non-defaulted `enabled: true`. MCP config is global-only, but Goose
-  does read a project `.goosehints`, so project instructions and skill are still supported.
+  does read a project `.goosehints`, so the adapter declares project instruction and skill
+  targets. Note that `synapse setup goose` fails (no project MCP path), so those project files
+  are not written by any command today.
 - **Crush** — every MCP entry needs `"type": "stdio"`, and the schema is
   `additionalProperties: false`, so Synapse emits exactly `type`, `command`, `args`. Hooks and
   MCP servers share one `crush.json`; installing both leaves a single file and uninstalling both
@@ -305,7 +311,8 @@ synapse setup codex --path .
 It installs grammars, indexes immediately, writes project-scoped MCP, instruction, and skill
 files for the capabilities that agent supports, starts the daemon, and runs doctor. Use
 `--no-instructions` or `--no-skill` to skip an artifact. For an agent with no documented
-project MCP path (Hermes, Windsurf) it fails and points at `synapse install` instead.
+project MCP path (Hermes, Windsurf, Goose, OpenClaw) it fails and points at `synapse install`
+instead.
 
 ## Upgrading from `synapse-mcp`
 
@@ -374,7 +381,8 @@ Remove global MCP, instruction, and skill artifacts:
 synapse uninstall codex --global
 ```
 
-Use `--keep-config`, `--keep-instructions`, or `--keep-skill` to retain an artifact. The
+Use `--keep-config`, `--keep-instructions`, `--keep-skill`, or `--keep-hook` to retain an
+artifact, and `--dry-run` to preview the removals without touching any file. The
 command removes only the portable managed MCP entry and managed instruction/skill content.
 Pinned or unmanaged entries are reported and preserved.
 

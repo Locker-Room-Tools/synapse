@@ -112,8 +112,9 @@ One batch inspection of the selected symbols under one read snapshot.
   override (`InspectRequest.token_budget` remains configurable for core callers).
 - Per selected symbol: the definition (qualified name, kind, `file` index,
   `lines`, signature), a bounded source slice (`src`, at most 40 lines, with
-  `truncated` and `shortened` flags), `parent` and `children` (capped at 12 with
-  `children_total`), and four relation groups — `callers`, `callees`, `refs_in`,
+  `truncated` and `shortened` flags), `parent`, `children` (capped at 12 with
+  `children_total`), `siblings` (up to 10 same-file peers as `{h, n, l}`, with
+  `siblings_omitted` counting the rest), and four relation groups — `callers`, `callees`, `refs_in`,
   `refs_out` — at most 12 incoming and 12 outgoing groups (call and non-call
   groups share that bound), each group carrying its endpoint definition and up to
   3 sites (`more` counts the rest), every site preserving stored resolution
@@ -252,8 +253,10 @@ Before answering, a navigation call repairs the workspace when any of these hold
 |---|---|
 | `no-index` | metadata exists but the SQLite index does not |
 | `not-ready` | uninitialized, initializing, or a degraded/dead daemon |
+| `stale-writer` | a live daemon whose index-writer contract this runtime cannot verify |
 | `missing-grammars` | a supported parser is not installed locally |
 | `stale-references` | stored relations were produced under older extraction semantics |
+| `incomplete-handles` / `handles-unenforced` / `unreadable-index` | persisted rows lack a usable compact handle (or the uniqueness guarantee), so rendered handles could never resolve |
 
 The last one is why daemon health alone is insufficient: the reference fingerprint covers
 the schema version, the extractor version, and every packaged `.scm` query, so a
@@ -342,7 +345,8 @@ Returns a declaration by `symbol_id` or exact `name`.
 
 - Parameters: optional `symbol_id`, optional `name`, `limit=50`, `offset=0`,
   `workspace_path="."`
-- Returns: one symbol, a paged `candidates` object for ambiguous names, or `null`
+- Returns: one symbol, a paged `candidates` object for ambiguous names, or
+  `{found: false, ...}` when nothing is indexed under that id or name
 - At least one of `symbol_id` and `name` is required
 
 ### `synapse_get_file_outline`
@@ -351,7 +355,7 @@ Structural outline to call before opening a whole file.
 
 - Parameters: `file_path`, `max_symbols=200`, `workspace_path="."`
 - Returns: file metadata and nested symbols (each with kind, name, signature, and
-  line range), or `null` when the file is not indexed
+  line range), or `{found: false, ...}` when the file is not indexed
 
 ### `synapse_get_symbol_context`
 
@@ -359,7 +363,8 @@ Structural context around one symbol.
 
 - Parameters: `symbol_id`, `include_body=false`, `children_limit=50`,
   `children_offset=0`, `max_body_lines=200`, `workspace_path="."`
-- Returns: the symbol, parent/children context, and optional body, or `null`
+- Returns: the symbol, parent/children context, and optional body, or
+  `{found: false, ...}` when the symbol is not indexed
 - With `include_body=true` the body is the symbol's source, capped at
   `max_body_lines`; `body_truncated` reports when the cap cut the text
 
@@ -368,7 +373,8 @@ Structural context around one symbol.
 Minimum useful context for understanding one symbol.
 
 - Parameters: `symbol_id`, `workspace_path="."`
-- Returns: compact definition and relation context, or `null`
+- Returns: compact definition and relation context, or `{found: false, ...}` when
+  the symbol is not indexed
 
 ## References and dependencies
 
@@ -413,14 +419,15 @@ Outgoing symbol relations.
 File-level imports and dependencies.
 
 - Parameters: `file_path`, `limit=50`, `offset=0`, `workspace_path="."`
-- Returns: file dependency data or `null`
+- Returns: file dependency data, or `{found: false, ...}` when the file is not indexed
 
 ### `synapse_related_symbols`
 
 Graph-like neighbors around a symbol.
 
 - Parameters: `symbol_id`, `limit=20`, `offset=0`, `workspace_path="."`
-- Returns: related symbols and paging data, or `null`
+- Returns: related symbols and paging data, or `{found: false, ...}` when the symbol
+  is not indexed
 
 ## Index health and maintenance
 
@@ -488,7 +495,8 @@ Ordered ignore rules with per-rule provenance and write targets. Safe before ini
 - Returns: `workspace_path`, `project_config_path`, `project_config_exists`,
   `global_config_path`, `watch_poll_interval_s`, and an `options` map whose `ignore_rules`
   carries `type`, `semantics`, `project_source`, `project_ignore_file`, `global_ignore_file`,
-  `accepted_forms`, `rejected`, `case_sensitive`, `always_ignored`, `writes_to`, `layers`,
+  `accepted_forms`, `rejected`, `case_sensitive`, `always_ignored`, `add_with`,
+  `remove_with`, `writes_to`, `layers`,
   `takes_effect`, `rules` (each `{pattern, scope, origin, line, negated, directory_only}` in
   evaluation order), `rules_total`, `rules_complete`, `skipped_lines`,
   `shadowed_project_json`, and `coverage`
@@ -502,9 +510,10 @@ depends on rule order, so no flat effective set exists.
 Stop indexing paths by appending gitignore patterns to `.synapseignore`.
 
 - Parameters: `directories` (list of patterns), `workspace_path="."`
-- Returns: `scope`, `config_path`, `created`, `added`, `already_present`, `negated`,
-  `not_present`, `migrated_from_json`, `normalized`, `project_rules`, `takes_effect`,
-  `coverage`
+- Returns: `workspace_path`, `scope`, `config_path`, `created`, `added`,
+  `already_present`, `negated`, `not_present`, `removed`, `migrated_from_json`,
+  `normalized`, `project_rules`, `takes_effect`, `coverage` (the add and remove tools
+  share one payload shape; `removed` is populated only by the remove tool)
 
 Patterns append to the end, so a newly added rule beats the rules already there. The file is
 created (and any legacy entries migrated into it) when it does not exist. Any invalid entry

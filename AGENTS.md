@@ -7,8 +7,11 @@ This file is the contract for any human or AI agent contributing to THIS reposit
 - Python >=3.12. Use `uv`: `uv venv && uv pip install -e ".[dev]"`.
 - Install parser binaries explicitly with `synapse grammars install`; indexing never
   downloads grammars implicitly.
-- Configure an agent once with `synapse install <agent>`; initialize a workspace manually
-  with `synapse init --path .` only for diagnostics.
+- Configure an agent once with `synapse install <agent>`; on the adapters that support
+  context-injecting hooks (claude-code, qwen, crush) this also registers a suggest-only
+  pre-shell hook — skip it with `--no-hook`. `synapse hook <codec>` is the internal hook
+  entry point, not a user command. Initialize a workspace manually with
+  `synapse init --path .` only for diagnostics.
 - Run the MCP server directly for diagnostics: `python -m synapse serve --workspace .`.
 - Remove global managed integration with `synapse uninstall <agent> --global`; this does not
   delete index/cache data.
@@ -24,16 +27,27 @@ This file is the contract for any human or AI agent contributing to THIS reposit
     `queries.py` (`.scm` loading).
   - `core/index` — SQLite index: `symbol_index.py` entry object over `schema.py`,
     `writes.py`, `reads.py`; `handles.py` (compact wire handles), `source.py`
-    (bounded source slices), `repo_map.py` (the materialized repository map).
+    (bounded source slices), `repo_map.py` (the materialized repository map),
+    `integrity.py` (read-only handle-integrity probes plus deterministic repair),
+    `contract.py` (`SCHEMA_VERSION` / `INDEX_WRITER_CONTRACT_VERSION`).
   - `core/navigation` — the two-call navigation contract: `orient.py`,
-    `inspection.py`, `matching.py`, `traversal.py`, `render.py`, `budget.py`.
-  - `core/indexing` — the pipeline: `crawler.py` → `parser.py` → `pipeline.py` → `references.py`.
+    `inspection.py`, `matching.py`, `traversal.py`, `continuation.py` (stateless
+    source-continuation tokens), `render.py`, `budget.py`.
+  - `core/indexing` — the pipeline: `crawler.py` → `parser.py` → `pipeline.py` →
+    `references.py` → `resolution.py` (conservative structural reference resolution).
   - `core/watch` — incremental watch daemon.
-  - `core/workspace.py`, `core/lifecycle.py` — flat: a universal leaf and the top-level facade.
+  - `core/workspace.py`, `core/lifecycle.py`, `core/provenance.py` — flat: a universal
+    leaf, the top-level facade, and running-build provenance.
 - `src/synapse/mcp` — FastMCP presentation layer; thin, delegates to `core`.
-- `src/synapse/cli` — CLI entrypoints for indexing, setup, and MCP install helpers.
-- `src/synapse/adapters/` — agent-specific metadata and instruction snippets (packaged data).
+- `src/synapse/cli` — CLI entrypoints for indexing, agent setup, and MCP install helpers.
+  `cli/adapters/` is the declarative agent registry (`registry.py`, `model.py`,
+  `skills.py`, `instructions.py`); `cli/hooks/` is the agent-independent suggest-only
+  pre-shell hook (`core.py`, per-agent wire shapes in `codecs.py`, installer).
+- `src/synapse/adapters/` — the shared instruction snippet templates (packaged data);
+  per-agent metadata lives in code at `cli/adapters/registry.py`.
 - `src/synapse/queries/<lang>/*.scm` — declarative tree-sitter queries (the language-agnostic seam, packaged data).
+- `src/synapse/skills/synapse-code-context/` — the managed cross-agent workflow skill
+  (packaged data; the CI wheel gate asserts it ships).
 - `docs/architecture.md` — read this before changing structure.
 
 ## Architecture rules
@@ -91,7 +105,10 @@ This file is the contract for any human or AI agent contributing to THIS reposit
   no declarations). `synapse_inspect` resolves 1–8 handles or stable IDs under one
   read snapshot and returns definitions, bounded source slices, parents/children,
   and four relation groups — `callers`, `callees`, `refs_in`, `refs_out` — with
-  stored resolution, confidence, and usage kind verbatim. Both return one
+  stored resolution, confidence, and usage kind verbatim. A truncated source slice
+  carries `src.next`, a continuation token accepted back as a `symbols` entry for the
+  next non-overlapping window (`remaining_lines` gives the exact unreturned count;
+  stale tokens land in `continuation_rejected`). Both tools return one
   compact JSON string so the budget binds the exact wire payload (orient: 800
   estimated tokens, inspect: 2400), always report `payload_complete` and bounded
   `coverage`, and never claim task completeness. The MCP tools expose no
@@ -153,6 +170,8 @@ investigation as a full shell investigation merely for reassurance.
 ## Commits / PRs
 - Do not commit `.venv/`, `__pycache__/`, `.idea/`, or `.ai/` output.
 - Small, focused commits; conventional style (`feat:`, `fix:`, `docs:`, `refactor:`).
+- Add a `CHANGELOG.md` entry under `## [Unreleased]` for anything user-visible; mark
+  breaking behavior with **Breaking:**.
 
 ## Do NOT
 - Upload code anywhere or add network calls in the index path (local-first guarantee).
