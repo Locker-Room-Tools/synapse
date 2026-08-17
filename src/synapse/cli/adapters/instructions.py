@@ -117,7 +117,15 @@ def resolve_global_instruction_path(agent_id: str) -> Path:
     return resolve_user_path(target.location)
 
 
-def _replace_managed_block(existing: str, block: str, *, force: bool) -> tuple[str, str]:
+def _replace_managed_block(existing: str, block: str) -> tuple[str, str]:
+    """Replace a Synapse-owned block in place.
+
+    A span found here is provably Synapse-managed, so replacing it needs no
+    ``--force``: several adapters share one instruction file (``AGENTS.md``),
+    and installing a second of them must update the single block rather than
+    fail. Unmanaged content is never touched — it yields no span and the block
+    is appended instead.
+    """
     span = find_managed_instruction_span(existing)
     if span is None:
         return append_marker_block(existing, block), "updated"
@@ -125,9 +133,6 @@ def _replace_managed_block(existing: str, block: str, *, force: bool) -> tuple[s
     start, block_end = span
     if existing[start:block_end].strip() == block:
         return existing, "unchanged"
-    if not force:
-        msg = "Synapse instruction block already exists; use --force to replace it."
-        raise FileExistsError(msg)
     return splice_marker_block(existing, span, block), "updated"
 
 
@@ -143,7 +148,7 @@ def install_instructions(
     block = snippet.strip()
     if target.mode is InstructionMode.OWNED:
         return _install_owned(path, block, target, force=force, dry_run=dry_run)
-    return _install_block(path, block, force=force, dry_run=dry_run)
+    return _install_block(path, block, dry_run=dry_run)
 
 
 def remove_instructions(
@@ -162,7 +167,6 @@ def _install_block(
     path: Path,
     block: str,
     *,
-    force: bool,
     dry_run: bool,
 ) -> InstructionInstallResult:
     if not path.exists():
@@ -172,7 +176,7 @@ def _install_block(
         return InstructionInstallResult(path, "would-create" if dry_run else "created")
 
     existing = path.read_text(encoding="utf-8")
-    next_text, status = _replace_managed_block(existing, block, force=force)
+    next_text, status = _replace_managed_block(existing, block)
     if status == "unchanged":
         return InstructionInstallResult(path, status)
     if not dry_run:

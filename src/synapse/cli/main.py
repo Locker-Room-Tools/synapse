@@ -21,14 +21,15 @@ from synapse.cli.adapters import (
     resolve_instruction_path,
     resolve_project_skill_path,
 )
-from synapse.cli.claude_hooks import (
-    install_claude_hook,
-    remove_claude_hook,
-    run_claude_pre_bash,
-)
 from synapse.cli.config import build_config_parser
 from synapse.cli.doctor import format_report, has_failures, report_to_json, run_doctor
 from synapse.cli.grammars import LanguagePackError, install_grammars, missing_grammars
+from synapse.cli.hooks import (
+    codec_choices,
+    install_hook,
+    remove_hook,
+    run_hook,
+)
 from synapse.cli.ignore import build_ignore_parser
 from synapse.cli.installer import (
     config_has_mcp_server,
@@ -109,14 +110,16 @@ def _handle_install(args: Namespace) -> int:
         )
         raise ValueError(msg)
     anchor = Path.cwd()
-    config_preview = install_mcp_server(
-        args.agent,
-        anchor,
-        scope="user",
-        force=args.force,
-        dry_run=True,
-        portable=True,
-    )
+    config_preview = None
+    if adapter.mcp.user is not None:
+        config_preview = install_mcp_server(
+            args.agent,
+            anchor,
+            scope="user",
+            force=args.force,
+            dry_run=True,
+            portable=True,
+        )
     instruction_preview = None
     if adapter.global_instructions is not None:
         instruction_preview = install_global_instruction(
@@ -139,13 +142,15 @@ def _handle_install(args: Namespace) -> int:
         if grammar_names:
             print(f"Installing {len(grammar_names)} missing tree-sitter grammars...")
             install_grammars()
-        config_result = install_mcp_server(
-            args.agent,
-            anchor,
-            scope="user",
-            force=args.force,
-            portable=True,
-        )
+        config_result = None
+        if adapter.mcp.user is not None:
+            config_result = install_mcp_server(
+                args.agent,
+                anchor,
+                scope="user",
+                force=args.force,
+                portable=True,
+            )
         instruction_result = None
         if adapter.global_instructions is not None:
             instruction_result = install_global_instruction(args.agent, force=True)
@@ -154,8 +159,8 @@ def _handle_install(args: Namespace) -> int:
             skill_result = install_global_skill(args.agent, force=args.force)
 
     hook_result = None
-    if adapter.supports_hook and not args.no_hook:
-        hook_result = install_claude_hook(dry_run=args.dry_run)
+    if adapter.hook is not None and not args.no_hook:
+        hook_result = install_hook(args.agent, dry_run=args.dry_run)
 
     heading = "Synapse global install preview." if args.dry_run else "Synapse installed globally."
     print(heading)
@@ -169,7 +174,10 @@ def _handle_install(args: Namespace) -> int:
         print(f"Grammars: {grammar_status}")
     else:
         print("Grammars: local cache is ready")
-    print(f"MCP config: {config_result.path} ({config_result.action})")
+    if config_result is None:
+        print(f"MCP config: not supported globally by {adapter.display_name}")
+    else:
+        print(f"MCP config: {config_result.path} ({config_result.action})")
     if instruction_result is None:
         print(f"Global instructions: not supported by {adapter.display_name}")
     else:
@@ -180,7 +188,7 @@ def _handle_install(args: Namespace) -> int:
     else:
         print(f"Global skill: {skill_result.path} ({skill_result.status})")
     if hook_result is not None:
-        print(f"Claude Code hook: {hook_result.path} ({hook_result.status})")
+        print(f"{adapter.display_name} hook: {hook_result.path} ({hook_result.status})")
     if not args.dry_run:
         print()
         print(f"Restart {adapter.display_name} once to load Synapse.")
@@ -518,8 +526,8 @@ def _handle_mcp_install(args: Namespace) -> int:
     return 0
 
 
-def _handle_hook_claude_pre_bash(_args: Namespace) -> int:
-    return run_claude_pre_bash(sys.stdin, sys.stdout)
+def _handle_hook(args: Namespace) -> int:
+    return run_hook(args.codec, sys.stdin, sys.stdout)
 
 
 def _handle_uninstall(args: Namespace) -> int:
@@ -527,7 +535,7 @@ def _handle_uninstall(args: Namespace) -> int:
     workspace_root = _detect_workspace_root(normalize_workspace_path(args.path))
     if args.global_scope:
         printed = False
-        if not args.keep_config:
+        if not args.keep_config and adapter.mcp.user is not None:
             config_result = uninstall_global_mcp_server(
                 args.agent,
                 workspace_root,
@@ -546,8 +554,8 @@ def _handle_uninstall(args: Namespace) -> int:
             skill_result = remove_global_skill(args.agent, dry_run=args.dry_run)
             print(f"Global skill {skill_result.status}: {skill_result.path}")
             printed = True
-        if adapter.supports_hook and not args.keep_hook:
-            hook_result = remove_claude_hook(dry_run=args.dry_run)
+        if adapter.hook is not None and not args.keep_hook:
+            hook_result = remove_hook(args.agent, dry_run=args.dry_run)
             print(f"{adapter.display_name} hook {hook_result.status}: {hook_result.path}")
             printed = True
         if not printed:
@@ -677,11 +685,12 @@ def build_parser() -> ArgumentParser:
 
     hook_parser = subparsers.add_parser("hook", help="Internal agent hook entry points")
     hook_subparsers = hook_parser.add_subparsers(dest="hook_command", required=True)
-    hook_pre_bash = hook_subparsers.add_parser(
-        "claude-pre-bash",
-        help="Claude Code PreToolUse hook: suggest Synapse tools for shell exploration",
-    )
-    hook_pre_bash.set_defaults(func=_handle_hook_claude_pre_bash)
+    for codec in codec_choices():
+        codec_parser = hook_subparsers.add_parser(
+            codec,
+            help="Pre-shell hook: suggest Synapse tools for shell exploration",
+        )
+        codec_parser.set_defaults(func=_handle_hook, codec=codec)
 
     serve_parser = subparsers.add_parser("serve", help="Internal MCP stdio entry point")
     serve_parser.add_argument("--workspace")

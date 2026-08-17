@@ -99,15 +99,19 @@ def test_install_and_uninstall_round_trip_through_cli(
     if agent == "continue":
         pytest.skip("continue user scope requires an existing config")
     adapter = get_adapter(agent)
-    config_path = resolve_config_path(adapter, tmp_path, "user")
+    config_path = (
+        resolve_config_path(adapter, tmp_path, "user") if adapter.mcp.user is not None else None
+    )
 
     assert cli_main.main(["install", agent, "--offline"]) == 0
-    assert config_path.exists(), agent
+    if config_path is not None:
+        assert config_path.exists(), agent
     if adapter.global_skill is not None:
         assert (resolve_global_skill_path(agent) / "SKILL.md").exists()
 
     assert cli_main.main(["uninstall", agent, "--global"]) == 0
-    assert not config_path.exists(), agent
+    if config_path is not None:
+        assert not config_path.exists(), agent
     if adapter.global_skill is not None:
         assert not resolve_global_skill_path(agent).exists()
 
@@ -150,14 +154,19 @@ def test_setup_dry_run_previews_project_capabilities(
         assert "Skill: would install at" in output
 
 
-def test_only_claude_code_registers_a_hook(
+def test_only_context_injecting_agents_register_a_hook(
     isolated_home: Path,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The suggest-only hook stays a Claude Code capability, not a global one."""
+    """The nudge ships only where a hook can add context while allowing the call.
+
+    Gemini has no PreToolUse event, Droid excludes additionalContext from it, and
+    Cursor delivers its agent message only on denial, so none of them qualify.
+    """
     monkeypatch.chdir(tmp_path)
+    expected = ["claude-code", "crush", "qwen"]
 
     hooked = [
         agent
@@ -165,8 +174,8 @@ def test_only_claude_code_registers_a_hook(
         if agent != "continue" and _install_mentions_hook(agent, capsys)
     ]
 
-    assert hooked == ["claude-code"]
-    assert [a for a, ad in ADAPTERS.items() if ad.supports_hook] == ["claude-code"]
+    assert hooked == expected
+    assert sorted(a for a, ad in ADAPTERS.items() if ad.hook is not None) == expected
 
 
 def _install_mentions_hook(agent: str, capsys: pytest.CaptureFixture[str]) -> bool:

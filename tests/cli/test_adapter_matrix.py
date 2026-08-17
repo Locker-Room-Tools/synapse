@@ -16,7 +16,9 @@ import pytest
 from synapse.cli.adapters import (
     ADAPTERS,
     ConfigFormat,
+    PathSpec,
     adapter_choices,
+    build_server_entry,
     get_adapter,
     install_global_instruction,
     install_global_skill,
@@ -50,7 +52,7 @@ EXPECTED_PATHS: dict[str, tuple[str | None, ...]] = {
         ".claude.json",
         "CLAUDE.md",
         ".claude/CLAUDE.md",
-        None,
+        ".claude/skills/synapse-code-context",
         ".claude/skills/synapse-code-context",
     ),
     "codex": (
@@ -111,11 +113,11 @@ EXPECTED_PATHS: dict[str, tuple[str | None, ...]] = {
     ),
     "cline": (
         ".cline/mcp.json",
-        ".cline/mcp.json",
+        ".cline/data/settings/cline_mcp_settings.json",
         ".cline/rules/synapse.md",
-        ".cline/data/settings/rules/synapse.md",
+        ".cline/rules/synapse.md",
         ".cline/skills/synapse-code-context",
-        ".cline/data/settings/skills/synapse-code-context",
+        ".cline/skills/synapse-code-context",
     ),
     "kiro": (
         ".kiro/settings/mcp.json",
@@ -141,6 +143,86 @@ EXPECTED_PATHS: dict[str, tuple[str | None, ...]] = {
         None,
         None,
     ),
+    "kimi": (
+        ".kimi-code/mcp.json",
+        ".kimi-code/mcp.json",
+        "AGENTS.md",
+        ".kimi-code/AGENTS.md",
+        ".kimi-code/skills/synapse-code-context",
+        ".kimi-code/skills/synapse-code-context",
+    ),
+    "droid": (
+        ".factory/mcp.json",
+        ".factory/mcp.json",
+        "AGENTS.md",
+        ".factory/AGENTS.md",
+        ".factory/skills/synapse-code-context",
+        ".factory/skills/synapse-code-context",
+    ),
+    "crush": (
+        "crush.json",
+        ".config/crush/crush.json",
+        "CRUSH.md",
+        ".config/crush/CRUSH.md",
+        ".crush/skills/synapse-code-context",
+        ".config/crush/skills/synapse-code-context",
+    ),
+    "amp": (
+        ".amp/settings.json",
+        ".config/amp/settings.json",
+        "AGENTS.md",
+        ".config/amp/AGENTS.md",
+        ".agents/skills/synapse-code-context",
+        ".config/amp/skills/synapse-code-context",
+    ),
+    "zed": (
+        ".zed/settings.json",
+        ".config/zed/settings.json",
+        ".rules",
+        ".config/zed/AGENTS.md",
+        ".agents/skills/synapse-code-context",
+        ".agents/skills/synapse-code-context",
+    ),
+    "antigravity": (
+        ".agents/mcp_config.json",
+        ".gemini/config/mcp_config.json",
+        ".agents/rules/synapse.md",
+        ".gemini/GEMINI.md",
+        ".agents/skills/synapse-code-context",
+        ".gemini/config/skills/synapse-code-context",
+    ),
+    "goose": (
+        None,
+        ".config/goose/config.yaml",
+        ".goosehints",
+        ".config/goose/.goosehints",
+        ".agents/skills/synapse-code-context",
+        ".agents/skills/synapse-code-context",
+    ),
+    "openclaw": (
+        None,
+        ".openclaw/openclaw.json",
+        None,
+        None,
+        None,
+        ".openclaw/skills/synapse-code-context",
+    ),
+    "copilot-vscode": (
+        ".vscode/mcp.json",
+        None,
+        ".github/copilot-instructions.md",
+        None,
+        ".github/skills/synapse-code-context",
+        None,
+    ),
+    "roo": (
+        ".roo/mcp.json",
+        None,
+        ".roo/rules/synapse.md",
+        None,
+        ".roo/skills/synapse-code-context",
+        ".roo/skills/synapse-code-context",
+    ),
 }
 
 EXPECTED_ENTRIES: dict[str, dict[str, Any]] = {
@@ -161,6 +243,16 @@ EXPECTED_ENTRIES: dict[str, dict[str, Any]] = {
     "kiro": {"command": "synapse", "args": SERVE_ARGS},
     "qwen": {"command": "synapse", "args": SERVE_ARGS},
     "continue": {"name": "synapse", "command": "synapse", "args": SERVE_ARGS},
+    "kimi": {"command": "synapse", "args": SERVE_ARGS},
+    "droid": {"command": "synapse", "args": SERVE_ARGS},
+    "crush": {"type": "stdio", "command": "synapse", "args": SERVE_ARGS},
+    "amp": {"command": "synapse", "args": SERVE_ARGS},
+    "zed": {"command": "synapse", "args": SERVE_ARGS},
+    "antigravity": {"command": "synapse", "args": SERVE_ARGS},
+    "goose": {"type": "stdio", "enabled": True, "cmd": "synapse", "args": SERVE_ARGS},
+    "openclaw": {"command": "synapse", "args": SERVE_ARGS},
+    "copilot-vscode": {"type": "stdio", "command": "synapse", "args": SERVE_ARGS},
+    "roo": {"command": "synapse", "args": SERVE_ARGS},
 }
 
 AGENTS = sorted(EXPECTED_PATHS)
@@ -236,7 +328,11 @@ def test_user_mcp_path(agent: str, isolated_home: Path, tmp_path: Path) -> None:
     """User MCP config resolves to the documented home-relative path."""
     expected = EXPECTED_PATHS[agent][1]
     adapter = get_adapter(agent)
-    assert expected is not None
+    if expected is None:
+        assert adapter.mcp.user is None
+        with pytest.raises(ValueError, match="does not support user-scope"):
+            resolve_config_path(adapter, tmp_path, "user")
+        return
     assert resolve_config_path(adapter, tmp_path, "user") == isolated_home / expected
 
 
@@ -292,20 +388,38 @@ def test_env_home_override_moves_only_declared_paths(
             assert resolved.is_relative_to(isolated_home), spec.path
 
 
-def test_cline_data_dir_does_not_move_its_mcp_config(
+def test_cline_data_dir_moves_only_the_mcp_config(
     isolated_home: Path,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """CLINE_DATA_DIR replaces ~/.cline/data/ only, never ~/.cline/mcp.json."""
+    """CLINE_DATA_DIR relocates ~/.cline/data/, which holds only the MCP settings.
+
+    Rules and skills live directly under ~/.cline/, outside that subtree.
+    """
     data_dir = tmp_path / "cline-data"
     monkeypatch.setenv("CLINE_DATA_DIR", str(data_dir))
 
     assert resolve_config_path(get_adapter("cline"), tmp_path, "user") == (
-        isolated_home / ".cline/mcp.json"
+        data_dir / "settings/cline_mcp_settings.json"
     )
-    assert resolve_global_skill_path("cline") == data_dir / "settings/skills/synapse-code-context"
-    assert resolve_global_instruction_path("cline") == data_dir / "settings/rules/synapse.md"
+    assert (
+        resolve_global_skill_path("cline") == isolated_home / ".cline/skills/synapse-code-context"
+    )
+    assert resolve_global_instruction_path("cline") == isolated_home / ".cline/rules/synapse.md"
+
+
+def test_cline_mcp_settings_path_overrides_the_data_dir(
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """CLINE_MCP_SETTINGS_PATH names the whole file and wins over CLINE_DATA_DIR."""
+    explicit = tmp_path / "elsewhere" / "mcp.json"
+    monkeypatch.setenv("CLINE_DATA_DIR", str(tmp_path / "cline-data"))
+    monkeypatch.setenv("CLINE_MCP_SETTINGS_PATH", str(explicit))
+
+    assert resolve_config_path(get_adapter("cline"), tmp_path, "user") == explicit
 
 
 @pytest.mark.parametrize("agent", AGENTS)
@@ -543,3 +657,80 @@ def test_continue_user_uninstall_keeps_the_user_config_file(
 
     assert target.exists()
     assert target.read_text(encoding="utf-8") == original
+
+
+def test_goose_spells_the_executable_cmd(isolated_home: Path, tmp_path: Path) -> None:
+    """Goose stdio entries use "cmd"; every other adapter uses "command"."""
+    goose = get_adapter("goose").mcp
+    assert goose.command_field == "cmd"
+    entry = build_server_entry(goose, None)
+    assert entry["cmd"] == "synapse"
+    assert "command" not in entry
+
+    for agent in AGENTS:
+        if agent == "goose":
+            continue
+        assert get_adapter(agent).mcp.command_field == "command", agent
+
+
+def test_openclaw_writes_a_nested_server_container(isolated_home: Path, tmp_path: Path) -> None:
+    """OpenClaw nests servers under mcp.servers, not a top-level mcpServers key."""
+    target = resolve_config_path(get_adapter("openclaw"), tmp_path, "user")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps({"gateway": {"port": 1}}), encoding="utf-8")
+
+    install_mcp_server("openclaw", tmp_path, scope="user", portable=True)
+
+    document = json.loads(target.read_text(encoding="utf-8"))
+    assert document["mcp"]["servers"]["synapse"] == EXPECTED_ENTRIES["openclaw"]
+    assert "mcpServers" not in document
+    assert document["gateway"] == {"port": 1}
+
+    uninstall_mcp_server("openclaw", tmp_path, scope="user")
+    document = json.loads(target.read_text(encoding="utf-8"))
+    assert document == {"gateway": {"port": 1}}
+
+
+def test_amp_uses_one_literal_dotted_key(isolated_home: Path, tmp_path: Path) -> None:
+    """ "amp.mcpServers" is a single settings key, never a two-level path."""
+    assert get_adapter("amp").mcp.key_path == ("amp.mcpServers",)
+    target = resolve_config_path(get_adapter("amp"), tmp_path, "project")
+
+    install_mcp_server("amp", tmp_path, scope="project", portable=True)
+
+    document = json.loads(target.read_text(encoding="utf-8"))
+    assert list(document) == ["amp.mcpServers"]
+    assert document["amp.mcpServers"]["synapse"] == EXPECTED_ENTRIES["amp"]
+
+
+def test_copilot_vscode_uses_the_servers_root_key(isolated_home: Path, tmp_path: Path) -> None:
+    """VS Code reads .vscode/mcp.json under "servers", not "mcpServers"."""
+    target = resolve_config_path(get_adapter("copilot-vscode"), tmp_path, "project")
+
+    install_mcp_server("copilot-vscode", tmp_path, scope="project", portable=True)
+
+    document = json.loads(target.read_text(encoding="utf-8"))
+    assert "mcpServers" not in document
+    assert document["servers"]["synapse"] == EXPECTED_ENTRIES["copilot-vscode"]
+
+
+def test_crush_entry_carries_only_schema_allowed_fields(
+    isolated_home: Path, tmp_path: Path
+) -> None:
+    """Crush requires "type" and rejects unknown keys (additionalProperties: false)."""
+    entry = build_server_entry(get_adapter("crush").mcp, None)
+    assert entry["type"] == "stdio"
+    assert set(entry) == {"type", "command", "args"}
+
+
+def test_env_var_full_wins_over_the_home_override(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A whole-path override replaces the path outright, ignoring the prefix rule."""
+    spec = PathSpec("~/.tool/data/settings.json", "TOOL_DATA_DIR", "~/.tool/data/", "TOOL_FILE")
+    monkeypatch.setenv("TOOL_DATA_DIR", str(tmp_path / "data"))
+
+    assert resolve_user_path(spec) == tmp_path / "data/settings.json"
+
+    monkeypatch.setenv("TOOL_FILE", str(tmp_path / "explicit.json"))
+    assert resolve_user_path(spec) == tmp_path / "explicit.json"

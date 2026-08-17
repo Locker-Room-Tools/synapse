@@ -46,9 +46,9 @@ def build_server_entry(
     for key, value in target.extra_fields:
         entry[key] = list(value) if isinstance(value, tuple) else value
     if target.payload_style is PayloadStyle.COMMAND_LIST:
-        entry["command"] = [command, *args]
+        entry[target.command_field] = [command, *args]
     else:
-        entry["command"] = command
+        entry[target.command_field] = command
         entry["args"] = args
     return entry
 
