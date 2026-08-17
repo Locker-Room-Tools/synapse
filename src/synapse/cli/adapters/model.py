@@ -40,18 +40,34 @@ class InstructionMode(StrEnum):
     OWNED = "owned"
 
 
+class HookShape(StrEnum):
+    """How an agent spells a registered command hook.
+
+    ``NESTED`` groups entries by matcher, as Claude Code and Qwen do:
+    ``{"matcher": ..., "hooks": [{"type": "command", "command": ...}]}``.
+    ``FLAT`` stores one entry per hook, as Crush does:
+    ``{"name": ..., "matcher": ..., "command": ...}``.
+    """
+
+    NESTED = "nested"
+    FLAT = "flat"
+
+
 @dataclass(frozen=True, slots=True)
 class PathSpec:
     """A configured path with an optional environment home override.
 
     ``path`` is workspace-relative for project scope and ``~``-prefixed for user
     scope. When ``env_var`` is set and present in the environment, its value
-    replaces ``env_prefix`` at the front of ``path``.
+    replaces ``env_prefix`` at the front of ``path``. ``env_var_full`` takes
+    precedence and replaces the whole path, for agents that expose a single
+    override for one specific file.
     """
 
     path: str
     env_var: str | None = None
     env_prefix: str | None = None
+    env_var_full: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +78,7 @@ class McpTarget:
     shape: ContainerShape
     key_path: tuple[str, ...]
     payload_style: PayloadStyle = PayloadStyle.COMMAND_ARGS
+    command_field: str = "command"
     name_field: str | None = None
     extra_fields: tuple[tuple[str, ConfigScalar], ...] = ()
     document_defaults: tuple[tuple[str, str], ...] = ()
@@ -80,6 +97,22 @@ class InstructionTarget:
 
 
 @dataclass(frozen=True, slots=True)
+class HookTarget:
+    """Suggest-only pre-shell hook contract for one adapter.
+
+    Only agents whose hook system can inject context while *allowing* the tool
+    call qualify; a block-or-deny hook cannot express a nudge.
+    """
+
+    codec: str
+    settings: PathSpec
+    shape: HookShape
+    key_path: tuple[str, ...]
+    matcher: str
+    timeout: int
+
+
+@dataclass(frozen=True, slots=True)
 class AgentAdapter:
     """Static metadata for one supported agent adapter."""
 
@@ -95,7 +128,7 @@ class AgentAdapter:
         "SKILL.md",
         "references/evidence-semantics.md",
     )
-    supports_hook: bool = False
+    hook: HookTarget | None = None
     warn_legacy_user_config: bool = False
 
 

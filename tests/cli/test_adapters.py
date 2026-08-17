@@ -4,8 +4,6 @@ import json
 import tomllib
 from pathlib import Path
 
-import pytest
-
 from synapse.cli.adapters import (
     ADAPTERS,
     LEGACY_BEGIN_MARKER,
@@ -124,25 +122,57 @@ def test_agent_snippets_differ_only_in_doctor_line() -> None:
     assert len(bodies) == 1
 
 
-def test_install_instruction_snippet_requires_force_to_replace_managed_block(
+def test_install_instruction_snippet_replaces_a_managed_block_without_force(
     tmp_path: Path,
 ) -> None:
-    """Existing Synapse blocks are protected unless force is explicit."""
+    """A block Synapse owns is replaced in place; several adapters share one file."""
     target = tmp_path / "AGENTS.md"
     target.write_text(
         f"{PROJECT_HEADING}\n\nold content\n",
         encoding="utf-8",
     )
 
-    with pytest.raises(FileExistsError):
-        install_instruction_snippet("opencode", tmp_path)
-
-    result = install_instruction_snippet("opencode", tmp_path, force=True)
+    result = install_instruction_snippet("opencode", tmp_path)
 
     content = target.read_text(encoding="utf-8")
     assert result.status == "updated"
     assert "old content" not in content
     assert "synapse doctor --path . --agent opencode" in content
+
+
+def test_unmanaged_content_is_never_replaced_by_a_block_install(tmp_path: Path) -> None:
+    """Text Synapse does not own is preserved; the block is appended after it."""
+    target = tmp_path / "AGENTS.md"
+    target.write_text("# House rules\n\nhand written\n", encoding="utf-8")
+
+    result = install_instruction_snippet("opencode", tmp_path)
+
+    content = target.read_text(encoding="utf-8")
+    assert result.status == "updated"
+    assert "hand written" in content
+    assert content.count(PROJECT_HEADING) == 1
+
+
+def test_adapters_sharing_one_file_keep_a_single_block(tmp_path: Path) -> None:
+    """AGENTS.md holds one Synapse block no matter how many adapters install into it."""
+    target = tmp_path / "AGENTS.md"
+
+    for agent in ("codex", "opencode", "kimi", "amp", "droid"):
+        install_instruction_snippet(agent, tmp_path)
+
+    content = target.read_text(encoding="utf-8")
+    assert content.count(PROJECT_HEADING) == 1
+    assert "synapse doctor --path . --agent droid" in content
+    assert "synapse doctor --path . --agent codex" not in content
+
+
+def test_both_copilot_adapters_keep_a_single_block(tmp_path: Path) -> None:
+    """The CLI and VS Code Copilot adapters share .github/copilot-instructions.md."""
+    install_instruction_snippet("copilot", tmp_path)
+    install_instruction_snippet("copilot-vscode", tmp_path)
+
+    content = (tmp_path / ".github/copilot-instructions.md").read_text(encoding="utf-8")
+    assert content.count(PROJECT_HEADING) == 1
 
 
 def test_install_instruction_snippet_migrates_a_legacy_marker_block(
