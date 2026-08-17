@@ -16,3 +16,6 @@ opencode.json
 .coverage*
 
 SYNAPSE_INTERNAL_DEEP_DIVE*.md
+
+.claude/*
+!.claude/skills/
