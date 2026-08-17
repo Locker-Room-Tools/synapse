@@ -4,6 +4,8 @@ from synapse.cli.adapters.model import (
     AgentAdapter,
     ConfigFormat,
     ContainerShape,
+    HookShape,
+    HookTarget,
     InstructionMode,
     InstructionTarget,
     McpTarget,
@@ -24,8 +26,16 @@ ADAPTERS: dict[str, AgentAdapter] = {
         ),
         project_instructions=InstructionTarget(PathSpec("CLAUDE.md")),
         global_instructions=InstructionTarget(PathSpec("~/.claude/CLAUDE.md")),
+        project_skill=PathSpec(".claude/skills/synapse-code-context"),
         global_skill=PathSpec("~/.claude/skills/synapse-code-context"),
-        supports_hook=True,
+        hook=HookTarget(
+            codec="claude-pre-bash",
+            settings=PathSpec("~/.claude/settings.json"),
+            shape=HookShape.NESTED,
+            key_path=("hooks", "PreToolUse"),
+            matcher="Bash",
+            timeout=10,
+        ),
     ),
     "codex": AgentAdapter(
         id="codex",
@@ -163,34 +173,33 @@ ADAPTERS: dict[str, AgentAdapter] = {
         project_skill=PathSpec(".windsurf/skills/synapse-code-context"),
         global_skill=PathSpec("~/.codeium/windsurf/skills/synapse-code-context"),
     ),
-    # CLINE_DATA_DIR replaces ~/.cline/data/ only, so it never moves ~/.cline/mcp.json.
+    # Cline docs advertise ~/.cline/mcp.json, but the shared resolver reads
+    # ~/.cline/data/settings/cline_mcp_settings.json (cline#11671). Rules and skills
+    # live directly under ~/.cline/, outside the CLINE_DATA_DIR subtree.
     "cline": AgentAdapter(
         id="cline",
-        display_name="Cline CLI",
+        display_name="Cline",
         mcp=McpTarget(
             fmt=ConfigFormat.JSON,
             shape=ContainerShape.MAPPING,
             key_path=("mcpServers",),
             project=".cline/mcp.json",
-            user=PathSpec("~/.cline/mcp.json"),
+            user=PathSpec(
+                "~/.cline/data/settings/cline_mcp_settings.json",
+                "CLINE_DATA_DIR",
+                "~/.cline/data/",
+                env_var_full="CLINE_MCP_SETTINGS_PATH",
+            ),
         ),
         project_instructions=InstructionTarget(
             PathSpec(".cline/rules/synapse.md"), InstructionMode.OWNED
         ),
         global_instructions=InstructionTarget(
-            PathSpec(
-                "~/.cline/data/settings/rules/synapse.md",
-                "CLINE_DATA_DIR",
-                "~/.cline/data/",
-            ),
+            PathSpec("~/.cline/rules/synapse.md"),
             InstructionMode.OWNED,
         ),
         project_skill=PathSpec(".cline/skills/synapse-code-context"),
-        global_skill=PathSpec(
-            "~/.cline/data/settings/skills/synapse-code-context",
-            "CLINE_DATA_DIR",
-            "~/.cline/data/",
-        ),
+        global_skill=PathSpec("~/.cline/skills/synapse-code-context"),
     ),
     "kiro": AgentAdapter(
         id="kiro",
@@ -229,6 +238,16 @@ ADAPTERS: dict[str, AgentAdapter] = {
         global_instructions=InstructionTarget(PathSpec("~/.qwen/QWEN.md", "QWEN_HOME", "~/.qwen/")),
         project_skill=PathSpec(".qwen/skills/synapse-code-context"),
         global_skill=PathSpec("~/.qwen/skills/synapse-code-context", "QWEN_HOME", "~/.qwen/"),
+        # Qwen documents context injection on PreToolUse but only worked-examples it
+        # alongside a deny decision, so the allow path is unconfirmed upstream.
+        hook=HookTarget(
+            codec="qwen-pre-bash",
+            settings=PathSpec("~/.qwen/settings.json", "QWEN_HOME", "~/.qwen/"),
+            shape=HookShape.NESTED,
+            key_path=("hooks", "PreToolUse"),
+            matcher="^run_shell_command$",
+            timeout=10000,
+        ),
     ),
     # Continue config.yaml requires name/version/schema, so Synapse never creates it.
     # The project target is a standalone block file Synapse owns end to end.
@@ -252,6 +271,195 @@ ADAPTERS: dict[str, AgentAdapter] = {
         project_instructions=InstructionTarget(
             PathSpec(".continue/rules/synapse.md"), InstructionMode.OWNED
         ),
+    ),
+    "kimi": AgentAdapter(
+        id="kimi",
+        display_name="Kimi Code CLI",
+        mcp=McpTarget(
+            fmt=ConfigFormat.JSON,
+            shape=ContainerShape.MAPPING,
+            key_path=("mcpServers",),
+            project=".kimi-code/mcp.json",
+            user=PathSpec("~/.kimi-code/mcp.json", "KIMI_CODE_HOME", "~/.kimi-code/"),
+        ),
+        project_instructions=InstructionTarget(PathSpec("AGENTS.md")),
+        global_instructions=InstructionTarget(
+            PathSpec("~/.kimi-code/AGENTS.md", "KIMI_CODE_HOME", "~/.kimi-code/")
+        ),
+        project_skill=PathSpec(".kimi-code/skills/synapse-code-context"),
+        global_skill=PathSpec(
+            "~/.kimi-code/skills/synapse-code-context", "KIMI_CODE_HOME", "~/.kimi-code/"
+        ),
+    ),
+    "droid": AgentAdapter(
+        id="droid",
+        display_name="Factory Droid",
+        mcp=McpTarget(
+            fmt=ConfigFormat.JSON,
+            shape=ContainerShape.MAPPING,
+            key_path=("mcpServers",),
+            project=".factory/mcp.json",
+            user=PathSpec("~/.factory/mcp.json"),
+        ),
+        project_instructions=InstructionTarget(PathSpec("AGENTS.md")),
+        global_instructions=InstructionTarget(PathSpec("~/.factory/AGENTS.md")),
+        project_skill=PathSpec(".factory/skills/synapse-code-context"),
+        global_skill=PathSpec("~/.factory/skills/synapse-code-context"),
+    ),
+    # Crush requires "type" on every MCP entry and rejects unknown keys
+    # (additionalProperties: false), so the payload stays exactly these fields.
+    "crush": AgentAdapter(
+        id="crush",
+        display_name="Crush",
+        mcp=McpTarget(
+            fmt=ConfigFormat.JSON,
+            shape=ContainerShape.MAPPING,
+            key_path=("mcp",),
+            extra_fields=(("type", "stdio"),),
+            project="crush.json",
+            user=PathSpec("~/.config/crush/crush.json", "XDG_CONFIG_HOME", "~/.config/"),
+        ),
+        project_instructions=InstructionTarget(PathSpec("CRUSH.md")),
+        global_instructions=InstructionTarget(
+            PathSpec("~/.config/crush/CRUSH.md", "XDG_CONFIG_HOME", "~/.config/")
+        ),
+        project_skill=PathSpec(".crush/skills/synapse-code-context"),
+        global_skill=PathSpec(
+            "~/.config/crush/skills/synapse-code-context", "XDG_CONFIG_HOME", "~/.config/"
+        ),
+        hook=HookTarget(
+            codec="crush-pre-bash",
+            settings=PathSpec("~/.config/crush/crush.json", "XDG_CONFIG_HOME", "~/.config/"),
+            shape=HookShape.FLAT,
+            key_path=("hooks", "PreToolUse"),
+            matcher="^bash$",
+            timeout=10,
+        ),
+    ),
+    # "amp.mcpServers" is one literal settings key containing a dot, not a nested path.
+    "amp": AgentAdapter(
+        id="amp",
+        display_name="Amp",
+        mcp=McpTarget(
+            fmt=ConfigFormat.JSON,
+            shape=ContainerShape.MAPPING,
+            key_path=("amp.mcpServers",),
+            project=".amp/settings.json",
+            user=PathSpec("~/.config/amp/settings.json", "XDG_CONFIG_HOME", "~/.config/"),
+        ),
+        project_instructions=InstructionTarget(PathSpec("AGENTS.md")),
+        global_instructions=InstructionTarget(
+            PathSpec("~/.config/amp/AGENTS.md", "XDG_CONFIG_HOME", "~/.config/")
+        ),
+        project_skill=PathSpec(".agents/skills/synapse-code-context"),
+        global_skill=PathSpec(
+            "~/.config/amp/skills/synapse-code-context", "XDG_CONFIG_HOME", "~/.config/"
+        ),
+    ),
+    # Zed picks the first matching instruction file from a fixed list; ".rules" ranks
+    # first, so the block is guaranteed to be the file Zed actually reads.
+    "zed": AgentAdapter(
+        id="zed",
+        display_name="Zed",
+        mcp=McpTarget(
+            fmt=ConfigFormat.JSON,
+            shape=ContainerShape.MAPPING,
+            key_path=("context_servers",),
+            project=".zed/settings.json",
+            user=PathSpec("~/.config/zed/settings.json", "XDG_CONFIG_HOME", "~/.config/"),
+        ),
+        project_instructions=InstructionTarget(PathSpec(".rules")),
+        global_instructions=InstructionTarget(
+            PathSpec("~/.config/zed/AGENTS.md", "XDG_CONFIG_HOME", "~/.config/")
+        ),
+        project_skill=PathSpec(".agents/skills/synapse-code-context"),
+        global_skill=PathSpec("~/.agents/skills/synapse-code-context"),
+    ),
+    "antigravity": AgentAdapter(
+        id="antigravity",
+        display_name="Google Antigravity",
+        mcp=McpTarget(
+            fmt=ConfigFormat.JSON,
+            shape=ContainerShape.MAPPING,
+            key_path=("mcpServers",),
+            project=".agents/mcp_config.json",
+            user=PathSpec("~/.gemini/config/mcp_config.json"),
+        ),
+        project_instructions=InstructionTarget(
+            PathSpec(".agents/rules/synapse.md"), InstructionMode.OWNED
+        ),
+        global_instructions=InstructionTarget(PathSpec("~/.gemini/GEMINI.md")),
+        project_skill=PathSpec(".agents/skills/synapse-code-context"),
+        global_skill=PathSpec("~/.gemini/config/skills/synapse-code-context"),
+    ),
+    # Goose documents no project config, so MCP config is global-only. Its stdio
+    # entries spell the executable "cmd" and require a non-defaulted "enabled".
+    "goose": AgentAdapter(
+        id="goose",
+        display_name="Goose",
+        mcp=McpTarget(
+            fmt=ConfigFormat.YAML,
+            shape=ContainerShape.MAPPING,
+            key_path=("extensions",),
+            command_field="cmd",
+            extra_fields=(("type", "stdio"), ("enabled", True)),
+            user=PathSpec("~/.config/goose/config.yaml", "XDG_CONFIG_HOME", "~/.config/"),
+        ),
+        default_scope="user",
+        project_instructions=InstructionTarget(PathSpec(".goosehints")),
+        global_instructions=InstructionTarget(
+            PathSpec("~/.config/goose/.goosehints", "XDG_CONFIG_HOME", "~/.config/")
+        ),
+        project_skill=PathSpec(".agents/skills/synapse-code-context"),
+        global_skill=PathSpec("~/.agents/skills/synapse-code-context"),
+    ),
+    # OpenClaw has a single global config, and its "workspace" is the agent home
+    # (~/.openclaw/workspace), not the repository, so there are no project targets.
+    "openclaw": AgentAdapter(
+        id="openclaw",
+        display_name="OpenClaw",
+        mcp=McpTarget(
+            fmt=ConfigFormat.JSON,
+            shape=ContainerShape.MAPPING,
+            key_path=("mcp", "servers"),
+            user=PathSpec("~/.openclaw/openclaw.json", "OPENCLAW_HOME", "~/.openclaw/"),
+        ),
+        default_scope="user",
+        global_skill=PathSpec(
+            "~/.openclaw/skills/synapse-code-context", "OPENCLAW_HOME", "~/.openclaw/"
+        ),
+    ),
+    # The VS Code user mcp.json path is undocumented and moves with profiles and
+    # builds, so this adapter is project-scope only. Root key is "servers".
+    "copilot-vscode": AgentAdapter(
+        id="copilot-vscode",
+        display_name="GitHub Copilot (VS Code)",
+        mcp=McpTarget(
+            fmt=ConfigFormat.JSON,
+            shape=ContainerShape.MAPPING,
+            key_path=("servers",),
+            extra_fields=(("type", "stdio"),),
+            project=".vscode/mcp.json",
+        ),
+        project_instructions=InstructionTarget(PathSpec(".github/copilot-instructions.md")),
+        project_skill=PathSpec(".github/skills/synapse-code-context"),
+    ),
+    # Roo's global MCP file lives under a user-relocatable storage base, so only the
+    # project MCP path is safe to write; the global skills dir is a plain path.
+    "roo": AgentAdapter(
+        id="roo",
+        display_name="Roo Code",
+        mcp=McpTarget(
+            fmt=ConfigFormat.JSON,
+            shape=ContainerShape.MAPPING,
+            key_path=("mcpServers",),
+            project=".roo/mcp.json",
+        ),
+        project_instructions=InstructionTarget(
+            PathSpec(".roo/rules/synapse.md"), InstructionMode.OWNED
+        ),
+        project_skill=PathSpec(".roo/skills/synapse-code-context"),
+        global_skill=PathSpec("~/.roo/skills/synapse-code-context"),
     ),
 }
 

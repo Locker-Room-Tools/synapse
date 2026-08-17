@@ -12,6 +12,8 @@ def adapter_user_specs(adapter: AgentAdapter) -> tuple[PathSpec, ...]:
     specs: list[PathSpec | None] = [adapter.mcp.user, adapter.global_skill]
     if adapter.global_instructions is not None:
         specs.append(adapter.global_instructions.location)
+    if adapter.hook is not None:
+        specs.append(adapter.hook.settings)
     return tuple(spec for spec in specs if spec is not None)
 
 
@@ -31,10 +33,11 @@ def adapter_path_specs(adapter: AgentAdapter) -> tuple[PathSpec, ...]:
 def adapter_env_vars() -> tuple[str, ...]:
     """Return every home-override variable any adapter reads."""
     names = {
-        spec.env_var
+        name
         for adapter in ADAPTERS.values()
         for spec in adapter_path_specs(adapter)
-        if spec.env_var
+        for name in (spec.env_var, spec.env_var_full)
+        if name
     }
     return tuple(sorted(names))
 
