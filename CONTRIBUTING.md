@@ -9,14 +9,12 @@ adding an MCP tool).
 changing project structure.
 
 The recurring maintenance tasks each have a step-by-step checklist under
-[.claude/skills/](.claude/skills/) (adding a language, adding an agent adapter, adding an
+[.agents/skills/](.agents/skills/) (adding a language, adding an agent adapter, adding an
 MCP tool, changing index persistence, cutting a release, running an A/B evaluation).
-They use the cross-agent SKILL.md format and are mirrored to
-[.agents/skills/](.agents/skills/) (the shared Agent Skills catalog: Codex, Amp, Zed,
-Goose, and others) and [.github/skills/](.github/skills/) (GitHub Copilot), so most
-coding agents pick them up automatically; for everyone else they are plain markdown
-checklists. `.claude/skills/` is the canonical copy — edit there and re-copy;
-`tests/test_skills_catalog_sync.py` fails on drift.
+They use the cross-agent SKILL.md format in the shared Agent Skills catalog, which most
+coding agents (Claude Code, Codex, Copilot, Cursor, Amp, Zed, Goose, and others) discover
+automatically; for everyone else they are plain markdown checklists that stay in sync
+with the test suites they cite.
 
 ## Setup
 
