@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Experimental inspection responses can expose previously unseen methods of the selected
+  class in `class_peers` when the existing response leaves room. `class_peers_total`
+  gives the number of other direct methods. The original file and reference evidence
+  retains its space in the response.
+
 ## [0.5.5] - 2026-08-17
 
 Agent-integration release: supported adapters grow from 12 to 22 and the pre-shell
