@@ -378,6 +378,31 @@ class ReadProjections:
             result[path] = ([_map_symbol(row) for row in rows], int(total_row[0]))
         return result
 
+    def class_method_peers(
+        self, symbol: Symbol, *, limit: int
+    ) -> tuple[list[tuple[str, str, int]], int]:
+        """Return bounded nearest direct methods and the exact peer count."""
+        params = (symbol.id, symbol.container_id)
+        total = (
+            int(
+                self.connection.execute(
+                    "SELECT COUNT(*) FROM symbols WHERE file_id = "
+                    "(SELECT file_id FROM symbols WHERE id = ?) "
+                    "AND container_id = ? AND kind = 'method'",
+                    params,
+                ).fetchone()[0]
+            )
+            - 1
+        )
+        rows = self.connection.execute(
+            "SELECT handle, name, start_line FROM symbols "
+            "WHERE file_id = (SELECT file_id FROM symbols WHERE id = ?) "
+            "AND container_id = ? AND kind = 'method' AND id != ? "
+            "ORDER BY abs(start_line - ?), start_line, id LIMIT ?",
+            (*params, symbol.id, symbol.start_line, limit),
+        ).fetchall()
+        return [(str(row[0]), str(row[1]), int(row[2])) for row in rows], total
+
     def search_symbols(
         self,
         query: str,

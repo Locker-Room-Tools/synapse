@@ -1,5 +1,6 @@
 """One-snapshot batch inspection of selected symbols with one-hop evidence."""
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
@@ -19,7 +20,7 @@ from synapse.core.languages import (
     reference_extraction,
     reference_limitations,
 )
-from synapse.core.models import Relation, RelationKind, Symbol
+from synapse.core.models import Relation, RelationKind, Symbol, SymbolKind
 from synapse.core.navigation.budget import (
     INSPECT_DEFAULT_TOKEN_BUDGET,
     INSPECT_MIN_TOKEN_BUDGET,
@@ -27,6 +28,8 @@ from synapse.core.navigation.budget import (
     DropStep,
     clamp,
     enforce_budget,
+    estimate_tokens,
+    serialize,
 )
 from synapse.core.navigation.continuation import (
     continuation_token,
@@ -556,7 +559,13 @@ def inspect_symbols(
     token_budget = clamp(request.token_budget, INSPECT_MIN_TOKEN_BUDGET, PUBLIC_MAX_TOKEN_BUDGET)
 
     with index.read_session() as reads:
-        evidence = _build_selected(reads, request.symbols, workspace_root)
+        return _inspect_in_session(reads, request, workspace_root, token_budget)
+
+
+def _inspect_in_session(
+    reads: ReadProjections, request: InspectRequest, workspace_root: Path, token_budget: int
+) -> str:
+    evidence = _build_selected(reads, request.symbols, workspace_root)
     selected = evidence.selected
     missing = evidence.missing
     continuations = evidence.continuations
@@ -733,7 +742,88 @@ def inspect_symbols(
         return payload
 
     steps = _drop_steps(selected, continuations)
-    return enforce_budget(assemble, steps, minimal, token_budget=token_budget, shrink_key="symbols")
+    baseline = enforce_budget(
+        assemble, steps, minimal, token_budget=token_budget, shrink_key="symbols"
+    )
+    return _add_class_peers(reads, selected, baseline, token_budget)
+
+
+def _add_class_peers(
+    reads: ReadProjections, selected: list[_Selected], baseline: str, token_budget: int
+) -> str:
+    """Append bounded class methods without changing the baseline projection."""
+    if len(baseline) + 40 > token_budget * 4 or not any(
+        item.symbol.kind is SymbolKind.METHOD
+        and item.parent is not None
+        and item.parent.kind is SymbolKind.CLASS
+        for item in selected
+    ):
+        return baseline
+    payload = json.loads(baseline)
+    entries = payload.get("symbols", [])
+    budget = payload.get("budget")
+    if not isinstance(entries, list) or not isinstance(budget, dict):
+        return baseline
+
+    def handles(value: object) -> set[str]:
+        if isinstance(value, dict):
+            result = {value["h"]} if isinstance(value.get("h"), str) else set()
+            for child in value.values():
+                result.update(handles(child))
+            return result
+        if isinstance(value, list):
+            list_result: set[str] = set()
+            for child in value:
+                list_result.update(handles(child))
+            return list_result
+        return set()
+
+    exposed = handles(payload)
+    by_handle = {item.handle: item for item in selected}
+    queues: list[tuple[dict[str, object], int, list[tuple[str, str, int]]]] = []
+    for entry in entries:
+        item = by_handle.get(entry.get("h"))
+        if (
+            item is None
+            or item.symbol.kind is not SymbolKind.METHOD
+            or item.parent is None
+            or item.parent.kind is not SymbolKind.CLASS
+        ):
+            continue
+        candidates, total = reads.class_method_peers(item.symbol, limit=128)
+        queues.append((entry, total, candidates))
+
+    changed = False
+    counts = [0] * len(queues)
+    while sum(counts) < 6:
+        advanced = False
+        for index, (entry, total, candidates) in enumerate(queues):
+            if counts[index] >= 3 or sum(counts) >= 6:
+                continue
+            while candidates:
+                handle, name, line = candidates.pop(0)
+                if handle in exposed:
+                    continue
+                peers = entry.setdefault("class_peers", [])
+                assert isinstance(peers, list)
+                peers.append({"h": handle, "n": name, "l": line})
+                entry["class_peers_total"] = total
+                old_estimate = budget["estimated_tokens"]
+                budget["estimated_tokens"] = estimate_tokens(serialize(payload))
+                final = serialize(payload)
+                if len(final) <= token_budget * 4:
+                    exposed.add(handle)
+                    counts[index] += 1
+                    changed = advanced = True
+                    break
+                peers.pop()
+                if not peers:
+                    del entry["class_peers"]
+                    del entry["class_peers_total"]
+                budget["estimated_tokens"] = old_estimate
+        if not advanced:
+            break
+    return serialize(payload) if changed else baseline
 
 
 def _pop_sibling(item: _Selected) -> bool:
