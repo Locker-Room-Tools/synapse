@@ -125,6 +125,15 @@ One batch inspection of the selected symbols under one read snapshot.
   references whose target is unresolved keep their target name and stored
   resolution instead of a handle.
 
+#### Class peers
+
+When a selected class method has spare response capacity, its entry may also contain
+`class_peers` with other direct methods as `{h, n, l}` and `class_peers_total`
+with the count of all other direct methods. These handles expose class membership.
+Inspection keeps the existing file and reference evidence and adds up to three new
+handles per selected method and six per response. Absence of this optional field
+does not establish that a class has no other methods.
+
 #### Source continuation
 
 When a returned `src` is incomplete (`truncated: true`), it carries `next`: a
