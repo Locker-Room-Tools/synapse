@@ -6,9 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-20
+
 ### Added
-- Experimental inspection responses can expose previously unseen methods of the selected
-  class in `class_peers` when the existing response leaves room. `class_peers_total`
+- Inspecting a class method can expose other direct methods of its class in `class_peers` when the existing response leaves room. `class_peers_total`
   gives the number of other direct methods. The original file and reference evidence
   retains its space in the response.
 
