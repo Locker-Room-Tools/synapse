@@ -86,7 +86,8 @@ class WatchLock:
             age = time.time() - self.path.stat().st_mtime
         except OSError:
             return False
-        return 0 <= age < _LOCK_OWNER_INITIALIZATION_S
+        # Filesystem timestamps can lead the Python wall clock slightly on Windows.
+        return abs(age) < _LOCK_OWNER_INITIALIZATION_S
 
     def __enter__(self) -> WatchLock:
         self.acquire()
