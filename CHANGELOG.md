@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pack on 1.14.3 to preserve compatibility with the Zig queries.
 - Updated the setup-uv action to 10.3.3 for CI and release builds.
 
+### Fixed
+- Kept newly created watch locks that are still waiting for a PID when their filesystem
+  timestamp is slightly ahead of the wall clock on Windows.
+
 ### Security
 - Raised the cryptography and pydantic-settings minimum versions to pick up OpenSSL
   and file-secret security fixes.

@@ -534,9 +534,11 @@ def test_watch_lock_replaces_stale_lock_and_blocks_live_owner(
         WatchLock(workspace_root).acquire()
 
 
+@pytest.mark.parametrize("fresh_offset", [-1.0, 1.0])
 def test_watch_lock_preserves_fresh_empty_owner_but_replaces_old_one(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    fresh_offset: float,
 ) -> None:
     """PID publication has a grace period without making corrupt locks permanent."""
     monkeypatch.setenv("SYNAPSE_DATA_DIR", str(tmp_path / "data-root"))
@@ -544,6 +546,8 @@ def test_watch_lock_preserves_fresh_empty_owner_but_replaces_old_one(
     workspace_root.mkdir()
     lock_path = watch_lock_path(workspace_root)
     lock_path.touch()
+    fresh_time = time.time() + fresh_offset
+    os.utime(lock_path, (fresh_time, fresh_time))
 
     with pytest.raises(WatchAlreadyRunning, match="owner is initializing"):
         WatchLock(workspace_root).acquire()
