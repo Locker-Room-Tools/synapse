@@ -1,6 +1,6 @@
 [project]
 name = "locker-room-tools-synapse-mcp"
-version = "0.6.0"
+version = "0.6.1"
 description = "Local-first AST-based code context engine exposed over MCP."
 readme = "README.md"
 license = "MIT"
@@ -19,12 +19,12 @@ classifiers = [
 ]
 requires-python = ">=3.12"
 dependencies = [
-    "cryptography>=50.0.0",
+    "cryptography>=50.0.2",
     "mcp>=1.28.1,<2",
     # Compiles .synapseignore patterns; the gitignore pattern class landed in 1.1.
     "pathspec>=1.1.1",
-    # Transitive via mcp; floored directly to keep the symlink-escape fix (2.14.2).
-    "pydantic-settings>=2.14.2",
+    # Transitive via mcp; require the symlink-escape fixes for both secrets sources.
+    "pydantic-settings>=2.16.3",
     "ruamel-yaml>=0.19.1",
     "tree-sitter>=0.25",
     "tree-sitter-language-pack>=1.13.3,<1.15",

@@ -66,16 +66,18 @@ async def _probe_mcp(
         env=dict(os.environ),
     )
     with anyio.fail_after(20):
-        async with stdio_client(params) as (read_stream, write_stream):
-            async with ClientSession(read_stream, write_stream) as session:
-                initialized = await session.initialize()
-                instructions = getattr(initialized, "instructions", None)
-                tools_response = await session.list_tools()
-                tool_names = sorted(tool.name for tool in tools_response.tools)
-                result = await session.call_tool(
-                    "synapse_orient",
-                    {"terms": []},
-                )
+        async with (
+            stdio_client(params) as (read_stream, write_stream),
+            ClientSession(read_stream, write_stream) as session,
+        ):
+            initialized = await session.initialize()
+            instructions = getattr(initialized, "instructions", None)
+            tools_response = await session.list_tools()
+            tool_names = sorted(tool.name for tool in tools_response.tools)
+            result = await session.call_tool(
+                "synapse_orient",
+                {"terms": []},
+            )
     content: Any = getattr(result, "content", [])
     if isinstance(content, list):
         payload_chars = sum(len(getattr(item, "text", "")) for item in content)

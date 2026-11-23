@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-23
+
+### Changed
+- Updated the locked versions of tree-sitter, mypy, pytest, and Ruff. Kept the language
+  pack on 1.14.3 to preserve compatibility with the Zig queries.
+- Updated the setup-uv action to 10.3.3 for CI and release builds.
+
+### Security
+- Raised the cryptography and pydantic-settings minimum versions to pick up OpenSSL
+  and file-secret security fixes.
+
 ## [0.6.0] - 2026-11-20
 
 ### Added
